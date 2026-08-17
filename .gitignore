@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment files
+.env
+*.env
+
+# Large data files
+backend/assets/frequencies/
+backend/assets/hsk/
+
+# Database
+*.sqlite3
+*.db
+
+# Alembic
+backend/migrations/versions/__pycache__/
+
+# Node
+frontend/node_modules/
+frontend/.svelte-kit/
+
+# Build output
+frontend/build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

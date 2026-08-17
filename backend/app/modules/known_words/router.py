@@ -1,0 +1,396 @@
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.orm import Session
+
+from app.core.auth import get_current_user
+from app.core.database import get_db
+from app.models.user import User
+from app.modules.known_words import service
+
+from app.modules.known_words.models import (
+    InputText, AnalysisResult, KnownWord, UserWord, Stopword, GarbageWord, DictionaryWord
+)
+from app.modules.known_words.schemas import (
+    AnalyzeTextRequest,
+    AnalysisResponse,
+    WordResult,
+    KnownWordUpdate,
+    KnownWordResponse,
+    UserWordCreate,
+    UserWordResponse,
+    InputTextResponse,
+    StopwordCreate,
+    StopwordResponse,
+    GarbageWordCreate,
+    GarbageWordResponse,
+    HskFormDetail,
+    WordDetail
+)
+
+
+router = APIRouter(prefix="/known-words", tags=["known-words"])
+
+
+@router.post("/analyze", response_model=AnalysisResponse)
+def analyze(
+    request: AnalyzeTextRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    # Get user's stopwords and garbage words
+    lm_stopwords, tokenizer_stopwords = service.get_user_stopwords(current_user.id, db)
+    garbage_words = service.get_user_garbage_words(current_user.id, db)
+
+    # Run analysis
+    results = service.analyze_text(
+        text_body=request.body,
+        db=db,
+        min_token_length=request.min_token_length,
+        max_token_length=request.max_token_length,
+        min_token_count=request.min_token_count,
+        lm_stopwords=lm_stopwords,
+        tokenizer_stopwords=tokenizer_stopwords,
+    )
+
+    # Get user's known words and filter results
+    known_words = service.get_known_words_for_user(current_user.id, db)
+    filtered = service.filter_results(
+        results,
+        known_words,
+        garbage_words,
+        min_familiarity=request.min_familiarity_filter,
+        max_familiarity=request.max_familiarity_filter,
+    )
+
+    # Save input text
+    input_text = InputText(
+        user_id=current_user.id,
+        title=request.title,
+        body=request.body,
+    )
+    db.add(input_text)
+    db.flush()
+
+    # Save analysis results
+    for word, data in filtered.items():
+        db.add(AnalysisResult(
+            input_text_id=input_text.id,
+            word=word,
+            count=data["count"],
+            source=data["source"],
+        ))
+
+    db.commit()
+    db.refresh(input_text)
+
+    word_results = [
+        WordResult(
+            word=word,
+            count=data["count"],
+            source=data["source"],
+            familiarity=data.get("familiarity"),
+        )
+        for word, data in sorted(filtered.items(), key=lambda x: x[1]["count"], reverse=True)
+    ]
+
+    return AnalysisResponse(
+        input_text_id=input_text.id,
+        title=input_text.title,
+        total_words=sum(d["count"] for d in results.values()),
+        unique_words=len(results),
+        results=word_results,
+    )
+
+
+@router.get("/analyze/{input_text_id}", response_model=AnalysisResponse)
+def get_analysis(
+    input_text_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    input_text = db.query(InputText).filter_by(
+        id=input_text_id, user_id=current_user.id
+    ).first()
+    if not input_text:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Input text not found")
+
+    results = db.query(AnalysisResult).filter_by(input_text_id=input_text_id).all()
+    known_words = service.get_known_words_for_user(current_user.id, db)
+
+    word_results = [
+        WordResult(
+            word=r.word,
+            count=r.count,
+            source=r.source,
+            familiarity=known_words.get(r.word),
+        )
+        for r in sorted(results, key=lambda x: x.count, reverse=True)
+    ]
+
+    return AnalysisResponse(
+        input_text_id=input_text.id,
+        title=input_text.title,
+        total_words=sum(r.count for r in results),
+        unique_words=len(results),
+        results=word_results,
+    )
+
+
+@router.post("/known-words", response_model=KnownWordResponse, status_code=status.HTTP_201_CREATED)
+def upsert_known_word(
+    update: KnownWordUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    known_word = db.query(KnownWord).filter_by(
+        user_id=current_user.id, word=update.word
+    ).first()
+
+    if known_word:
+        known_word.familiarity = update.familiarity
+    else:
+        known_word = KnownWord(
+            user_id=current_user.id,
+            word=update.word,
+            familiarity=update.familiarity,
+        )
+        db.add(known_word)
+
+    db.commit()
+    db.refresh(known_word)
+    return known_word
+
+
+@router.get("/known-words", response_model=list[KnownWordResponse])
+def list_known_words(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    return db.query(KnownWord).filter_by(user_id=current_user.id).all()
+
+
+@router.delete("/known-words/{word}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_known_word(
+    word: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    known_word = db.query(KnownWord).filter_by(
+        user_id=current_user.id, word=word
+    ).first()
+    if not known_word:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Word not found")
+    db.delete(known_word)
+    db.commit()
+
+
+@router.post("/user-words", response_model=UserWordResponse, status_code=status.HTTP_201_CREATED)
+def create_user_word(
+    user_word_in: UserWordCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    from app.modules.known_words.models import UserWord
+    existing = db.query(UserWord).filter_by(
+        user_id=current_user.id, word=user_word_in.word
+    ).first()
+    if existing:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="User word already exists"
+        )
+    user_word = UserWord(
+        user_id=current_user.id,
+        **user_word_in.model_dump(),
+    )
+    db.add(user_word)
+    db.commit()
+    db.refresh(user_word)
+    return user_word
+
+
+
+from app.modules.known_words.models import (
+    InputText, AnalysisResult, KnownWord, UserWord, Stopword, GarbageWord
+)
+from app.modules.known_words.schemas import (
+    AnalyzeTextRequest,
+    AnalysisResponse,
+    WordResult,
+    KnownWordUpdate,
+    KnownWordResponse,
+    UserWordCreate,
+    UserWordResponse,
+    InputTextResponse,
+    StopwordCreate,
+    StopwordResponse,
+    GarbageWordCreate,
+    GarbageWordResponse,
+)
+
+
+# Input texts
+@router.get("/input-texts", response_model=list[InputTextResponse])
+def list_input_texts(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    return db.query(InputText).filter_by(user_id=current_user.id).order_by(InputText.created_at.desc()).all()
+
+
+@router.delete("/input-texts/{input_text_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_input_text(
+    input_text_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    input_text = db.query(InputText).filter_by(
+        id=input_text_id, user_id=current_user.id
+    ).first()
+    if not input_text:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Input text not found")
+    db.delete(input_text)
+    db.commit()
+
+
+# Stopwords
+@router.get("/stopwords", response_model=list[StopwordResponse])
+def list_stopwords(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    return db.query(Stopword).filter(
+        (Stopword.user_id == None) | (Stopword.user_id == current_user.id)
+    ).all()
+
+
+@router.post("/stopwords", response_model=StopwordResponse, status_code=status.HTTP_201_CREATED)
+def create_stopword(
+    stopword_in: StopwordCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    if stopword_in.algo_type not in ("longest_match", "tokenization"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="algo_type must be 'longest_match' or 'tokenization'"
+        )
+    existing = db.query(Stopword).filter_by(
+        user_id=current_user.id,
+        word=stopword_in.word,
+        algo_type=stopword_in.algo_type,
+    ).first()
+    if existing:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Stopword already exists"
+        )
+    stopword = Stopword(
+        user_id=current_user.id,
+        word=stopword_in.word,
+        algo_type=stopword_in.algo_type,
+        is_override=stopword_in.is_override,
+    )
+    db.add(stopword)
+    db.commit()
+    db.refresh(stopword)
+    return stopword
+
+
+@router.delete("/stopwords/{stopword_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_stopword(
+    stopword_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    stopword = db.query(Stopword).filter_by(
+        id=stopword_id, user_id=current_user.id
+    ).first()
+    if not stopword:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Stopword not found")
+    db.delete(stopword)
+    db.commit()
+
+
+# Garbage words
+@router.get("/garbage-words", response_model=list[GarbageWordResponse])
+def list_garbage_words(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    return db.query(GarbageWord).filter(
+        (GarbageWord.user_id == None) | (GarbageWord.user_id == current_user.id)
+    ).all()
+
+
+@router.post("/garbage-words", response_model=GarbageWordResponse, status_code=status.HTTP_201_CREATED)
+def create_garbage_word(
+    garbage_word_in: GarbageWordCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    existing = db.query(GarbageWord).filter_by(
+        user_id=current_user.id,
+        word=garbage_word_in.word,
+    ).first()
+    if existing:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Garbage word already exists"
+        )
+    garbage_word = GarbageWord(
+        user_id=current_user.id,
+        word=garbage_word_in.word,
+        is_override=garbage_word_in.is_override,
+    )
+    db.add(garbage_word)
+    db.commit()
+    db.refresh(garbage_word)
+    return garbage_word
+
+
+@router.delete("/garbage-words/{garbage_word_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_garbage_word(
+    garbage_word_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    garbage_word = db.query(GarbageWord).filter_by(
+        id=garbage_word_id, user_id=current_user.id
+    ).first()
+    if not garbage_word:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Garbage word not found")
+    db.delete(garbage_word)
+    db.commit()
+
+
+@router.get("/words/{word}", response_model=WordDetail)
+def get_word_detail(
+    word: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    from app.modules.known_words.models import HskEntry, HskForm
+
+    dict_word = db.query(DictionaryWord).filter_by(word=word).first()
+
+    hsk_entry = db.query(HskEntry).filter_by(simplified=word).first()
+    forms = []
+    if hsk_entry:
+        forms = db.query(HskForm).filter_by(entry_id=hsk_entry.id).all()
+
+    return WordDetail(
+        word=word,
+        frequency=dict_word.frequency if dict_word else None,
+        hsk_v2_2012=hsk_entry.hsk_v2_2012 if hsk_entry else None,
+        hsk_v3_2021=hsk_entry.hsk_v3_2021 if hsk_entry else None,
+        hsk_v3_2026=hsk_entry.hsk_v3_2026 if hsk_entry else None,
+        forms=[
+            HskFormDetail(
+                traditional=f.traditional,
+                pinyin=f.pinyin,
+                meanings=f.meanings or [],
+                classifiers=f.classifiers or [],
+            )
+            for f in forms
+        ],
+    )
