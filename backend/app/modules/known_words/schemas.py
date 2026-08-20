@@ -19,6 +19,29 @@ class WordResult(BaseModel):
     familiarity: int | None = None
 
 
+class CompareSegmentationRequest(BaseModel):
+    body: str
+    use_user_overlay: bool = True
+    min_token_length: int = 2
+    max_token_length: int = 20
+    min_token_count: int = 2
+
+
+class SegmentedWord(BaseModel):
+    word: str
+    count: int
+    source: str
+
+
+class CompareSegmentationResponse(BaseModel):
+    body: str
+    longest_match_results: list[SegmentedWord]
+    dag_results: list[SegmentedWord]
+    # words present in one result set but not the other, for a quick diff
+    only_in_longest_match: list[str]
+    only_in_dag: list[str]
+
+
 class AnalysisResponse(BaseModel):
     input_text_id: int
     title: str | None = None

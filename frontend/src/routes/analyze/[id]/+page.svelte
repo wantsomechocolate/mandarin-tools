@@ -43,6 +43,7 @@
 	let garbageWords = $state(new Set<string>());
 	let knownWords = $state<Record<string, number | null>>({});
 	let hideNonChinese = $state(true);
+	let hideSupplemental = $state(false);
 	let selectedWord: WordDetail | null = $state(null);
 	let loadingDetail = $state(false);
 	let minFamiliarityFilter = $state(4);
@@ -58,10 +59,16 @@
 		return analysis.results.filter((r) => {
 			if (garbageWords.has(r.word)) return false;
 			if (hideNonChinese && !containsChinese(r.word)) return false;
+			if (hideSupplemental && r.source === 'longest_match_only') return false;
 			const familiarity = knownWords[r.word] ?? r.familiarity;
 			if (familiarity !== null && familiarity !== undefined && familiarity >= minFamiliarityFilter) return false;
 			return true;
 		});
+	});
+
+	const supplementalCount = $derived(() => {
+		if (!analysis) return 0;
+		return analysis.results.filter((r) => r.source === 'longest_match_only').length;
 	});
 
 	onMount(async () => {
@@ -155,6 +162,30 @@
 		if (result.word in knownWords) return knownWords[result.word];
 		return result.familiarity;
 	}
+
+	function sourceLabel(source: string): string {
+		const labels: Record<string, string> = {
+			dag: 'segmenter',
+			overlay: 'your word',
+			token: 'unknown seq.',
+			unknown: 'unknown',
+			longest_match_only: 'extra match',
+			trie: 'segmenter', // legacy label from before the DAG segmenter
+		};
+		return labels[source] ?? source;
+	}
+
+	function sourceColor(source: string): string {
+		const colors: Record<string, string> = {
+			dag: 'bg-blue-100 text-blue-700',
+			trie: 'bg-blue-100 text-blue-700',
+			overlay: 'bg-indigo-100 text-indigo-700',
+			token: 'bg-purple-100 text-purple-700',
+			unknown: 'bg-gray-100 text-gray-600',
+			longest_match_only: 'bg-amber-100 text-amber-700',
+		};
+		return colors[source] ?? 'bg-gray-100 text-gray-600';
+	}
 </script>
 
 <div class="min-h-screen bg-gray-50">
@@ -190,6 +221,17 @@
 				/>
 				Hide non-Chinese characters
 			</label>
+
+			{#if supplementalCount() > 0}
+				<label class="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+					<input
+						type="checkbox"
+						bind:checked={hideSupplemental}
+						class="rounded"
+					/>
+					Hide extra matches ({supplementalCount()})
+				</label>
+			{/if}
 
 			<div class="flex items-center gap-2 text-sm text-gray-700">
 				<span>Hide familiarity ≥</span>
@@ -230,12 +272,15 @@
 						</thead>
 						<tbody class="divide-y divide-gray-100">
 							{#each filteredResults() as result}
-								<tr class="hover:bg-gray-50">
+								<tr class="hover:bg-gray-50 {result.source === 'longest_match_only' ? 'bg-amber-50/40' : ''}">
 									<td class="px-4 py-3 text-lg font-medium">{result.word}</td>
 									<td class="px-4 py-3 text-gray-600">{result.count}</td>
 									<td class="px-4 py-3">
-										<span class="text-xs px-2 py-1 rounded-full {result.source === 'trie' ? 'bg-blue-100 text-blue-700' : result.source === 'token' ? 'bg-purple-100 text-purple-700' : 'bg-gray-100 text-gray-600'}">
-											{result.source}
+										<span
+											class="text-xs px-2 py-1 rounded-full {sourceColor(result.source)}"
+											title={result.source === 'longest_match_only' ? 'Found only by the legacy longest-matching pass — not confirmed by the main segmenter. Likely a dictionary gap; review before trusting it.' : ''}
+										>
+											{sourceLabel(result.source)}
 										</span>
 									</td>
 									<td class="px-4 py-3">

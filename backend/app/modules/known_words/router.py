@@ -7,8 +7,17 @@ from app.models.user import User
 from app.modules.known_words import service
 
 from app.modules.known_words.models import (
-    InputText, AnalysisResult, KnownWord, UserWord, Stopword, GarbageWord, DictionaryWord
+    InputText, 
+    AnalysisResult, 
+    KnownWord, 
+    UserWord, 
+    Stopword, 
+    GarbageWord, 
+    DictionaryWord,
+    HskEntry,
+    HskForm
 )
+
 from app.modules.known_words.schemas import (
     AnalyzeTextRequest,
     AnalysisResponse,
@@ -23,11 +32,65 @@ from app.modules.known_words.schemas import (
     GarbageWordCreate,
     GarbageWordResponse,
     HskFormDetail,
-    WordDetail
+    WordDetail,
+    CompareSegmentationRequest,
+    CompareSegmentationResponse,
+    SegmentedWord,
 )
 
 
 router = APIRouter(prefix="/known-words", tags=["known-words"])
+
+
+@router.post("/compare-segmentation", response_model=CompareSegmentationResponse)
+def compare_segmentation(
+    request: CompareSegmentationRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Runs both the existing longest-matching segmenter and the new DAG+DP
+    segmenter over the same text and returns both, for manual comparison.
+    Does not persist anything - safe to call repeatedly while testing.
+    """
+    lm_stopwords, tokenizer_stopwords = service.get_user_stopwords(current_user.id, db)
+
+    lm_merged = service.analyze_text(
+        text_body=request.body,
+        db=db,
+        min_token_length=request.min_token_length,
+        max_token_length=request.max_token_length,
+        min_token_count=request.min_token_count,
+        lm_stopwords=lm_stopwords,
+        tokenizer_stopwords=tokenizer_stopwords,
+    )
+
+    dag_merged = service.analyze_text_dag(
+        text_body=request.body,
+        db=db,
+        user_id=current_user.id if request.use_user_overlay else None,
+        tokenizer_stopwords=tokenizer_stopwords,
+        min_token_length=request.min_token_length,
+        max_token_length=request.max_token_length,
+        min_token_count=request.min_token_count,
+    )
+
+    def to_list(results: dict[str, dict]) -> list[SegmentedWord]:
+        return [
+            SegmentedWord(word=w, count=d["count"], source=d["source"])
+            for w, d in sorted(results.items(), key=lambda x: x[1]["count"], reverse=True)
+        ]
+
+    lm_words = set(lm_merged.keys())
+    dag_words = set(dag_merged.keys())
+
+    return CompareSegmentationResponse(
+        body=request.body,
+        longest_match_results=to_list(lm_merged),
+        dag_results=to_list(dag_merged),
+        only_in_longest_match=sorted(lm_words - dag_words),
+        only_in_dag=sorted(dag_words - lm_words),
+    )
 
 
 @router.post("/analyze", response_model=AnalysisResponse)
@@ -40,10 +103,12 @@ def analyze(
     lm_stopwords, tokenizer_stopwords = service.get_user_stopwords(current_user.id, db)
     garbage_words = service.get_user_garbage_words(current_user.id, db)
 
-    # Run analysis
-    results = service.analyze_text(
+    # Run analysis — DAG+DP is primary, longest-matching supplements it with
+    # words the DAG's dictionary coverage misses (tagged source="longest_match_only")
+    results = service.analyze_text_combined(
         text_body=request.body,
         db=db,
+        user_id=current_user.id,
         min_token_length=request.min_token_length,
         max_token_length=request.max_token_length,
         min_token_count=request.min_token_count,
@@ -208,26 +273,6 @@ def create_user_word(
     return user_word
 
 
-
-from app.modules.known_words.models import (
-    InputText, AnalysisResult, KnownWord, UserWord, Stopword, GarbageWord
-)
-from app.modules.known_words.schemas import (
-    AnalyzeTextRequest,
-    AnalysisResponse,
-    WordResult,
-    KnownWordUpdate,
-    KnownWordResponse,
-    UserWordCreate,
-    UserWordResponse,
-    InputTextResponse,
-    StopwordCreate,
-    StopwordResponse,
-    GarbageWordCreate,
-    GarbageWordResponse,
-)
-
-
 # Input texts
 @router.get("/input-texts", response_model=list[InputTextResponse])
 def list_input_texts(
@@ -369,7 +414,6 @@ def get_word_detail(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    from app.modules.known_words.models import HskEntry, HskForm
 
     dict_word = db.query(DictionaryWord).filter_by(word=word).first()
 

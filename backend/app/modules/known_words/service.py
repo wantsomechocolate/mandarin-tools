@@ -4,6 +4,8 @@ from sqlalchemy import text
 from app.modules.known_words.trie_loader import get_trie
 from app.modules.known_words.segmentor import longest_matching
 from app.modules.known_words.tokenizer import tokenize
+from app.modules.known_words.segmenter_loader import get_segmenter, build_user_overlay
+from app.modules.known_words.dag_segmentor import aggregate_segments
 
 
 DEFAULT_LM_STOPWORDS = {"\n"}
@@ -55,6 +57,100 @@ def analyze_text(
     merged = {**token_results, **lm_results}
 
     return merged
+
+
+def analyze_text_dag(
+    text_body: str,
+    db: Session,
+    user_id: int | None = None,
+    tokenizer_stopwords: set[str] | None = None,
+    min_token_length: int = 2,
+    max_token_length: int = 20,
+    min_token_count: int = 2,
+) -> dict[str, dict]:
+    """
+    DAG + dynamic-programming counterpart to analyze_text. Runs the frequency-
+    weighted segmenter (with the user's UserWord overlay, if any) instead of
+    longest_matching, then merges in the existing tokenizer pass for unknown
+    multi-character sequences, same as analyze_text does.
+
+    This exists alongside analyze_text (rather than replacing it) so the two
+    can be compared directly before deciding whether to switch the main
+    /analyze endpoint over.
+    """
+    segmenter = get_segmenter(db)
+    overlay = build_user_overlay(user_id, db, segmenter) if user_id is not None else None
+
+    dag_results = segmenter.segment(text_body, overlay=overlay)
+    dag_aggregated = aggregate_segments(dag_results)
+
+    tok_sw = tokenizer_stopwords if tokenizer_stopwords is not None else DEFAULT_TOKENIZER_STOPWORDS
+    trie = get_trie(db)
+    token_results = tokenize(
+        text_body,
+        tok_sw,
+        trie,
+        min_length=min_token_length,
+        max_length=max_token_length,
+        min_count=min_token_count,
+    )
+
+    # DAG results take priority over tokenizer results for the same word,
+    # matching how analyze_text prioritizes longest_matching over tokenize.
+    merged = {**token_results, **dag_aggregated}
+
+    return merged
+
+
+def analyze_text_combined(
+    text_body: str,
+    db: Session,
+    user_id: int | None = None,
+    min_token_length: int = 2,
+    max_token_length: int = 20,
+    min_token_count: int = 2,
+    lm_stopwords: set[str] | None = None,
+    tokenizer_stopwords: set[str] | None = None,
+) -> dict[str, dict]:
+    """
+    Primary production analysis: DAG+DP is the source of truth, longest_matching
+    runs alongside purely as a safety net for dictionary coverage gaps the DAG
+    can't see (a word missing from dictionary_words entirely means there's no
+    DP path for it either — longest_matching's overlapping-match behavior
+    sometimes stumbles onto pieces of it anyway).
+
+    Any word longest_matching finds that isn't already covered by the DAG+token
+    result is included with source="longest_match_only", so callers/UI can
+    treat it as a lower-confidence supplemental suggestion rather than a
+    primary result. DAG-covered words are never overridden by longest_matching,
+    even if both find the same word — the DAG source label wins.
+    """
+    primary = analyze_text_dag(
+        text_body,
+        db,
+        user_id=user_id,
+        tokenizer_stopwords=tokenizer_stopwords,
+        min_token_length=min_token_length,
+        max_token_length=max_token_length,
+        min_token_count=min_token_count,
+    )
+
+    legacy = analyze_text(
+        text_body,
+        db,
+        min_token_length=min_token_length,
+        max_token_length=max_token_length,
+        min_token_count=min_token_count,
+        lm_stopwords=lm_stopwords,
+        tokenizer_stopwords=tokenizer_stopwords,
+    )
+
+    combined = dict(primary)
+    for word, data in legacy.items():
+        if word not in combined:
+            combined[word] = {**data, "source": "longest_match_only"}
+
+    return combined
 
 
 def get_user_stopwords(user_id: int, db: Session) -> tuple[set[str], set[str]]:
