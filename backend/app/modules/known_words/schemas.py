@@ -138,6 +138,25 @@ class GarbageWordResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class FragmentCreate(BaseModel):
+    word: str
+    note: str | None = None
+
+
+class FragmentUpsert(BaseModel):
+    """Partial update, same upsert pattern as UserWordUpsert — marking a
+    fragment and annotating it with a note are the same action."""
+    note: str | None = None
+
+
+class FragmentResponse(BaseModel):
+    id: int
+    word: str
+    note: str | None = None
+
+    model_config = {"from_attributes": True}
+
+
 class HskFormDetail(BaseModel):
     traditional: str | None = None
     pinyin: str | None = None
@@ -159,3 +178,7 @@ class WordDetail(BaseModel):
     # first of what should eventually be several source-specific sections
     # (see notes on the planned Pleco-style multi-source panel).
     user_word: UserWordResponse | None = None
+    # Present if the user has flagged this word as a fragment (a segmentation
+    # artifact worth noting but not studying) — see Fragment model docstring
+    # for why this is kept fully separate from user_word.
+    fragment: FragmentResponse | None = None

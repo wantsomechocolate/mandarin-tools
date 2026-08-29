@@ -1,4 +1,3 @@
-
 from sqlalchemy import ARRAY, BigInteger, Boolean, CheckConstraint, DateTime, ForeignKey, Index, Integer, SmallInteger, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.core.database import Base
@@ -138,6 +137,36 @@ class GarbageWord(Base):
     )
 
 
+class Fragment(Base):
+    """
+    A word/string the user has decided isn't worth studying, but which is
+    still real Chinese content worth annotating and occasionally revisiting —
+    unlike GarbageWord, which is for things like numbers or punctuation that
+    should never be shown again.
+
+    Deliberately has no relationship to DictionaryWord/UserWord: marking
+    something a fragment must never feed the trie/frequency table or the
+    per-user segmentation overlay. It's a display-layer annotation only, so a
+    flagged fragment carries no risk of reinforcing whatever segmentation
+    error produced it in the first place.
+    """
+    __tablename__ = "fragments"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    word: Mapped[str] = mapped_column(String, nullable=False)
+    note: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    user: Mapped["User"] = relationship("User")
+
+    __table_args__ = (
+        Index("ix_fragments_user_word", "user_id", "word", unique=True),
+    )
+
+
 class Stopword(Base):
     __tablename__ = "stopwords"
 
@@ -188,4 +217,3 @@ class AnalysisResult(Base):
         Index("ix_analysis_results_input_text_word", "input_text_id", "word", unique=True),
         CheckConstraint("source IN ('trie', 'token', 'unknown')", name="ck_analysis_results_source"),
     )
-

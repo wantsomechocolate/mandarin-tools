@@ -26,6 +26,11 @@
 		notes: string | null;
 	}
 
+	interface FragmentDetail {
+		id: number;
+		note: string | null;
+	}
+
 	interface WordDetail {
 		word: string;
 		frequency: number | null;
@@ -34,6 +39,7 @@
 		hsk_v3_2026: number | null;
 		forms: HskForm[];
 		user_word: UserWordDetail | null;
+		fragment: FragmentDetail | null;
 	}
 
 	interface Analysis {
@@ -52,14 +58,20 @@
 	let knownWords = $state<Record<string, number | null>>({});
 	let userWords = $state(new Set<string>());
 	let addingUserWord = $state('');
+	let fragments = $state(new Set<string>());
+	let togglingFragment = $state('');
 	let hideNonChinese = $state(true);
 	let hideSupplemental = $state(false);
+	let hideFragments = $state(true);
 	let selectedWord: WordDetail | null = $state(null);
 	let loadingDetail = $state(false);
 	let minFamiliarityFilter = $state(4);
 	let editingUserWord = $state(false);
 	let userWordDraft = $state({ pronunciation: '', meaning: '', notes: '' });
 	let savingUserWord = $state(false);
+	let editingFragment = $state(false);
+	let fragmentDraft = $state('');
+	let savingFragment = $state(false);
 
 	const id = $derived(parseInt($page.params.id));
 
@@ -73,6 +85,7 @@
 			if (garbageWords.has(r.word)) return false;
 			if (hideNonChinese && !containsChinese(r.word)) return false;
 			if (hideSupplemental && r.source === 'longest_match_only') return false;
+			if (hideFragments && fragments.has(r.word)) return false;
 			const familiarity = knownWords[r.word] ?? r.familiarity;
 			if (familiarity !== null && familiarity !== undefined && familiarity >= minFamiliarityFilter) return false;
 			return true;
@@ -84,17 +97,23 @@
 		return analysis.results.filter((r) => r.source === 'longest_match_only').length;
 	});
 
+	const fragmentCount = $derived(() => {
+		if (!analysis) return 0;
+		return analysis.results.filter((r) => fragments.has(r.word)).length;
+	});
+
 	onMount(async () => {
 		if (!isLoggedIn()) {
 			goto('/login');
 			return;
 		}
 		try {
-			const [analysisData, knownWordsData, garbageData, userWordsData] = await Promise.all([
+			const [analysisData, knownWordsData, garbageData, userWordsData, fragmentsData] = await Promise.all([
 				api.getAnalysis(id) as Promise<Analysis>,
 				api.listKnownWords() as Promise<any[]>,
 				api.listGarbageWords() as Promise<any[]>,
 				api.listUserWords() as Promise<any[]>,
+				api.listFragments() as Promise<any[]>,
 			]);
 
 			analysis = analysisData;
@@ -110,6 +129,7 @@
 			);
 
 			userWords = new Set(userWordsData.map((uw: any) => uw.word));
+			fragments = new Set(fragmentsData.map((f: any) => f.word));
 		} catch (e: unknown) {
 			error = e instanceof Error ? e.message : 'Failed to load analysis';
 		} finally {
@@ -177,10 +197,85 @@
 		}
 	}
 
+	async function markAsFragment(word: string) {
+		togglingFragment = word;
+		try {
+			const created = await api.createFragment(word) as FragmentDetail;
+			fragments = new Set([...fragments, word]);
+			if (selectedWord?.word === word) {
+				selectedWord = { ...selectedWord, fragment: created };
+			}
+		} catch (e: unknown) {
+			const message = e instanceof Error ? e.message : '';
+			if (message.toLowerCase().includes('already exists')) {
+				fragments = new Set([...fragments, word]);
+			} else {
+				error = message || 'Failed to mark word as a fragment';
+			}
+		} finally {
+			togglingFragment = '';
+		}
+	}
+
+	async function unmarkFragment(word: string) {
+		togglingFragment = word;
+		try {
+			await api.deleteFragment(word);
+			const next = new Set(fragments);
+			next.delete(word);
+			fragments = next;
+			if (selectedWord?.word === word) {
+				selectedWord = { ...selectedWord, fragment: null };
+			}
+		} catch (e: unknown) {
+			error = e instanceof Error ? e.message : 'Failed to remove fragment flag';
+		} finally {
+			togglingFragment = '';
+		}
+	}
+
+	function startEditingFragment() {
+		fragmentDraft = selectedWord?.fragment?.note ?? '';
+		editingFragment = true;
+	}
+
+	async function saveFragmentNote() {
+		if (!selectedWord) return;
+		savingFragment = true;
+		try {
+			const updated = await api.upsertFragment(selectedWord.word, fragmentDraft || null) as FragmentDetail;
+			selectedWord = { ...selectedWord, fragment: updated };
+			fragments = new Set([...fragments, selectedWord.word]);
+			editingFragment = false;
+		} catch (e: unknown) {
+			error = e instanceof Error ? e.message : 'Failed to save fragment note';
+		} finally {
+			savingFragment = false;
+		}
+	}
+
+	async function removeFragmentFromPanel() {
+		if (!selectedWord) return;
+		savingFragment = true;
+		try {
+			await api.deleteFragment(selectedWord.word);
+			const next = new Set(fragments);
+			next.delete(selectedWord.word);
+			fragments = next;
+			selectedWord = { ...selectedWord, fragment: null };
+			editingFragment = false;
+		} catch (e: unknown) {
+			error = e instanceof Error ? e.message : 'Failed to remove fragment flag';
+		} finally {
+			savingFragment = false;
+		}
+	}
+
 	async function openWordDetail(word: string) {
 		loadingDetail = true;
 		selectedWord = null;
 		editingUserWord = false;
+		editingFragment = false;
 		try {
 			selectedWord = await api.getWordDetail(word) as WordDetail;
 			resetDraftFromSelected();
@@ -339,6 +434,18 @@
 				</label>
 			{/if}
 
+			{#if fragmentCount() > 0}
+				<label class="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+					<input
+						type="checkbox"
+						checked={!hideFragments}
+						onchange={() => hideFragments = !hideFragments}
+						class="rounded"
+					/>
+					Show fragments ({fragmentCount()})
+				</label>
+			{/if}
+
 			<div class="flex items-center gap-2 text-sm text-gray-700">
 				<span>Hide familiarity ≥</span>
 				<select
@@ -378,16 +485,26 @@
 						</thead>
 						<tbody class="divide-y divide-gray-100">
 							{#each filteredResults() as result}
-								<tr class="hover:bg-gray-50 {result.source === 'longest_match_only' ? 'bg-amber-50/40' : ''}">
+								<tr class="hover:bg-gray-50 {result.source === 'longest_match_only' ? 'bg-amber-50/40' : ''} {fragments.has(result.word) ? 'bg-slate-50' : ''}">
 									<td class="px-4 py-3 text-lg font-medium">{result.word}</td>
 									<td class="px-4 py-3 text-gray-600">{result.count}</td>
 									<td class="px-4 py-3">
-										<span
-											class="text-xs px-2 py-1 rounded-full {sourceColor(result.source)}"
-											title={result.source === 'longest_match_only' ? 'Found only by the legacy longest-matching pass — not confirmed by the main segmenter. Likely a dictionary gap; review before trusting it.' : ''}
-										>
-											{sourceLabel(result.source)}
-										</span>
+										<div class="flex flex-wrap gap-1">
+											<span
+												class="text-xs px-2 py-1 rounded-full {sourceColor(result.source)}"
+												title={result.source === 'longest_match_only' ? 'Found only by the legacy longest-matching pass — not confirmed by the main segmenter. Likely a dictionary gap; review before trusting it.' : ''}
+											>
+												{sourceLabel(result.source)}
+											</span>
+											{#if fragments.has(result.word)}
+												<span
+													class="text-xs px-2 py-1 rounded-full bg-slate-200 text-slate-600"
+													title="Marked as a fragment — not treated as vocabulary to study, and won't affect segmentation."
+												>
+													fragment
+												</span>
+											{/if}
+										</div>
 									</td>
 									<td class="px-4 py-3">
 										<span class="text-xs px-2 py-1 rounded-full {familiarityColor(currentFamiliarity(result))}">
@@ -420,7 +537,7 @@
 										</div>
 									</td>
 									<td class="px-4 py-3">
-										<div class="flex gap-2 items-center">
+										<div class="flex gap-2 items-center flex-wrap">
 											<button
 												onclick={() => openWordDetail(result.word)}
 												class="text-xs text-blue-600 hover:text-blue-800"
@@ -445,6 +562,25 @@
 													title="Add to your custom dictionary — helps future segmentation recognize this word"
 												>
 													+ Add word
+												</button>
+											{/if}
+											{#if fragments.has(result.word)}
+												<button
+													onclick={() => unmarkFragment(result.word)}
+													disabled={togglingFragment === result.word}
+													class="text-xs text-slate-600 hover:text-red-600 disabled:opacity-50"
+													title="Marked as a fragment — click to unmark"
+												>
+													✓ Fragment
+												</button>
+											{:else}
+												<button
+													onclick={() => markAsFragment(result.word)}
+													disabled={togglingFragment === result.word}
+													class="text-xs text-gray-500 hover:text-slate-600 disabled:opacity-50"
+													title="Not garbage, not vocabulary to study — flag as a fragment (e.g. a segmentation artifact spanning word boundaries)"
+												>
+													Fragment
 												</button>
 											{/if}
 											<button
@@ -559,7 +695,7 @@
 							{#if editingUserWord}
 								<div class="space-y-2">
 									<div>
-										<label for="uw-pronunciation" class="text-xs text-gray-500">Pronunciation / pronunciation</label>
+										<label for="uw-pronunciation" class="text-xs text-gray-500">Pronunciation</label>
 										<input
 											id="uw-pronunciation"
 											type="text"
@@ -632,6 +768,82 @@
 									class="text-xs text-blue-600 hover:text-blue-800"
 								>
 									+ Add your own pronunciation / meaning
+								</button>
+							{/if}
+						</div>
+
+						<!-- Fragment -->
+						<div class="border-t border-gray-100 mt-4 pt-3">
+							<div class="flex justify-between items-center mb-2">
+								<p class="text-xs font-medium text-gray-400 uppercase tracking-wide">Fragment</p>
+								{#if selectedWord.fragment && !editingFragment}
+									<button
+										onclick={removeFragmentFromPanel}
+										disabled={savingFragment}
+										class="text-xs text-red-400 hover:text-red-600 disabled:opacity-50"
+									>
+										Unmark
+									</button>
+								{/if}
+							</div>
+
+							{#if selectedWord.user_word && (selectedWord.fragment || editingFragment)}
+								<p class="text-xs text-amber-700 bg-amber-50 rounded px-2 py-1.5 mb-2">
+									This word is also in your dictionary, which means the segmenter still
+									treats it as a unit. Marking it a fragment won't undo that — remove it
+									from "Your entry" above too if you don't want it influencing segmentation.
+								</p>
+							{/if}
+
+							{#if editingFragment}
+								<div class="space-y-2">
+									<div>
+										<label for="frag-note" class="text-xs text-gray-500">Note</label>
+										<textarea
+											id="frag-note"
+											bind:value={fragmentDraft}
+											placeholder="Why is this a fragment? e.g. spans a word boundary, not a real word on its own"
+											rows="2"
+											class="w-full border border-gray-300 rounded px-2 py-1 text-sm mt-0.5"
+										></textarea>
+									</div>
+									<div class="flex gap-2 pt-1">
+										<button
+											onclick={saveFragmentNote}
+											disabled={savingFragment}
+											class="text-xs px-3 py-1.5 bg-slate-600 text-white rounded hover:bg-slate-700 disabled:opacity-50"
+										>
+											{savingFragment ? 'Saving...' : 'Save'}
+										</button>
+										<button
+											onclick={() => { editingFragment = false; }}
+											disabled={savingFragment}
+											class="text-xs px-3 py-1.5 text-gray-500 hover:text-gray-700"
+										>
+											Cancel
+										</button>
+									</div>
+								</div>
+							{:else if selectedWord.fragment}
+								<div class="space-y-1">
+									{#if selectedWord.fragment.note}
+										<p class="text-sm text-gray-700">{selectedWord.fragment.note}</p>
+									{:else}
+										<p class="text-sm text-gray-400">Marked as a fragment, no note added yet.</p>
+									{/if}
+									<button
+										onclick={startEditingFragment}
+										class="text-xs text-blue-600 hover:text-blue-800 mt-1"
+									>
+										Edit note
+									</button>
+								</div>
+							{:else}
+								<button
+									onclick={startEditingFragment}
+									class="text-xs text-blue-600 hover:text-blue-800"
+								>
+									+ Mark as fragment
 								</button>
 							{/if}
 						</div>

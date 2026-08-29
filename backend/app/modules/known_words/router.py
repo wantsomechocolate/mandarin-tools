@@ -13,6 +13,7 @@ from app.modules.known_words.models import (
     UserWord, 
     Stopword, 
     GarbageWord, 
+    Fragment,
     DictionaryWord,
     HskEntry,
     HskForm
@@ -32,6 +33,9 @@ from app.modules.known_words.schemas import (
     StopwordResponse,
     GarbageWordCreate,
     GarbageWordResponse,
+    FragmentCreate,
+    FragmentResponse,
+    FragmentUpsert,
     HskFormDetail,
     WordDetail,
     CompareSegmentationRequest,
@@ -468,6 +472,91 @@ def delete_garbage_word(
     db.commit()
 
 
+# Fragments — segmentation artifacts / partial strings worth annotating but
+# not studying. Deliberately NOT wired into /analyze or filter_results: unlike
+# garbage words (excluded from results before they're ever persisted) or
+# familiar known words (same), a fragment stays in the persisted analysis
+# results exactly as segmented. Hiding it from the default view and letting
+# the user reveal/annotate it is handled client-side, the same way
+# source="longest_match_only" words are handled — this keeps fragment
+# marking fully reversible and inspectable, rather than a one-way deletion.
+@router.get("/fragments", response_model=list[FragmentResponse])
+def list_fragments(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    return db.query(Fragment).filter_by(user_id=current_user.id).all()
+
+
+@router.post("/fragments", response_model=FragmentResponse, status_code=status.HTTP_201_CREATED)
+def create_fragment(
+    fragment_in: FragmentCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    existing = db.query(Fragment).filter_by(
+        user_id=current_user.id, word=fragment_in.word
+    ).first()
+    if existing:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Fragment already exists"
+        )
+    fragment = Fragment(
+        user_id=current_user.id,
+        word=fragment_in.word,
+        note=fragment_in.note,
+    )
+    db.add(fragment)
+    db.commit()
+    db.refresh(fragment)
+    return fragment
+
+
+@router.put("/fragments/{word}", response_model=FragmentResponse)
+def upsert_fragment(
+    word: str,
+    update: FragmentUpsert,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Creates or updates a fragment note — same upsert pattern as
+    /user-words/{word}: marking a fragment and annotating it are one action."""
+    fragment = db.query(Fragment).filter_by(
+        user_id=current_user.id, word=word
+    ).first()
+
+    if fragment:
+        for field, value in update.model_dump(exclude_unset=True).items():
+            setattr(fragment, field, value)
+    else:
+        fragment = Fragment(
+            user_id=current_user.id,
+            word=word,
+            **update.model_dump(exclude_unset=True),
+        )
+        db.add(fragment)
+
+    db.commit()
+    db.refresh(fragment)
+    return fragment
+
+
+@router.delete("/fragments/{word}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_fragment(
+    word: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    fragment = db.query(Fragment).filter_by(
+        user_id=current_user.id, word=word
+    ).first()
+    if not fragment:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Fragment not found")
+    db.delete(fragment)
+    db.commit()
+
+
 @router.get("/words/{word}", response_model=WordDetail)
 def get_word_detail(
     word: str,
@@ -483,6 +572,10 @@ def get_word_detail(
         forms = db.query(HskForm).filter_by(entry_id=hsk_entry.id).all()
 
     user_word = db.query(UserWord).filter_by(
+        user_id=current_user.id, word=word
+    ).first()
+
+    fragment = db.query(Fragment).filter_by(
         user_id=current_user.id, word=word
     ).first()
 
@@ -502,4 +595,5 @@ def get_word_detail(
             for f in forms
         ],
         user_word=user_word,
+        fragment=fragment,
     )

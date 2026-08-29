@@ -112,6 +112,24 @@ export async function upsertUserWordDetail(
     return request('PUT', `/known-words/user-words/${encodeURIComponent(word)}`, fields);
 }
 
+// Fragments — segmentation artifacts worth annotating but not studying.
+// Kept separate from user words: never touches segmentation weighting.
+export async function listFragments() {
+    return request('GET', '/known-words/fragments');
+}
+
+export async function createFragment(word: string, note?: string) {
+    return request('POST', '/known-words/fragments', { word, note });
+}
+
+export async function deleteFragment(word: string) {
+    return request('DELETE', `/known-words/fragments/${encodeURIComponent(word)}`);
+}
+
+export async function upsertFragment(word: string, note?: string | null) {
+    return request('PUT', `/known-words/fragments/${encodeURIComponent(word)}`, { note });
+}
+
 // Stopwords
 export async function listStopwords() {
     return request('GET', '/known-words/stopwords');
