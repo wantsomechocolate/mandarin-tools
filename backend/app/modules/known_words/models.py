@@ -1,4 +1,4 @@
-from sqlalchemy import ARRAY, BigInteger, Boolean, CheckConstraint, DateTime, ForeignKey, Index, Integer, SmallInteger, String, func
+from sqlalchemy import ARRAY, BigInteger, Boolean, CheckConstraint, DateTime, Float, ForeignKey, Index, Integer, SmallInteger, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.core.database import Base
 from datetime import datetime
@@ -46,6 +46,71 @@ class HskForm(Base):
     classifiers: Mapped[list[str] | None] = mapped_column(ARRAY(String), nullable=True)
 
     entry: Mapped["HskEntry"] = relationship("HskEntry", back_populates="forms")
+
+
+class CedictEntry(Base):
+    """
+    One row per CC-CEDICT line (backend/assets/cc-cedict/cedict_ts.u8).
+    `simplified` is deliberately NOT unique - a given simplified word can have
+    multiple pronunciations/senses (e.g. 差 has 3 lines: cha1/cha4/chai1), each
+    its own row here, the same way HskEntry/HskForm split entry from form -
+    just flatter, since CC-CEDICT has no natural entry-level grouping beyond
+    the simplified string itself.
+    """
+    __tablename__ = "cedict_entries"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    simplified: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    traditional: Mapped[str | None] = mapped_column(String, nullable=True)
+    pinyin: Mapped[str | None] = mapped_column(String, nullable=True)  # diacritic form, e.g. "chà"
+    pinyin_numeric: Mapped[str | None] = mapped_column(String, nullable=True)  # raw CC-CEDICT form, e.g. "cha4"
+    definitions: Mapped[list[str] | None] = mapped_column(ARRAY(String), nullable=True)
+
+
+class SegmentationAffix(Base):
+    """
+    Tuning data for the DAG segmenter's affix discount (see dag_segmentor.py's
+    DEFAULT_SUFFIX_DISCOUNTS/DEFAULT_PREFIX_DISCOUNTS and Segmenter._affix_discount).
+    A word strictly longer than `affix` and ending (position="suffix") or
+    starting (position="prefix") with it has its score discounted by
+    `discount`, so a rare compound like 森林里 doesn't out-score splitting
+    into its stem + a generic locative/directional character just because
+    that character is extremely common on its own.
+
+    Rows here are loaded once at Segmenter build time and merged on top of
+    the code-level defaults (same affix+position overrides the default's
+    discount; a new affix adds to the list) - this is system-wide tuning
+    data, not a per-user table, same as word_frequencies/dictionary_words.
+    """
+    __tablename__ = "segmentation_affixes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    affix: Mapped[str] = mapped_column(String, nullable=False)
+    position: Mapped[str] = mapped_column(String, nullable=False)  # "prefix" or "suffix"
+    discount: Mapped[float] = mapped_column(Float, nullable=False)
+
+    __table_args__ = (
+        Index("ix_segmentation_affixes_affix_position", "affix", "position", unique=True),
+        CheckConstraint("position IN ('prefix', 'suffix')", name="ck_segmentation_affixes_position"),
+        CheckConstraint("discount > 0 AND discount <= 1", name="ck_segmentation_affixes_discount"),
+    )
+
+
+class SegmentationAffixExemption(Base):
+    """
+    Word-level escape hatch for SegmentationAffix: a word listed here is
+    never discounted, regardless of any affix rule that would otherwise
+    match it. Kept as its own table rather than an is_override flag on
+    SegmentationAffix (the Stopword/GarbageWord pattern) because the general
+    rule operates on characters (里) while an exemption has to operate on a
+    whole word (这里) - different granularity, so it doesn't fit the same
+    row shape.
+    """
+    __tablename__ = "segmentation_affix_exemptions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    word: Mapped[str] = mapped_column(String, nullable=False, unique=True, index=True)
+    note: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
 class DictionaryWord(Base):

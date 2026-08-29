@@ -137,6 +137,76 @@ class TestAggregateSegments:
         assert agg["研究生命"]["source"] == "overlay"
 
 
+class TestAffixDiscount:
+    """
+    Covers the 森林/森林里 case from real usage: a rare compound ending in a
+    common locative suffix (里) can out-score splitting into stem+suffix
+    purely because it clears the DP's "more than chance co-occurrence" bar,
+    even though it's a compositional string, not real vocabulary. The
+    numbers here are small synthetic stand-ins for the real
+    freq(森林)=627,741 / freq(里)=19,397,088 / freq(森林里)=13,177 case, tuned
+    so the same qualitative flip happens: undiscounted the compound wins,
+    discounted it loses to the split.
+    """
+
+    def test_rare_compound_merges_without_discount(self):
+        freq = {"森林": 6000, "里": 100000, "森林里": 8000}
+        trie = Trie()
+        for w in freq:
+            trie.insert(w)
+        segmenter = Segmenter(trie=trie, freq_dict=freq)  # no suffix_discounts
+
+        assert words(segmenter.segment("森林里")) == ["森林里"]
+
+    def test_rare_compound_splits_with_discount(self):
+        freq = {"森林": 6000, "里": 100000, "森林里": 8000}
+        trie = Trie()
+        for w in freq:
+            trie.insert(w)
+        segmenter = Segmenter(trie=trie, freq_dict=freq, suffix_discounts={"里": 0.1})
+
+        assert words(segmenter.segment("森林里")) == ["森林", "里"]
+
+    def test_common_compound_stays_merged_despite_discount(self):
+        # 这里-style: a compound common enough that even a 10x discount
+        # doesn't bring it below the split alternative.
+        freq = {"这": 50000, "里": 100000, "这里": 300000}
+        trie = Trie()
+        for w in freq:
+            trie.insert(w)
+        segmenter = Segmenter(trie=trie, freq_dict=freq, suffix_discounts={"里": 0.1})
+
+        assert words(segmenter.segment("这里")) == ["这里"]
+
+    def test_bare_affix_character_is_never_discounted(self):
+        freq = {"森林": 6000, "里": 100000, "森林里": 8000}
+        trie = Trie()
+        for w in freq:
+            trie.insert(w)
+        segmenter = Segmenter(trie=trie, freq_dict=freq, suffix_discounts={"里": 0.1})
+
+        # word == affix, not longer than it - discount must not apply
+        assert segmenter._affix_discount("里") == 1.0
+        # a genuine compound ending in the affix does get discounted
+        assert segmenter._affix_discount("森林里") == 0.1
+
+    def test_exemption_protects_a_word_from_discount(self):
+        freq = {"森林": 6000, "里": 100000, "森林里": 8000}
+        trie = Trie()
+        for w in freq:
+            trie.insert(w)
+        segmenter = Segmenter(
+            trie=trie,
+            freq_dict=freq,
+            suffix_discounts={"里": 0.1},
+            exemptions={"森林里"},
+        )
+
+        # Same numbers as test_rare_compound_splits_with_discount, but this
+        # time the word is exempted, so it should merge like the undiscounted case.
+        assert words(segmenter.segment("森林里")) == ["森林里"]
+
+
 class TestCombinedAnalysis:
     """
     Covers the 大风车 case directly: a word missing from the dictionary

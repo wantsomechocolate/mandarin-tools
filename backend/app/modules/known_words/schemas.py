@@ -166,6 +166,17 @@ class HskFormDetail(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class CedictSense(BaseModel):
+    """One CC-CEDICT line for this word — a word can have several (different
+    pronunciations/meanings), each its own sense, the same way HskFormDetail
+    can repeat for one HskEntry."""
+    traditional: str | None = None
+    pinyin: str | None = None
+    definitions: list[str] = []
+
+    model_config = {"from_attributes": True}
+
+
 class WordDetail(BaseModel):
     word: str
     frequency: int | None = None
@@ -173,6 +184,9 @@ class WordDetail(BaseModel):
     hsk_v3_2021: int | None = None
     hsk_v3_2026: int | None = None
     forms: list[HskFormDetail] = []
+    # CC-CEDICT senses for this word, if any — its own source-specific
+    # section, same reasoning as user_word/fragment below.
+    cedict: list[CedictSense] = []
     # The current user's own entry for this word, if they have one. Kept as
     # its own section rather than merged into the fields above — this is the
     # first of what should eventually be several source-specific sections

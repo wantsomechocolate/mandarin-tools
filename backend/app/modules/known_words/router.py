@@ -7,16 +7,17 @@ from app.models.user import User
 from app.modules.known_words import service
 
 from app.modules.known_words.models import (
-    InputText, 
-    AnalysisResult, 
-    KnownWord, 
-    UserWord, 
-    Stopword, 
-    GarbageWord, 
+    InputText,
+    AnalysisResult,
+    KnownWord,
+    UserWord,
+    Stopword,
+    GarbageWord,
     Fragment,
     DictionaryWord,
     HskEntry,
-    HskForm
+    HskForm,
+    CedictEntry
 )
 
 from app.modules.known_words.schemas import (
@@ -37,6 +38,7 @@ from app.modules.known_words.schemas import (
     FragmentResponse,
     FragmentUpsert,
     HskFormDetail,
+    CedictSense,
     WordDetail,
     CompareSegmentationRequest,
     CompareSegmentationResponse,
@@ -571,6 +573,8 @@ def get_word_detail(
     if hsk_entry:
         forms = db.query(HskForm).filter_by(entry_id=hsk_entry.id).all()
 
+    cedict_entries = db.query(CedictEntry).filter_by(simplified=word).all()
+
     user_word = db.query(UserWord).filter_by(
         user_id=current_user.id, word=word
     ).first()
@@ -593,6 +597,14 @@ def get_word_detail(
                 classifiers=f.classifiers or [],
             )
             for f in forms
+        ],
+        cedict=[
+            CedictSense(
+                traditional=c.traditional,
+                pinyin=c.pinyin,
+                definitions=c.definitions or [],
+            )
+            for c in cedict_entries
         ],
         user_word=user_word,
         fragment=fragment,

@@ -19,6 +19,12 @@
 		classifiers: string[];
 	}
 
+	interface CedictSense {
+		traditional: string | null;
+		pinyin: string | null;
+		definitions: string[];
+	}
+
 	interface UserWordDetail {
 		id: number;
 		pronunciation: string | null;
@@ -38,6 +44,7 @@
 		hsk_v3_2021: number | null;
 		hsk_v3_2026: number | null;
 		forms: HskForm[];
+		cedict: CedictSense[];
 		user_word: UserWordDetail | null;
 		fragment: FragmentDetail | null;
 	}
@@ -613,69 +620,106 @@
 							>✕</button>
 						</div>
 
-						<!-- HSK / dictionary source -->
-						<p class="text-xs font-medium text-gray-400 uppercase tracking-wide mb-2">Dictionary</p>
+						<!-- Corpus frequency -->
+						<p class="text-xs font-medium text-gray-400 uppercase tracking-wide mb-2">Corpus frequency</p>
+						{#if selectedWord.frequency}
+							<p class="text-sm text-gray-700">{selectedWord.frequency.toLocaleString()}</p>
+						{:else}
+							<p class="text-sm text-gray-400">No frequency data for this word.</p>
+						{/if}
 
-						<!-- HSK levels -->
-						<div class="flex flex-wrap gap-1 mb-3">
-							{#if selectedWord.hsk_v2_2012}
-								<span class="text-xs px-2 py-1 bg-blue-100 text-blue-700 rounded-full">
-									HSK 2012: {selectedWord.hsk_v2_2012}
-								</span>
-							{/if}
-							{#if selectedWord.hsk_v3_2021}
-								<span class="text-xs px-2 py-1 bg-purple-100 text-purple-700 rounded-full">
-									HSK 2021: {selectedWord.hsk_v3_2021}
-								</span>
-							{/if}
-							{#if selectedWord.hsk_v3_2026}
-								<span class="text-xs px-2 py-1 bg-green-100 text-green-700 rounded-full">
-									HSK 2026: {selectedWord.hsk_v3_2026}
-								</span>
+						<!-- HSK -->
+						<div class="border-t border-gray-100 mt-4 pt-3">
+							<p class="text-xs font-medium text-gray-400 uppercase tracking-wide mb-2">HSK</p>
+
+							{#if selectedWord.hsk_v2_2012 || selectedWord.hsk_v3_2021 || selectedWord.hsk_v3_2026 || selectedWord.forms.length > 0}
+								<div class="flex flex-wrap gap-1 mb-3">
+									{#if selectedWord.hsk_v2_2012}
+										<span class="text-xs px-2 py-1 bg-blue-100 text-blue-700 rounded-full">
+											HSK 2012: {selectedWord.hsk_v2_2012}
+										</span>
+									{/if}
+									{#if selectedWord.hsk_v3_2021}
+										<span class="text-xs px-2 py-1 bg-purple-100 text-purple-700 rounded-full">
+											HSK 2021: {selectedWord.hsk_v3_2021}
+										</span>
+									{/if}
+									{#if selectedWord.hsk_v3_2026}
+										<span class="text-xs px-2 py-1 bg-green-100 text-green-700 rounded-full">
+											HSK 2026: {selectedWord.hsk_v3_2026}
+										</span>
+									{/if}
+								</div>
+
+								{#if selectedWord.forms.length > 0}
+									<div class="space-y-3">
+										{#each selectedWord.forms as form, i}
+											<div class="{i > 0 ? 'border-t border-gray-100 pt-3' : ''}">
+												{#if selectedWord.forms.length > 1}
+													<p class="text-xs text-gray-400 mb-1">Form {i + 1}</p>
+												{/if}
+												{#if form.traditional && form.traditional !== selectedWord.word}
+													<p class="text-sm text-gray-600 mb-1">
+														Traditional: <span class="font-medium">{form.traditional}</span>
+													</p>
+												{/if}
+												{#if form.pinyin}
+													<p class="text-sm text-blue-600 mb-1">{form.pinyin}</p>
+												{/if}
+												{#if form.meanings.length > 0}
+													<ul class="text-sm text-gray-700 space-y-0.5">
+														{#each form.meanings as meaning}
+															<li>• {meaning}</li>
+														{/each}
+													</ul>
+												{/if}
+												{#if form.classifiers.length > 0}
+													<p class="text-xs text-gray-500 mt-1">
+														Classifiers: {form.classifiers.join(', ')}
+													</p>
+												{/if}
+											</div>
+										{/each}
+									</div>
+								{/if}
+							{:else}
+								<p class="text-sm text-gray-400">No HSK entry for this word.</p>
 							{/if}
 						</div>
 
-						<!-- Frequency -->
-						{#if selectedWord.frequency}
-							<p class="text-xs text-gray-500 mb-3">
-								Corpus frequency: {selectedWord.frequency.toLocaleString()}
-							</p>
-						{/if}
+						<!-- CC-CEDICT -->
+						<div class="border-t border-gray-100 mt-4 pt-3">
+							<p class="text-xs font-medium text-gray-400 uppercase tracking-wide mb-2">CC-CEDICT</p>
 
-						<!-- Forms -->
-						{#if selectedWord.forms.length > 0}
-							<div class="space-y-3">
-								{#each selectedWord.forms as form, i}
-									<div class="border-t border-gray-100 pt-3">
-										{#if selectedWord.forms.length > 1}
-											<p class="text-xs text-gray-400 mb-1">Form {i + 1}</p>
-										{/if}
-										{#if form.traditional && form.traditional !== selectedWord.word}
-											<p class="text-sm text-gray-600 mb-1">
-												Traditional: <span class="font-medium">{form.traditional}</span>
-											</p>
-										{/if}
-										{#if form.pinyin}
-											<p class="text-sm text-blue-600 mb-1">{form.pinyin}</p>
-										{/if}
-										{#if form.meanings.length > 0}
-											<ul class="text-sm text-gray-700 space-y-0.5">
-												{#each form.meanings as meaning}
-													<li>• {meaning}</li>
-												{/each}
-											</ul>
-										{/if}
-										{#if form.classifiers.length > 0}
-											<p class="text-xs text-gray-500 mt-1">
-												Classifiers: {form.classifiers.join(', ')}
-											</p>
-										{/if}
-									</div>
-								{/each}
-							</div>
-						{:else}
-							<p class="text-sm text-gray-400">No dictionary entry found for this word.</p>
-						{/if}
+							{#if selectedWord.cedict.length > 0}
+								<div class="space-y-3">
+									{#each selectedWord.cedict as sense, i}
+										<div class="{i > 0 ? 'border-t border-gray-100 pt-3' : ''}">
+											{#if selectedWord.cedict.length > 1}
+												<p class="text-xs text-gray-400 mb-1">Sense {i + 1}</p>
+											{/if}
+											{#if sense.traditional && sense.traditional !== selectedWord.word}
+												<p class="text-sm text-gray-600 mb-1">
+													Traditional: <span class="font-medium">{sense.traditional}</span>
+												</p>
+											{/if}
+											{#if sense.pinyin}
+												<p class="text-sm text-blue-600 mb-1">{sense.pinyin}</p>
+											{/if}
+											{#if sense.definitions.length > 0}
+												<ul class="text-sm text-gray-700 space-y-0.5">
+													{#each sense.definitions as definition}
+														<li>• {definition}</li>
+													{/each}
+												</ul>
+											{/if}
+										</div>
+									{/each}
+								</div>
+							{:else}
+								<p class="text-sm text-gray-400">No CC-CEDICT entry for this word.</p>
+							{/if}
+						</div>
 
 						<!-- User's own entry -->
 						<div class="border-t border-gray-100 mt-4 pt-3">
