@@ -19,6 +19,13 @@
 		classifiers: string[];
 	}
 
+	interface UserWordDetail {
+		id: number;
+		pronunciation: string | null;
+		meaning: string | null;
+		notes: string | null;
+	}
+
 	interface WordDetail {
 		word: string;
 		frequency: number | null;
@@ -26,6 +33,7 @@
 		hsk_v3_2021: number | null;
 		hsk_v3_2026: number | null;
 		forms: HskForm[];
+		user_word: UserWordDetail | null;
 	}
 
 	interface Analysis {
@@ -42,11 +50,16 @@
 	let updatingWord = $state('');
 	let garbageWords = $state(new Set<string>());
 	let knownWords = $state<Record<string, number | null>>({});
+	let userWords = $state(new Set<string>());
+	let addingUserWord = $state('');
 	let hideNonChinese = $state(true);
 	let hideSupplemental = $state(false);
 	let selectedWord: WordDetail | null = $state(null);
 	let loadingDetail = $state(false);
 	let minFamiliarityFilter = $state(4);
+	let editingUserWord = $state(false);
+	let userWordDraft = $state({ pronunciation: '', meaning: '', notes: '' });
+	let savingUserWord = $state(false);
 
 	const id = $derived(parseInt($page.params.id));
 
@@ -77,10 +90,11 @@
 			return;
 		}
 		try {
-			const [analysisData, knownWordsData, garbageData] = await Promise.all([
+			const [analysisData, knownWordsData, garbageData, userWordsData] = await Promise.all([
 				api.getAnalysis(id) as Promise<Analysis>,
 				api.listKnownWords() as Promise<any[]>,
 				api.listGarbageWords() as Promise<any[]>,
+				api.listUserWords() as Promise<any[]>,
 			]);
 
 			analysis = analysisData;
@@ -94,6 +108,8 @@
 			garbageWords = new Set(
 				garbageData.filter((g: any) => !g.is_override).map((g: any) => g.word)
 			);
+
+			userWords = new Set(userWordsData.map((uw: any) => uw.word));
 		} catch (e: unknown) {
 			error = e instanceof Error ? e.message : 'Failed to load analysis';
 		} finally {
@@ -122,15 +138,105 @@
 		}
 	}
 
+	async function addUserWord(word: string) {
+		addingUserWord = word;
+		try {
+			const created = await api.createUserWord(word) as UserWordDetail;
+			userWords = new Set([...userWords, word]);
+			if (selectedWord?.word === word) {
+				selectedWord = { ...selectedWord, user_word: created };
+			}
+		} catch (e: unknown) {
+			// If it already exists (e.g. added from another session), just
+			// reflect that in the UI instead of surfacing an error banner.
+			const message = e instanceof Error ? e.message : '';
+			if (message.toLowerCase().includes('already exists')) {
+				userWords = new Set([...userWords, word]);
+			} else {
+				error = message || 'Failed to add word to your dictionary';
+			}
+		} finally {
+			addingUserWord = '';
+		}
+	}
+
+	async function removeUserWord(word: string) {
+		addingUserWord = word;
+		try {
+			await api.deleteUserWord(word);
+			const next = new Set(userWords);
+			next.delete(word);
+			userWords = next;
+			if (selectedWord?.word === word) {
+				selectedWord = { ...selectedWord, user_word: null };
+			}
+		} catch (e: unknown) {
+			error = e instanceof Error ? e.message : 'Failed to remove word from your dictionary';
+		} finally {
+			addingUserWord = '';
+		}
+	}
+
 	async function openWordDetail(word: string) {
 		loadingDetail = true;
 		selectedWord = null;
+		editingUserWord = false;
 		try {
 			selectedWord = await api.getWordDetail(word) as WordDetail;
+			resetDraftFromSelected();
 		} catch (e: unknown) {
 			error = e instanceof Error ? e.message : 'Failed to load word detail';
 		} finally {
 			loadingDetail = false;
+		}
+	}
+
+	function resetDraftFromSelected() {
+		userWordDraft = {
+			pronunciation: selectedWord?.user_word?.pronunciation ?? '',
+			meaning: selectedWord?.user_word?.meaning ?? '',
+			notes: selectedWord?.user_word?.notes ?? '',
+		};
+	}
+
+	function startEditingUserWord() {
+		resetDraftFromSelected();
+		editingUserWord = true;
+	}
+
+	async function saveUserWordDetail() {
+		if (!selectedWord) return;
+		savingUserWord = true;
+		try {
+			const updated = await api.upsertUserWordDetail(selectedWord.word, {
+				pronunciation: userWordDraft.pronunciation || null,
+				meaning: userWordDraft.meaning || null,
+				notes: userWordDraft.notes || null,
+			}) as UserWordDetail;
+			selectedWord = { ...selectedWord, user_word: updated };
+			userWords = new Set([...userWords, selectedWord.word]);
+			editingUserWord = false;
+		} catch (e: unknown) {
+			error = e instanceof Error ? e.message : 'Failed to save word details';
+		} finally {
+			savingUserWord = false;
+		}
+	}
+
+	async function removeUserWordFromPanel() {
+		if (!selectedWord) return;
+		savingUserWord = true;
+		try {
+			await api.deleteUserWord(selectedWord.word);
+			const next = new Set(userWords);
+			next.delete(selectedWord.word);
+			userWords = next;
+			selectedWord = { ...selectedWord, user_word: null };
+			editingUserWord = false;
+		} catch (e: unknown) {
+			error = e instanceof Error ? e.message : 'Failed to remove word from your dictionary';
+		} finally {
+			savingUserWord = false;
 		}
 	}
 
@@ -314,7 +420,7 @@
 										</div>
 									</td>
 									<td class="px-4 py-3">
-										<div class="flex gap-2">
+										<div class="flex gap-2 items-center">
 											<button
 												onclick={() => openWordDetail(result.word)}
 												class="text-xs text-blue-600 hover:text-blue-800"
@@ -322,6 +428,25 @@
 											>
 												Info
 											</button>
+											{#if userWords.has(result.word)}
+												<button
+													onclick={() => removeUserWord(result.word)}
+													disabled={addingUserWord === result.word}
+													class="text-xs text-emerald-700 hover:text-red-600 disabled:opacity-50"
+													title="In your dictionary — click to remove"
+												>
+													✓ Added
+												</button>
+											{:else}
+												<button
+													onclick={() => addUserWord(result.word)}
+													disabled={addingUserWord === result.word}
+													class="text-xs text-gray-500 hover:text-blue-600 disabled:opacity-50"
+													title="Add to your custom dictionary — helps future segmentation recognize this word"
+												>
+													+ Add word
+												</button>
+											{/if}
 											<button
 												onclick={() => markAsGarbage(result.word)}
 												class="text-xs text-red-400 hover:text-red-600"
@@ -351,6 +476,9 @@
 								class="text-gray-400 hover:text-gray-600"
 							>✕</button>
 						</div>
+
+						<!-- HSK / dictionary source -->
+						<p class="text-xs font-medium text-gray-400 uppercase tracking-wide mb-2">Dictionary</p>
 
 						<!-- HSK levels -->
 						<div class="flex flex-wrap gap-1 mb-3">
@@ -412,6 +540,101 @@
 						{:else}
 							<p class="text-sm text-gray-400">No dictionary entry found for this word.</p>
 						{/if}
+
+						<!-- User's own entry -->
+						<div class="border-t border-gray-100 mt-4 pt-3">
+							<div class="flex justify-between items-center mb-2">
+								<p class="text-xs font-medium text-gray-400 uppercase tracking-wide">Your entry</p>
+								{#if selectedWord.user_word && !editingUserWord}
+									<button
+										onclick={removeUserWordFromPanel}
+										disabled={savingUserWord}
+										class="text-xs text-red-400 hover:text-red-600 disabled:opacity-50"
+									>
+										Remove
+									</button>
+								{/if}
+							</div>
+
+							{#if editingUserWord}
+								<div class="space-y-2">
+									<div>
+										<label for="uw-pronunciation" class="text-xs text-gray-500">Pronunciation / pronunciation</label>
+										<input
+											id="uw-pronunciation"
+											type="text"
+											bind:value={userWordDraft.pronunciation}
+											placeholder="e.g. dà yě láng"
+											class="w-full border border-gray-300 rounded px-2 py-1 text-sm mt-0.5"
+										/>
+									</div>
+									<div>
+										<label for="uw-meaning" class="text-xs text-gray-500">Meaning / definition</label>
+										<textarea
+											id="uw-meaning"
+											bind:value={userWordDraft.meaning}
+											placeholder="What does this word mean?"
+											rows="2"
+											class="w-full border border-gray-300 rounded px-2 py-1 text-sm mt-0.5"
+										></textarea>
+									</div>
+									<div>
+										<label for="uw-notes" class="text-xs text-gray-500">Notes</label>
+										<textarea
+											id="uw-notes"
+											bind:value={userWordDraft.notes}
+											placeholder="Any other notes — context, mnemonics, etc."
+											rows="2"
+											class="w-full border border-gray-300 rounded px-2 py-1 text-sm mt-0.5"
+										></textarea>
+									</div>
+									<div class="flex gap-2 pt-1">
+										<button
+											onclick={saveUserWordDetail}
+											disabled={savingUserWord}
+											class="text-xs px-3 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50"
+										>
+											{savingUserWord ? 'Saving...' : 'Save'}
+										</button>
+										<button
+											onclick={() => { editingUserWord = false; resetDraftFromSelected(); }}
+											disabled={savingUserWord}
+											class="text-xs px-3 py-1.5 text-gray-500 hover:text-gray-700"
+										>
+											Cancel
+										</button>
+									</div>
+								</div>
+							{:else if selectedWord.user_word}
+								<div class="space-y-1">
+									{#if selectedWord.user_word.pronunciation}
+										<p class="text-sm text-blue-600">{selectedWord.user_word.pronunciation}</p>
+									{/if}
+									{#if selectedWord.user_word.meaning}
+										<p class="text-sm text-gray-700">{selectedWord.user_word.meaning}</p>
+									{/if}
+									{#if selectedWord.user_word.notes}
+										<p class="text-xs text-gray-500 italic">{selectedWord.user_word.notes}</p>
+									{/if}
+									{#if !selectedWord.user_word.pronunciation && !selectedWord.user_word.meaning && !selectedWord.user_word.notes}
+										<p class="text-sm text-gray-400">In your dictionary, no details added yet.</p>
+									{/if}
+									<button
+										onclick={startEditingUserWord}
+										class="text-xs text-blue-600 hover:text-blue-800 mt-1"
+									>
+										Edit
+									</button>
+								</div>
+							{:else}
+								<button
+									onclick={startEditingUserWord}
+									class="text-xs text-blue-600 hover:text-blue-800"
+								>
+									+ Add your own pronunciation / meaning
+								</button>
+							{/if}
+						</div>
 					{/if}
 				</div>
 			{/if}

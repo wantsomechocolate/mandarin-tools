@@ -65,6 +65,8 @@ class KnownWordResponse(BaseModel):
 
 class UserWordCreate(BaseModel):
     word: str
+    pronunciation: str | None = None
+    meaning: str | None = None
     notes: str | None = None
     dictionary_word_id: int | None = None
     freq_combined: int | None = None
@@ -73,9 +75,23 @@ class UserWordCreate(BaseModel):
     hsk_v3_2026: int | None = None
 
 
+class UserWordUpsert(BaseModel):
+    """
+    Partial update used by the word-detail panel: any field left unset is
+    left untouched on an existing row, and the row is created if it doesn't
+    exist yet — filling in a pronunciation or meaning is enough to make a
+    word a UserWord, no separate "add" step required.
+    """
+    pronunciation: str | None = None
+    meaning: str | None = None
+    notes: str | None = None
+
+
 class UserWordResponse(BaseModel):
     id: int
     word: str
+    pronunciation: str | None = None
+    meaning: str | None = None
     notes: str | None = None
     dictionary_word_id: int | None = None
 
@@ -138,3 +154,8 @@ class WordDetail(BaseModel):
     hsk_v3_2021: int | None = None
     hsk_v3_2026: int | None = None
     forms: list[HskFormDetail] = []
+    # The current user's own entry for this word, if they have one. Kept as
+    # its own section rather than merged into the fields above — this is the
+    # first of what should eventually be several source-specific sections
+    # (see notes on the planned Pleco-style multi-source panel).
+    user_word: UserWordResponse | None = None

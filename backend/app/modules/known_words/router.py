@@ -26,6 +26,7 @@ from app.modules.known_words.schemas import (
     KnownWordResponse,
     UserWordCreate,
     UserWordResponse,
+    UserWordUpsert,
     InputTextResponse,
     StopwordCreate,
     StopwordResponse,
@@ -254,7 +255,6 @@ def create_user_word(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    from app.modules.known_words.models import UserWord
     existing = db.query(UserWord).filter_by(
         user_id=current_user.id, word=user_word_in.word
     ).first()
@@ -268,6 +268,66 @@ def create_user_word(
         **user_word_in.model_dump(),
     )
     db.add(user_word)
+    db.commit()
+    db.refresh(user_word)
+    return user_word
+
+
+@router.get("/user-words", response_model=list[UserWordResponse])
+def list_user_words(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    return db.query(UserWord).filter_by(user_id=current_user.id).all()
+
+
+@router.delete("/user-words/{word}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_user_word(
+    word: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    user_word = db.query(UserWord).filter_by(
+        user_id=current_user.id, word=word
+    ).first()
+    if not user_word:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User word not found")
+    db.delete(user_word)
+    db.commit()
+
+
+@router.put("/user-words/{word}", response_model=UserWordResponse)
+def upsert_user_word_detail(
+    word: str,
+    update: UserWordUpsert,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Creates or updates a user's word entry. Only fields explicitly present
+    in the request body are changed — this is what lets the word-detail
+    panel save a pinyin or meaning directly without a separate "add word"
+    step: filling in either field is enough to create the UserWord row.
+    """
+    user_word = db.query(UserWord).filter_by(
+        user_id=current_user.id, word=word
+    ).first()
+
+    provided = update.model_dump(exclude_unset=True)
+
+    if user_word:
+        for field, value in provided.items():
+            setattr(user_word, field, value)
+    else:
+        dict_word = db.query(DictionaryWord).filter_by(word=word).first()
+        user_word = UserWord(
+            user_id=current_user.id,
+            word=word,
+            dictionary_word_id=dict_word.id if dict_word else None,
+            **provided,
+        )
+        db.add(user_word)
+
     db.commit()
     db.refresh(user_word)
     return user_word
@@ -422,6 +482,10 @@ def get_word_detail(
     if hsk_entry:
         forms = db.query(HskForm).filter_by(entry_id=hsk_entry.id).all()
 
+    user_word = db.query(UserWord).filter_by(
+        user_id=current_user.id, word=word
+    ).first()
+
     return WordDetail(
         word=word,
         frequency=dict_word.frequency if dict_word else None,
@@ -437,4 +501,5 @@ def get_word_detail(
             )
             for f in forms
         ],
+        user_word=user_word,
     )

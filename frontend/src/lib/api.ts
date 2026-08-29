@@ -97,6 +97,21 @@ export async function createUserWord(word: string, notes?: string) {
     return request('POST', '/known-words/user-words', { word, notes });
 }
 
+export async function listUserWords() {
+    return request('GET', '/known-words/user-words');
+}
+
+export async function deleteUserWord(word: string) {
+    return request('DELETE', `/known-words/user-words/${encodeURIComponent(word)}`);
+}
+
+export async function upsertUserWordDetail(
+    word: string,
+    fields: { pronunciation?: string | null; meaning?: string | null; notes?: string | null }
+) {
+    return request('PUT', `/known-words/user-words/${encodeURIComponent(word)}`, fields);
+}
+
 // Stopwords
 export async function listStopwords() {
     return request('GET', '/known-words/stopwords');
