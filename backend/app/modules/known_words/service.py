@@ -264,39 +264,3 @@ def get_known_words_for_user(user_id: int, db: Session) -> dict[str, int]:
     return {word: familiarity for word, familiarity in rows}
 
 
-def get_fragments_for_user(
-    user_id: int,
-    db: Session,
-    analysis_id: int | None = None,
-    input_text_id: int | None = None,
-) -> dict[str, dict]:
-    """
-    Returns {word: {"id": int, "note": str|None}}, resolved analysis >
-    input-text > global - same priority and same NULL-binding reasoning as
-    get_known_words_for_user (see its docstring).
-    """
-    rows = db.execute(text("""
-        SELECT id, word, note, scope_analysis_id, scope_input_text_id
-        FROM fragments
-        WHERE user_id = :user_id
-        AND (
-            (scope_analysis_id IS NULL AND scope_input_text_id IS NULL)
-            OR scope_analysis_id = :analysis_id
-            OR scope_input_text_id = :input_text_id
-        )
-    """), {"user_id": user_id, "analysis_id": analysis_id, "input_text_id": input_text_id}).fetchall()
-
-    def scope_priority(scope_analysis_id: int | None, scope_input_text_id: int | None) -> int:
-        if scope_analysis_id is not None:
-            return 2
-        if scope_input_text_id is not None:
-            return 1
-        return 0
-
-    best: dict[str, tuple[int, dict]] = {}
-    for id_, word, note, sa, si in rows:
-        priority = scope_priority(sa, si)
-        if word not in best or priority > best[word][0]:
-            best[word] = (priority, {"id": id_, "note": note})
-
-    return {word: data for word, (_, data) in best.items()}

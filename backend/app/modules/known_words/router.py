@@ -112,6 +112,18 @@ def _scope_filter_conditions(model, analysis_id: int | None, input_text_id: int 
     return conditions
 
 
+def _scope_priority(row) -> int:
+    """An analysis-scoped row outranks an input-text-scoped row, which
+    outranks the global row - shared by _resolve_by_scope (bulk, picks one
+    winner per word) and _sort_most_specific_first (single-word, keeps
+    every row but orders them)."""
+    if row.scope_analysis_id is not None:
+        return 2
+    if row.scope_input_text_id is not None:
+        return 1
+    return 0
+
+
 def _resolve_by_scope(rows, key_fn):
     """
     Given ORM rows that already have scope_analysis_id/scope_input_text_id
@@ -119,22 +131,26 @@ def _resolve_by_scope(rows, key_fn):
     single highest-priority row per key_fn(row) - an analysis-scoped row
     wins over an input-text-scoped row, which wins over the global row.
     """
-    def priority(row) -> int:
-        if row.scope_analysis_id is not None:
-            return 2
-        if row.scope_input_text_id is not None:
-            return 1
-        return 0
-
     best: dict = {}
     best_priority: dict = {}
     for row in rows:
         key = key_fn(row)
-        p = priority(row)
+        p = _scope_priority(row)
         if key not in best or p > best_priority[key]:
             best[key] = row
             best_priority[key] = p
     return best
+
+
+def _sort_most_specific_first(rows):
+    """
+    Same priority as _resolve_by_scope, but for a single word's already
+    scope-filtered rows (e.g. from get_word_detail) where every applicable
+    entry should be kept and shown, not collapsed to one winner - see
+    UserWord/Fragment's docstrings (models.py) for why no entry should ever
+    be hidden just because a more-specific one exists.
+    """
+    return sorted(rows, key=_scope_priority, reverse=True)
 
 
 @router.post("/compare-segmentation", response_model=CompareSegmentationResponse)
@@ -904,6 +920,7 @@ def create_fragment(
         user_id=current_user.id,
         word=fragment_in.word,
         note=fragment_in.note,
+        is_fragment=fragment_in.is_fragment,
         scope_analysis_id=scope_analysis_id,
         scope_input_text_id=scope_input_text_id,
     )
@@ -1062,9 +1079,18 @@ def get_word_detail(
 ):
     """
     analysis_id/input_text_id (the caller's current viewing context) decide
-    which scoped user_word/fragment entry is shown - resolved analysis >
-    text > global, same as the list endpoints (see UserWord/Fragment's
-    scope docstrings). Omitting both shows only global entries.
+    which scoped user_word/fragment rows are relevant - global always,
+    plus this analysis's/this text's own row if applicable (see
+    _scope_filter_conditions). Omitting both shows only global entries.
+
+    user_words returns every applicable row, most-specific first - never
+    resolved to one, so the panel can show/edit/delete each independently
+    without implying a relationship between scopes (see UserWord's
+    docstring). fragment/fragments: `fragment` is the single resolved
+    entry (analysis > text > global, same priority as before - still
+    needed for the bulk "what does this word look like right now" case),
+    while `fragments` is every applicable row for the tri-state scope
+    selector to read from client-side.
     """
 
     dict_word = db.query(DictionaryWord).filter_by(word=word).first()
@@ -1080,13 +1106,14 @@ def get_word_detail(
         UserWord.user_id == current_user.id, UserWord.word == word,
         or_(*_scope_filter_conditions(UserWord, analysis_id, input_text_id)),
     ).all()
-    user_word = next(iter(_resolve_by_scope(user_word_rows, key_fn=lambda uw: uw.word).values()), None)
+    user_words = _sort_most_specific_first(user_word_rows)
 
     fragment_rows = db.query(Fragment).filter(
         Fragment.user_id == current_user.id, Fragment.word == word,
         or_(*_scope_filter_conditions(Fragment, analysis_id, input_text_id)),
     ).all()
-    fragment = next(iter(_resolve_by_scope(fragment_rows, key_fn=lambda f: f.word).values()), None)
+    fragments = _sort_most_specific_first(fragment_rows)
+    fragment = fragments[0] if fragments else None
 
     sample_sentences = (
         db.query(SampleSentence)
@@ -1118,7 +1145,8 @@ def get_word_detail(
             )
             for c in cedict_entries
         ],
-        user_word=user_word,
+        user_words=user_words,
         fragment=fragment,
+        fragments=fragments,
         sample_sentences=sample_sentences,
     )

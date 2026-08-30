@@ -214,15 +214,26 @@ class GarbageWordResponse(BaseModel):
 class FragmentCreate(BaseModel):
     word: str
     note: str | None = None
+    # Tri-state - see Fragment's docstring (models.py). Defaults to True,
+    # preserving the pre-tri-state behavior for anyone just marking
+    # something a fragment normally.
+    is_fragment: bool = True
     analysis_id: int | None = None
     input_text_id: int | None = None
     scope: ScopeChoice = "global"
 
 
 class FragmentUpsert(BaseModel):
-    """Partial update, same upsert pattern as UserWordUpsert — marking a
-    fragment and annotating it with a note are the same action."""
+    """
+    Partial update, same upsert pattern as UserWordUpsert — marking a
+    fragment and annotating it with a note are the same action. Like every
+    other field here, `is_fragment` follows the exclude-unset partial-update
+    rule: omit it to leave an existing row's tri-state choice untouched;
+    include it (true or false) to set/change it. The default of True only
+    matters for the create-from-nothing case.
+    """
     note: str | None = None
+    is_fragment: bool = True
     analysis_id: int | None = None
     input_text_id: int | None = None
     scope: ScopeChoice = "global"
@@ -232,6 +243,7 @@ class FragmentResponse(BaseModel):
     id: int
     word: str
     note: str | None = None
+    is_fragment: bool
     scope_analysis_id: int | None = None
     scope_input_text_id: int | None = None
 
@@ -299,15 +311,30 @@ class WordDetail(BaseModel):
     # CC-CEDICT senses for this word, if any — its own source-specific
     # section, same reasoning as user_word/fragment below.
     cedict: list[CedictSense] = []
-    # The current user's own entry for this word, if they have one. Kept as
-    # its own section rather than merged into the fields above — this is the
-    # first of what should eventually be several source-specific sections
-    # (see notes on the planned Pleco-style multi-source panel).
-    user_word: UserWordResponse | None = None
-    # Present if the user has flagged this word as a fragment (a segmentation
-    # artifact worth noting but not studying) — see Fragment model docstring
-    # for why this is kept fully separate from user_word.
+    # Every UserWord entry across the three scope levels relevant to the
+    # current viewing context (global, plus this text's/this analysis's own
+    # row if applicable), most-specific first. Deliberately NOT resolved to
+    # one - a word can have several simultaneous entries (e.g. a global one
+    # plus a one-off override for a specific text) and none should ever be
+    # hidden just because a more-specific one exists. This is a display-only
+    # list: segmentation resolution stays entirely in
+    # build_user_overlay/segmenter_loader.py, which picks exactly one
+    # entry's weight per its own unrelated priority logic - this field must
+    # never be read as if it were that resolution.
+    user_words: list[UserWordResponse] = []
+    # The single resolved Fragment for this viewing context (analysis > text
+    # > global priority, same as before) - None if no applicable row exists
+    # at any scope. Check `.is_fragment` on this, not just non-null
+    # truthiness: a resolved row can now represent an explicit "not a
+    # fragment" override (see Fragment's docstring, models.py), so its mere
+    # presence no longer means "this is a fragment."
     fragment: FragmentResponse | None = None
-    # Independent of user_word (a word doesn't need to be in the user's
+    # Every Fragment row across the three scope levels relevant to the
+    # current viewing context, most-specific first (same shape/reasoning as
+    # user_words above) - lets the tri-state scope selector read any scope's
+    # current choice client-side without a round trip when the scope
+    # dropdown changes. `fragment` above is just fragments[0] if present.
+    fragments: list[FragmentResponse] = []
+    # Independent of user_words (a word doesn't need to be in the user's
     # dictionary to have sample sentences) - see SampleSentence's docstring.
     sample_sentences: list[SampleSentenceResponse] = []

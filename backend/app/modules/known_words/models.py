@@ -1,4 +1,4 @@
-from sqlalchemy import ARRAY, BigInteger, Boolean, CheckConstraint, DateTime, Float, ForeignKey, Index, Integer, SmallInteger, String, func
+from sqlalchemy import ARRAY, BigInteger, Boolean, CheckConstraint, DateTime, Float, ForeignKey, Index, Integer, SmallInteger, String, func, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.core.database import Base
@@ -294,7 +294,11 @@ class Fragment(Base):
     error produced it in the first place.
 
     Scoping (scope_analysis_id/scope_input_text_id): see UserWord's
-    docstring - identical design and resolution priority.
+    docstring for the design - identical mutual-exclusivity/uniqueness
+    rules. Resolution priority (analysis > text > global) is also the
+    same, but what gets resolved is now `is_fragment`'s value at the
+    highest-priority applicable row, not just whether a row exists - see
+    its own docstring below.
     """
     __tablename__ = "fragments"
 
@@ -302,6 +306,21 @@ class Fragment(Base):
     user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     word: Mapped[str] = mapped_column(String, nullable=False)
     note: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    # Tri-state per scope: a row's mere existence used to be the only
+    # signal ("this is a fragment"), which couldn't express "explicitly
+    # NOT a fragment here" as an override of a broader scope's marking -
+    # both looked like "no row" at the narrower scope. is_fragment is what
+    # turns that into a real ternary: a row can now mean either "is a
+    # fragment" or "explicitly not a fragment, overriding a broader
+    # scope's marking" without touching or deleting that broader row. No
+    # applicable row at any scope still means "not a fragment" (there's
+    # nothing to resolve to - see get_word_detail/list_fragments,
+    # router.py). Every row that existed before this column was added
+    # meant "this is a fragment" (the only thing a row could mean at the
+    # time), which is exactly what the migration adding this column
+    # backfills.
+    is_fragment: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=text("true"))
 
     scope_analysis_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("analyses.id"), nullable=True, index=True)
     scope_input_text_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("input_texts.id"), nullable=True, index=True)
