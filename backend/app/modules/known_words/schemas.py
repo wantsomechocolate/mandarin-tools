@@ -1,5 +1,14 @@
+from typing import Literal
+
 from pydantic import BaseModel
 from datetime import datetime
+
+# Shared by KnownWord/UserWord/Fragment create+upsert requests: "global" (the
+# default, unchanged from before scoping existed) applies everywhere; "text"
+# scopes to every Analysis of the given input_text_id; "analysis" scopes to
+# just the given analysis_id. See each model's scope_analysis_id/
+# scope_input_text_id docstring (models.py) for the resolution priority.
+ScopeChoice = Literal["global", "text", "analysis"]
 
 
 class AnalyzeTextRequest(BaseModel):
@@ -96,12 +105,20 @@ class WordContextResponse(BaseModel):
 class KnownWordUpdate(BaseModel):
     word: str
     familiarity: int | None = None
+    # Current viewing context (the analysis/input text the user has open) -
+    # used together with `scope` to pick which scoped row this write targets.
+    # See ScopeChoice / _resolve_scope_columns (router.py).
+    analysis_id: int | None = None
+    input_text_id: int | None = None
+    scope: ScopeChoice = "global"
 
 
 class KnownWordResponse(BaseModel):
     id: int
     word: str
     familiarity: int | None = None
+    scope_analysis_id: int | None = None
+    scope_input_text_id: int | None = None
 
     model_config = {"from_attributes": True}
 
@@ -116,6 +133,9 @@ class UserWordCreate(BaseModel):
     hsk_v2_2012: int | None = None
     hsk_v3_2021: int | None = None
     hsk_v3_2026: int | None = None
+    analysis_id: int | None = None
+    input_text_id: int | None = None
+    scope: ScopeChoice = "global"
 
 
 class UserWordUpsert(BaseModel):
@@ -128,6 +148,9 @@ class UserWordUpsert(BaseModel):
     pronunciation: str | None = None
     meaning: str | None = None
     notes: str | None = None
+    analysis_id: int | None = None
+    input_text_id: int | None = None
+    scope: ScopeChoice = "global"
 
 
 class UserWordResponse(BaseModel):
@@ -137,6 +160,11 @@ class UserWordResponse(BaseModel):
     meaning: str | None = None
     notes: str | None = None
     dictionary_word_id: int | None = None
+    scope_analysis_id: int | None = None
+    scope_input_text_id: int | None = None
+    # Informational only - see UserWord's docstring (models.py).
+    created_from_analysis_id: int | None = None
+    created_from_input_text_id: int | None = None
 
     model_config = {"from_attributes": True}
 
@@ -147,6 +175,11 @@ class InputTextResponse(BaseModel):
     title: str | None = None
     created_at: datetime
     updated_at: datetime
+    # Most recent Analysis of this text, if any - lets the input-texts list
+    # page offer a "jump straight to latest results" shortcut without a
+    # round trip through the text's own hub page. Computed query-time (not
+    # stored), same as other summaries (see AnalysisSummary).
+    latest_analysis_id: int | None = None
 
     model_config = {"from_attributes": True}
 
@@ -184,15 +217,41 @@ class GarbageWordResponse(BaseModel):
 class FragmentCreate(BaseModel):
     word: str
     note: str | None = None
+    analysis_id: int | None = None
+    input_text_id: int | None = None
+    scope: ScopeChoice = "global"
 
 
 class FragmentUpsert(BaseModel):
     """Partial update, same upsert pattern as UserWordUpsert — marking a
     fragment and annotating it with a note are the same action."""
     note: str | None = None
+    analysis_id: int | None = None
+    input_text_id: int | None = None
+    scope: ScopeChoice = "global"
 
 
 class FragmentResponse(BaseModel):
+    id: int
+    word: str
+    note: str | None = None
+    scope_analysis_id: int | None = None
+    scope_input_text_id: int | None = None
+
+    model_config = {"from_attributes": True}
+
+
+class StarredWordCreate(BaseModel):
+    word: str
+    note: str | None = None
+
+
+class StarredWordUpsert(BaseModel):
+    """Partial update, same upsert pattern as FragmentUpsert."""
+    note: str | None = None
+
+
+class StarredWordResponse(BaseModel):
     id: int
     word: str
     note: str | None = None

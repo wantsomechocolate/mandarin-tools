@@ -130,6 +130,29 @@ class DictionaryWord(Base):
 
 
 class UserWord(Base):
+    """
+    Scoping (scope_analysis_id/scope_input_text_id): both NULL (the default)
+    means this entry is global - applies to every analysis, exactly like
+    before this column existed. Setting scope_analysis_id restricts it to
+    one specific Analysis; setting scope_input_text_id restricts it to every
+    Analysis of one InputText. At most one of the two is ever set (see the
+    CHECK constraint) - "scope to this analysis" and "scope to this text"
+    are alternative choices, not stackable.
+
+    Resolution when several entries exist for the same word: an
+    analysis-scoped entry wins over an input-text-scoped entry, which wins
+    over the global entry - see service.py's build_user_overlay and
+    get_known_words_for_user docstrings, which apply this same priority.
+    Scoping is what makes it possible to try a custom dictionary word (which
+    feeds straight into DAG segmentation via the per-request UserOverlay -
+    see dag_segmentor.py) against just one text without it silently
+    affecting every other analysis.
+
+    created_from_analysis_id/created_from_input_text_id are purely
+    informational (never used for resolution) - they remember where an
+    entry was first added from even if it ends up global, so "global word X
+    was originally added while reading text Y" stays answerable.
+    """
     __tablename__ = "user_words"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -150,6 +173,14 @@ class UserWord(Base):
     meaning: Mapped[str | None] = mapped_column(String, nullable=True)
     notes: Mapped[str | None] = mapped_column(String, nullable=True)
 
+    # See class docstring - at most one of these two is ever set.
+    scope_analysis_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("analyses.id"), nullable=True, index=True)
+    scope_input_text_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("input_texts.id"), nullable=True, index=True)
+
+    # Informational only - see class docstring.
+    created_from_analysis_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("analyses.id"), nullable=True)
+    created_from_input_text_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("input_texts.id"), nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
@@ -160,13 +191,26 @@ class UserWord(Base):
     #known_words: Mapped[list["KnownWord"]] = relationship("KnownWord", back_populates="user_word")
 
     __table_args__ = (
-        # A user can only have one entry per word
-        Index("ix_user_words_user_word", "user_id", "word", unique=True),
+        # A user can only have one entry per (word, scope) combination - the
+        # NULLS NOT DISTINCT is what makes "at most one global entry per
+        # word" actually enforceable, since a plain unique index treats
+        # every NULL pair as distinct and would silently allow duplicate
+        # global rows otherwise.
+        Index(
+            "ix_user_words_user_word_scope", "user_id", "word", "scope_analysis_id", "scope_input_text_id",
+            unique=True, postgresql_nulls_not_distinct=True,
+        ),
+        CheckConstraint(
+            "scope_analysis_id IS NULL OR scope_input_text_id IS NULL",
+            name="ck_user_words_scope_mutually_exclusive",
+        ),
     )
 
 
 
 class KnownWord(Base):
+    """See UserWord's docstring for the scoping design (scope_analysis_id/
+    scope_input_text_id, resolution priority) - identical here."""
     __tablename__ = "known_words"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -174,16 +218,26 @@ class KnownWord(Base):
     word: Mapped[str] = mapped_column(String, nullable=False)
     familiarity: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
 
+    scope_analysis_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("analyses.id"), nullable=True, index=True)
+    scope_input_text_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("input_texts.id"), nullable=True, index=True)
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     user: Mapped["User"] = relationship("User")
 
     __table_args__ = (
-        Index("ix_known_words_user_word", "user_id", "word", unique=True),
+        Index(
+            "ix_known_words_user_word_scope", "user_id", "word", "scope_analysis_id", "scope_input_text_id",
+            unique=True, postgresql_nulls_not_distinct=True,
+        ),
         CheckConstraint(
             "familiarity IS NULL OR (familiarity >= 1 AND familiarity <= 5)",
             name="ck_known_words_familiarity"
+        ),
+        CheckConstraint(
+            "scope_analysis_id IS NULL OR scope_input_text_id IS NULL",
+            name="ck_known_words_scope_mutually_exclusive",
         ),
     )
 
@@ -215,8 +269,50 @@ class Fragment(Base):
     per-user segmentation overlay. It's a display-layer annotation only, so a
     flagged fragment carries no risk of reinforcing whatever segmentation
     error produced it in the first place.
+
+    Scoping (scope_analysis_id/scope_input_text_id): see UserWord's
+    docstring - identical design and resolution priority.
     """
     __tablename__ = "fragments"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    word: Mapped[str] = mapped_column(String, nullable=False)
+    note: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    scope_analysis_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("analyses.id"), nullable=True, index=True)
+    scope_input_text_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("input_texts.id"), nullable=True, index=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    user: Mapped["User"] = relationship("User")
+
+    __table_args__ = (
+        Index(
+            "ix_fragments_user_word_scope", "user_id", "word", "scope_analysis_id", "scope_input_text_id",
+            unique=True, postgresql_nulls_not_distinct=True,
+        ),
+        CheckConstraint(
+            "scope_analysis_id IS NULL OR scope_input_text_id IS NULL",
+            name="ck_fragments_scope_mutually_exclusive",
+        ),
+    )
+
+
+class StarredWord(Base):
+    """
+    A word/phrase the user has flagged as interesting or worth remembering -
+    mirrors Fragment's shape (word + optional note) rather than
+    GarbageWord's (no system-wide/is_override concept - this is purely
+    personal, there's no "starred by default for everyone" notion).
+
+    Deliberately global only, no scope_analysis_id/scope_input_text_id like
+    KnownWord/UserWord/Fragment have - starring something is a lightweight
+    personal bookmark, not tied to segmentation or a particular reading
+    session, so scoping it wasn't asked for and isn't built here.
+    """
+    __tablename__ = "starred_words"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
@@ -229,7 +325,7 @@ class Fragment(Base):
     user: Mapped["User"] = relationship("User")
 
     __table_args__ = (
-        Index("ix_fragments_user_word", "user_id", "word", unique=True),
+        Index("ix_starred_words_user_word", "user_id", "word", unique=True),
     )
 
 

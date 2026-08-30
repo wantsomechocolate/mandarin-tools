@@ -86,21 +86,53 @@ def _build_segmenter(db: Session) -> Segmenter:
     return segmenter
 
 
-def build_user_overlay(user_id: int, db: Session, segmenter: Segmenter) -> UserOverlay | None:
+def build_user_overlay(
+    user_id: int,
+    db: Session,
+    segmenter: Segmenter,
+    input_text_id: int | None = None,
+) -> UserOverlay | None:
     """
     Builds a per-user overlay from that user's UserWord entries. Returns None
-    if the user has no custom words, so callers can skip overlay handling
-    entirely on the common path.
+    if the user has no matching custom words, so callers can skip overlay
+    handling entirely on the common path.
+
+    Scope resolution (see UserWord's scope_analysis_id/scope_input_text_id
+    docstring): includes global entries plus any entry scoped to
+    `input_text_id`, with the input-text-scoped entry winning over a global
+    one for the same word. Deliberately never resolves *analysis*-scoped
+    entries here, even though they exist as a concept - an analysis-scoped
+    UserWord can only reference a past analysis (the one currently being
+    analyzed, if this is mid-`/analyze`, has no id yet to have been scoped
+    to), so there's nothing at the analysis level a fresh overlay build
+    could ever match against. This is also the literal mechanism that keeps
+    an analysis/text-scoped custom word from leaking into *other* texts'
+    segmentation - callers simply don't pass its input_text_id.
     """
-    rows = db.execute(text(
-        "SELECT word, freq_combined FROM user_words WHERE user_id = :user_id"
-    ), {"user_id": user_id}).fetchall()
+    rows = db.execute(text("""
+        SELECT word, freq_combined, scope_input_text_id FROM user_words
+        WHERE user_id = :user_id
+        AND scope_analysis_id IS NULL
+        AND (scope_input_text_id IS NULL OR scope_input_text_id = :input_text_id)
+    """), {"user_id": user_id, "input_text_id": input_text_id}).fetchall()
 
     if not rows:
         return None
 
+    # Resolve: an input-text-scoped entry wins over the global entry for the
+    # same word (mirrors get_known_words_for_user's priority, one level down
+    # since analysis-scoped entries are excluded above already).
+    resolved: dict[str, int | None] = {}
+    scoped_words: set[str] = set()
+    for word, freq_combined, scope_input_text_id in rows:
+        if scope_input_text_id is not None:
+            resolved[word] = freq_combined
+            scoped_words.add(word)
+        elif word not in scoped_words:
+            resolved[word] = freq_combined
+
     overlay = UserOverlay()
     floor = segmenter.dominance_floor()
-    for word, freq_combined in rows:
+    for word, freq_combined in resolved.items():
         overlay.add_word(word, freq_combined, dominance_floor=floor)
     return overlay

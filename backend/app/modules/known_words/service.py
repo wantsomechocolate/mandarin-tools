@@ -63,6 +63,7 @@ def analyze_text_dag(
     text_body: str,
     db: Session,
     user_id: int | None = None,
+    input_text_id: int | None = None,
     tokenizer_stopwords: set[str] | None = None,
     min_token_length: int = 2,
     max_token_length: int = 20,
@@ -77,9 +78,17 @@ def analyze_text_dag(
     This exists alongside analyze_text (rather than replacing it) so the two
     can be compared directly before deciding whether to switch the main
     /analyze endpoint over.
+
+    `input_text_id` is passed straight through to build_user_overlay so a
+    UserWord scoped to this text (but not others) is included - see that
+    function's docstring for why only input-text scope, never analysis
+    scope, is relevant when building an overlay.
     """
     segmenter = get_segmenter(db)
-    overlay = build_user_overlay(user_id, db, segmenter) if user_id is not None else None
+    overlay = (
+        build_user_overlay(user_id, db, segmenter, input_text_id=input_text_id)
+        if user_id is not None else None
+    )
 
     dag_results = segmenter.segment(text_body, overlay=overlay)
     dag_aggregated = aggregate_segments(dag_results)
@@ -106,6 +115,7 @@ def analyze_text_combined(
     text_body: str,
     db: Session,
     user_id: int | None = None,
+    input_text_id: int | None = None,
     min_token_length: int = 2,
     max_token_length: int = 20,
     min_token_count: int = 2,
@@ -129,6 +139,7 @@ def analyze_text_combined(
         text_body,
         db,
         user_id=user_id,
+        input_text_id=input_text_id,
         tokenizer_stopwords=tokenizer_stopwords,
         min_token_length=min_token_length,
         max_token_length=max_token_length,
@@ -216,40 +227,109 @@ def filter_results(
     results: dict[str, dict],
     known_words: dict[str, int],
     garbage_words: set[str],
-    min_familiarity: int | None = None,
-    max_familiarity: int | None = None,
 ) -> dict[str, dict]:
     """
-    Filters analysis results based on known word familiarity and garbage words.
+    Excludes garbage words (permanently - a word marked garbage is never
+    persisted at all, see GarbageWord's docstring/CLAUDE.md) and annotates
+    every remaining result with the word's current familiarity.
 
-    known_words is a dict of {word: familiarity_score}
-    min/max_familiarity filter out words within that familiarity range.
-    Default behavior filters out words with familiarity 4 or 5.
+    Deliberately does NOT exclude by familiarity. Filtering by familiarity is
+    a display-time concern only (the frontend's own "hide familiarity >= N"
+    filter over already-persisted results) - it used to also exclude words
+    here, before persistence, which meant a word marked known/familiar could
+    never be found again even by widening the display filter to "show all",
+    since the row simply didn't exist. See router.py's `/analyze` handler:
+    every non-garbage word from `results` is now always persisted.
     """
-    if min_familiarity is None:
-        min_familiarity = 4
-    if max_familiarity is None:
-        max_familiarity = 5
-
     filtered = {}
     for word, data in results.items():
         if word in garbage_words:
             continue
         familiarity = known_words.get(word)
-        if familiarity is not None and min_familiarity <= familiarity <= max_familiarity:
-            continue
         filtered[word] = {**data, "familiarity": familiarity}
 
     return filtered
 
 
-def get_known_words_for_user(user_id: int, db: Session) -> dict[str, int]:
+def get_known_words_for_user(
+    user_id: int,
+    db: Session,
+    analysis_id: int | None = None,
+    input_text_id: int | None = None,
+) -> dict[str, int]:
     """
     Returns a dict of {word: familiarity} for all known words for a user.
+    Resolved per-scope when analysis_id/input_text_id are given: an
+    analysis-scoped entry for `analysis_id` wins over an input-text-scoped
+    entry for `input_text_id`, which wins over the global (unscoped) entry -
+    see KnownWord's scope_analysis_id/scope_input_text_id docstring. Passing
+    neither returns only global entries.
+
+    Note on the SQL: `scope_analysis_id = :analysis_id` when :analysis_id is
+    Python None binds as `scope_analysis_id = NULL`, which SQL's
+    three-valued logic always evaluates false - so passing None correctly
+    matches no analysis-scoped rows without needing a separate NULL check.
     """
     rows = db.execute(text("""
-        SELECT word, familiarity FROM known_words
+        SELECT word, familiarity, scope_analysis_id, scope_input_text_id
+        FROM known_words
         WHERE user_id = :user_id
-    """), {"user_id": user_id}).fetchall()
+        AND (
+            (scope_analysis_id IS NULL AND scope_input_text_id IS NULL)
+            OR scope_analysis_id = :analysis_id
+            OR scope_input_text_id = :input_text_id
+        )
+    """), {"user_id": user_id, "analysis_id": analysis_id, "input_text_id": input_text_id}).fetchall()
 
-    return {word: familiarity for word, familiarity in rows}
+    def scope_priority(scope_analysis_id: int | None, scope_input_text_id: int | None) -> int:
+        if scope_analysis_id is not None:
+            return 2
+        if scope_input_text_id is not None:
+            return 1
+        return 0
+
+    best: dict[str, tuple[int, int | None]] = {}
+    for word, familiarity, sa, si in rows:
+        priority = scope_priority(sa, si)
+        if word not in best or priority > best[word][0]:
+            best[word] = (priority, familiarity)
+
+    return {word: familiarity for word, (_, familiarity) in best.items()}
+
+
+def get_fragments_for_user(
+    user_id: int,
+    db: Session,
+    analysis_id: int | None = None,
+    input_text_id: int | None = None,
+) -> dict[str, dict]:
+    """
+    Returns {word: {"id": int, "note": str|None}}, resolved analysis >
+    input-text > global - same priority and same NULL-binding reasoning as
+    get_known_words_for_user (see its docstring).
+    """
+    rows = db.execute(text("""
+        SELECT id, word, note, scope_analysis_id, scope_input_text_id
+        FROM fragments
+        WHERE user_id = :user_id
+        AND (
+            (scope_analysis_id IS NULL AND scope_input_text_id IS NULL)
+            OR scope_analysis_id = :analysis_id
+            OR scope_input_text_id = :input_text_id
+        )
+    """), {"user_id": user_id, "analysis_id": analysis_id, "input_text_id": input_text_id}).fetchall()
+
+    def scope_priority(scope_analysis_id: int | None, scope_input_text_id: int | None) -> int:
+        if scope_analysis_id is not None:
+            return 2
+        if scope_input_text_id is not None:
+            return 1
+        return 0
+
+    best: dict[str, tuple[int, dict]] = {}
+    for id_, word, note, sa, si in rows:
+        priority = scope_priority(sa, si)
+        if word not in best or priority > best[word][0]:
+            best[word] = (priority, {"id": id_, "note": note})
+
+    return {word: data for word, (_, data) in best.items()}
