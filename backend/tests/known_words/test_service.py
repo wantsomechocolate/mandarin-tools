@@ -17,11 +17,14 @@ SAMPLE_RESULTS = {
 
 class TestFilterResults:
     """
-    Covers the persistence bug: familiar words used to be excluded here,
-    before persistence, which meant a word marked known/familiar could never
-    be found again even by widening the display filter to "show all" -
-    the AnalysisResult row simply didn't exist. filter_results must now
-    persist every non-garbage word regardless of familiarity.
+    Covers the persistence bug: familiar words (and, later, garbage words)
+    used to be excluded here, before persistence, which meant a word marked
+    known/familiar or garbage could never be found again even by
+    widening/toggling the display filter to "show all" - the AnalysisResult
+    row simply didn't exist. filter_results must now persist every word
+    regardless of familiarity or garbage status, annotating both instead -
+    the analysis results are meant to be a faithful representation of the
+    full contents of the analyzed text.
     """
 
     def test_familiar_words_are_not_excluded(self):
@@ -34,12 +37,14 @@ class TestFilterResults:
         assert filtered["猪"]["familiarity"] == 5
         assert filtered["猪"]["count"] == 25
 
-    def test_garbage_words_are_still_excluded(self):
-        # Garbage exclusion is deliberately still one-way/pre-persistence.
+    def test_garbage_words_are_annotated_but_not_excluded(self):
+        # Garbage words are flagged, not excluded - display-time filtering
+        # only (mirrors familiarity), same as every other word.
         filtered = filter_results(SAMPLE_RESULTS, known_words={}, garbage_words={"，"})
-        assert "，" not in filtered
-        assert "森林" in filtered
-        assert "猪" in filtered
+        assert "，" in filtered
+        assert filtered["，"]["is_garbage"] is True
+        assert filtered["森林"]["is_garbage"] is False
+        assert filtered["猪"]["is_garbage"] is False
 
     def test_familiarity_is_attached_but_never_excludes(self):
         known_words = {"森林": 1, "猪": 5}

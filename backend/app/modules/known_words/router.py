@@ -15,6 +15,7 @@ from app.modules.known_words.models import (
     AnalysisResult,
     KnownWord,
     UserWord,
+    SampleSentence,
     Stopword,
     GarbageWord,
     Fragment,
@@ -38,6 +39,8 @@ from app.modules.known_words.schemas import (
     UserWordCreate,
     UserWordResponse,
     UserWordUpsert,
+    SampleSentenceCreate,
+    SampleSentenceResponse,
     InputTextResponse,
     StopwordCreate,
     StopwordResponse,
@@ -235,9 +238,10 @@ def analyze(
 
     # Get user's known words (resolved for this text - the new Analysis
     # doesn't have an id yet, but nothing could be scoped to it anyway; see
-    # get_known_words_for_user) and filter out garbage (familiarity no
-    # longer excludes here - see filter_results docstring for why
-    # persistence must keep every non-garbage word regardless of familiarity).
+    # get_known_words_for_user) and annotate familiarity/garbage status.
+    # Neither excludes here - see filter_results docstring for why
+    # persistence must keep every word from `results`, regardless of
+    # familiarity or garbage status.
     known_words = service.get_known_words_for_user(current_user.id, db, input_text_id=input_text.id)
     filtered = service.filter_results(results, known_words, garbage_words)
 
@@ -278,14 +282,15 @@ def analyze(
             count=data["count"],
             source=data["source"],
             familiarity=data.get("familiarity"),
+            is_garbage=data.get("is_garbage", False),
         )
         for word, data in sorted(filtered.items(), key=lambda x: x[1]["count"], reverse=True)
     ]
 
-    # Totals reflect what was actually persisted (filtered = results minus
-    # garbage words only, now that familiarity no longer excludes rows) -
-    # matches how GET /analyze/{id} computes totals from the persisted rows,
-    # rather than counting garbage words that were never saved.
+    # Totals reflect what was actually persisted (filtered = results, now
+    # that nothing is excluded at persist time - not even garbage) - matches
+    # how GET /analyze/{id} computes totals from the persisted rows, and
+    # keeps the analysis a faithful representation of the full text.
     return AnalysisResponse(
         analysis_id=analysis.id,
         input_text_id=input_text.id,
@@ -315,6 +320,7 @@ def get_analysis(
     known_words = service.get_known_words_for_user(
         current_user.id, db, analysis_id=analysis_id, input_text_id=analysis.input_text_id
     )
+    garbage_words = service.get_user_garbage_words(current_user.id, db)
 
     word_results = [
         WordResult(
@@ -322,6 +328,7 @@ def get_analysis(
             count=r.count,
             source=r.source,
             familiarity=known_words.get(r.word),
+            is_garbage=r.word in garbage_words,
         )
         for r in sorted(results, key=lambda x: x.count, reverse=True)
     ]
@@ -579,6 +586,54 @@ def upsert_user_word_detail(
     return user_word
 
 
+# Sample sentences - a word can have many, meant for pasting in real usage
+# copied from a text's context view (see get_word_context below) rather than
+# writing one from scratch. Deliberately independent of UserWord (earlier
+# version attached them to a UserWord row - reversed, see SampleSentence's
+# docstring in models.py) - global per user+word, no scoping, no find-or-
+# create dance with another table.
+@router.post("/sample-sentences", response_model=SampleSentenceResponse, status_code=status.HTTP_201_CREATED)
+def create_sample_sentence(
+    sentence_in: SampleSentenceCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    sentence = SampleSentence(
+        user_id=current_user.id, word=sentence_in.word, sentence=sentence_in.sentence
+    )
+    db.add(sentence)
+    db.commit()
+    db.refresh(sentence)
+    return sentence
+
+
+@router.get("/sample-sentences", response_model=list[SampleSentenceResponse])
+def list_sample_sentences(
+    word: str | None = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    query = db.query(SampleSentence).filter(SampleSentence.user_id == current_user.id)
+    if word is not None:
+        query = query.filter(SampleSentence.word == word)
+    return query.order_by(SampleSentence.created_at).all()
+
+
+@router.delete("/sample-sentences/{sentence_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_sample_sentence(
+    sentence_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    sentence = db.query(SampleSentence).filter_by(
+        id=sentence_id, user_id=current_user.id
+    ).first()
+    if not sentence:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Sentence not found")
+    db.delete(sentence)
+    db.commit()
+
+
 # Input texts
 @router.get("/input-texts", response_model=list[InputTextResponse])
 def list_input_texts(
@@ -756,6 +811,15 @@ def create_garbage_word(
         word=garbage_word_in.word,
     ).first()
     if existing:
+        # Re-marking a word whose only user-owned row is an override (added
+        # by unmark_garbage_word below, to cancel out a system-default
+        # marking) is a legitimate "mark it again" request, not a duplicate -
+        # flip it back rather than blocking.
+        if existing.is_override and not garbage_word_in.is_override:
+            existing.is_override = False
+            db.commit()
+            db.refresh(existing)
+            return existing
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Garbage word already exists"
@@ -769,6 +833,38 @@ def create_garbage_word(
     db.commit()
     db.refresh(garbage_word)
     return garbage_word
+
+
+# Reverses whatever is currently making `word` show as garbage for this user
+# - deletes the user's own non-override GarbageWord row if they added one
+# themselves, or adds an override row to cancel out a system-default marking
+# otherwise (see GarbageWord.is_override / service.get_user_garbage_words).
+# Word-based (not id-based, unlike delete_garbage_word below) so the
+# frontend can call it the same way it unmarks a fragment, without needing
+# to know which row - own or system-default - is actually responsible.
+@router.delete("/garbage-words/word/{word}", status_code=status.HTTP_204_NO_CONTENT)
+def unmark_garbage_word(
+    word: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    own_row = db.query(GarbageWord).filter_by(
+        user_id=current_user.id, word=word, is_override=False
+    ).first()
+    if own_row:
+        db.delete(own_row)
+        db.commit()
+        return
+
+    garbage_words = service.get_user_garbage_words(current_user.id, db)
+    if word not in garbage_words:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Word is not marked as garbage")
+
+    # Only a system-default row can be marking it garbage at this point (no
+    # user-owned non-override row, but still garbage) - cancel it out with
+    # an override rather than trying to delete a row this user doesn't own.
+    db.add(GarbageWord(user_id=current_user.id, word=word, is_override=True))
+    db.commit()
 
 
 @router.delete("/garbage-words/{garbage_word_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -787,13 +883,13 @@ def delete_garbage_word(
 
 
 # Fragments — segmentation artifacts / partial strings worth annotating but
-# not studying. Deliberately NOT wired into /analyze or filter_results: unlike
-# garbage words (excluded from results before they're ever persisted) or
-# familiar known words (same), a fragment stays in the persisted analysis
-# results exactly as segmented. Hiding it from the default view and letting
-# the user reveal/annotate it is handled client-side, the same way
-# source="longest_match_only" words are handled — this keeps fragment
-# marking fully reversible and inspectable, rather than a one-way deletion.
+# not studying. A fragment stays in the persisted analysis results exactly
+# as segmented, same as every other word now (see filter_results docstring -
+# nothing is excluded at persist time, including garbage words). Hiding it
+# from the default view and letting the user reveal/annotate it is handled
+# client-side, the same way source="longest_match_only" and garbage words
+# are handled — this keeps fragment marking fully reversible and
+# inspectable, rather than a one-way deletion.
 @router.get("/fragments", response_model=list[FragmentResponse])
 def list_fragments(
     analysis_id: int | None = None,
@@ -1019,6 +1115,13 @@ def get_word_detail(
     ).all()
     fragment = next(iter(_resolve_by_scope(fragment_rows, key_fn=lambda f: f.word).values()), None)
 
+    sample_sentences = (
+        db.query(SampleSentence)
+        .filter(SampleSentence.user_id == current_user.id, SampleSentence.word == word)
+        .order_by(SampleSentence.created_at)
+        .all()
+    )
+
     return WordDetail(
         word=word,
         frequency=dict_word.frequency if dict_word else None,
@@ -1044,4 +1147,5 @@ def get_word_detail(
         ],
         user_word=user_word,
         fragment=fragment,
+        sample_sentences=sample_sentences,
     )

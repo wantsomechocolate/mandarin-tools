@@ -229,24 +229,24 @@ def filter_results(
     garbage_words: set[str],
 ) -> dict[str, dict]:
     """
-    Excludes garbage words (permanently - a word marked garbage is never
-    persisted at all, see GarbageWord's docstring/CLAUDE.md) and annotates
-    every remaining result with the word's current familiarity.
+    Annotates every result with the word's current familiarity and garbage
+    status. Excludes nothing - the persisted analysis results are meant to be
+    a faithful representation of the full contents of the analyzed text, so
+    numbers/punctuation/junk (garbage_words) are persisted and returned just
+    like everything else, only flagged via `is_garbage`.
 
-    Deliberately does NOT exclude by familiarity. Filtering by familiarity is
-    a display-time concern only (the frontend's own "hide familiarity >= N"
-    filter over already-persisted results) - it used to also exclude words
-    here, before persistence, which meant a word marked known/familiar could
-    never be found again even by widening the display filter to "show all",
+    This mirrors how familiarity already works: a display-time concern only
+    (the frontend's own "hide familiarity >= N" / "show garbage" filters over
+    already-persisted results), never an exclusion at persist time. Both used
+    to exclude here, which meant a word marked known/familiar - or garbage -
+    could never be found again even by widening/toggling the display filter,
     since the row simply didn't exist. See router.py's `/analyze` handler:
-    every non-garbage word from `results` is now always persisted.
+    every word from `results` is now always persisted.
     """
     filtered = {}
     for word, data in results.items():
-        if word in garbage_words:
-            continue
         familiarity = known_words.get(word)
-        filtered[word] = {**data, "familiarity": familiarity}
+        filtered[word] = {**data, "familiarity": familiarity, "is_garbage": word in garbage_words}
 
     return filtered
 

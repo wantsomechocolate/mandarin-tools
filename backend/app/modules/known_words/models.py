@@ -207,6 +207,30 @@ class UserWord(Base):
     )
 
 
+class SampleSentence(Base):
+    """
+    A sample sentence for a word - deliberately independent of UserWord (an
+    earlier version attached sentences to a UserWord row, requiring a word
+    to be "in your dictionary" before it could have sample sentences; that
+    was reversed once real usage showed sentences are wanted for words that
+    aren't necessarily UserWords too). A word can have many of these. Global
+    only, no scoping - same shape/reasoning as StarredWord, just list-typed
+    (many rows per word) instead of upsert-typed (one row per word).
+    """
+    __tablename__ = "sample_sentences"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    word: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    sentence: Mapped[str] = mapped_column(String, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    user: Mapped["User"] = relationship("User")
+
+    __table_args__ = (
+        Index("ix_sample_sentences_user_word", "user_id", "word"),
+    )
+
 
 class KnownWord(Base):
     """See UserWord's docstring for the scoping design (scope_analysis_id/

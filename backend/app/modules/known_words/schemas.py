@@ -30,6 +30,10 @@ class WordResult(BaseModel):
     count: int
     source: str
     familiarity: int | None = None
+    # Display-time flag only (see GarbageWord/filter_results) - garbage words
+    # are persisted and returned like every other word, never excluded, so
+    # the analysis results stay a faithful representation of the full text.
+    is_garbage: bool = False
 
 
 class CompareSegmentationRequest(BaseModel):
@@ -259,6 +263,19 @@ class StarredWordResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class SampleSentenceCreate(BaseModel):
+    word: str
+    sentence: str
+
+
+class SampleSentenceResponse(BaseModel):
+    id: int
+    word: str
+    sentence: str
+
+    model_config = {"from_attributes": True}
+
+
 class HskFormDetail(BaseModel):
     traditional: str | None = None
     pinyin: str | None = None
@@ -298,3 +315,6 @@ class WordDetail(BaseModel):
     # artifact worth noting but not studying) — see Fragment model docstring
     # for why this is kept fully separate from user_word.
     fragment: FragmentResponse | None = None
+    # Independent of user_word (a word doesn't need to be in the user's
+    # dictionary to have sample sentences) - see SampleSentence's docstring.
+    sample_sentences: list[SampleSentenceResponse] = []
