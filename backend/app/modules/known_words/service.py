@@ -251,50 +251,17 @@ def filter_results(
     return filtered
 
 
-def get_known_words_for_user(
-    user_id: int,
-    db: Session,
-    analysis_id: int | None = None,
-    input_text_id: int | None = None,
-) -> dict[str, int]:
+def get_known_words_for_user(user_id: int, db: Session) -> dict[str, int]:
     """
-    Returns a dict of {word: familiarity} for all known words for a user.
-    Resolved per-scope when analysis_id/input_text_id are given: an
-    analysis-scoped entry for `analysis_id` wins over an input-text-scoped
-    entry for `input_text_id`, which wins over the global (unscoped) entry -
-    see KnownWord's scope_analysis_id/scope_input_text_id docstring. Passing
-    neither returns only global entries.
-
-    Note on the SQL: `scope_analysis_id = :analysis_id` when :analysis_id is
-    Python None binds as `scope_analysis_id = NULL`, which SQL's
-    three-valued logic always evaluates false - so passing None correctly
-    matches no analysis-scoped rows without needing a separate NULL check.
+    Returns a dict of {word: familiarity} for all of a user's known words.
+    Always global - see KnownWord's docstring for why familiarity isn't
+    scoped to an analysis/text the way UserWord/Fragment are.
     """
     rows = db.execute(text("""
-        SELECT word, familiarity, scope_analysis_id, scope_input_text_id
-        FROM known_words
-        WHERE user_id = :user_id
-        AND (
-            (scope_analysis_id IS NULL AND scope_input_text_id IS NULL)
-            OR scope_analysis_id = :analysis_id
-            OR scope_input_text_id = :input_text_id
-        )
-    """), {"user_id": user_id, "analysis_id": analysis_id, "input_text_id": input_text_id}).fetchall()
+        SELECT word, familiarity FROM known_words WHERE user_id = :user_id
+    """), {"user_id": user_id}).fetchall()
 
-    def scope_priority(scope_analysis_id: int | None, scope_input_text_id: int | None) -> int:
-        if scope_analysis_id is not None:
-            return 2
-        if scope_input_text_id is not None:
-            return 1
-        return 0
-
-    best: dict[str, tuple[int, int | None]] = {}
-    for word, familiarity, sa, si in rows:
-        priority = scope_priority(sa, si)
-        if word not in best or priority > best[word][0]:
-            best[word] = (priority, familiarity)
-
-    return {word: familiarity for word, (_, familiarity) in best.items()}
+    return {word: familiarity for word, familiarity in rows}
 
 
 def get_fragments_for_user(

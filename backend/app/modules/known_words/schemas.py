@@ -107,22 +107,15 @@ class WordContextResponse(BaseModel):
 
 
 class KnownWordUpdate(BaseModel):
+    # Always global - see KnownWord's docstring (models.py).
     word: str
     familiarity: int | None = None
-    # Current viewing context (the analysis/input text the user has open) -
-    # used together with `scope` to pick which scoped row this write targets.
-    # See ScopeChoice / _resolve_scope_columns (router.py).
-    analysis_id: int | None = None
-    input_text_id: int | None = None
-    scope: ScopeChoice = "global"
 
 
 class KnownWordResponse(BaseModel):
     id: int
     word: str
     familiarity: int | None = None
-    scope_analysis_id: int | None = None
-    scope_input_text_id: int | None = None
 
     model_config = {"from_attributes": True}
 

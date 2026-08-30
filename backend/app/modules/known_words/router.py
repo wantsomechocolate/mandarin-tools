@@ -64,9 +64,10 @@ from app.modules.known_words.schemas import (
 router = APIRouter(prefix="/known-words", tags=["known-words"])
 
 
-# --- Scoping helpers, shared by the known-words/user-words/fragments CRUD
-# endpoints below (see KnownWord/UserWord/Fragment's scope_analysis_id/
-# scope_input_text_id docstrings in models.py for the full design). ---
+# --- Scoping helpers, shared by the user-words/fragments CRUD endpoints
+# below (see UserWord/Fragment's scope_analysis_id/scope_input_text_id
+# docstrings in models.py for the full design). KnownWord (familiarity) is
+# deliberately NOT scoped - see its own docstring - so it doesn't use these. ---
 
 def _resolve_scope_columns(
     scope: str, analysis_id: int | None, input_text_id: int | None
@@ -236,13 +237,11 @@ def analyze(
         tokenizer_stopwords=tokenizer_stopwords,
     )
 
-    # Get user's known words (resolved for this text - the new Analysis
-    # doesn't have an id yet, but nothing could be scoped to it anyway; see
-    # get_known_words_for_user) and annotate familiarity/garbage status.
-    # Neither excludes here - see filter_results docstring for why
-    # persistence must keep every word from `results`, regardless of
-    # familiarity or garbage status.
-    known_words = service.get_known_words_for_user(current_user.id, db, input_text_id=input_text.id)
+    # Get user's known words (always global - see KnownWord's docstring) and
+    # annotate familiarity/garbage status. Neither excludes here - see
+    # filter_results docstring for why persistence must keep every word from
+    # `results`, regardless of familiarity or garbage status.
+    known_words = service.get_known_words_for_user(current_user.id, db)
     filtered = service.filter_results(results, known_words, garbage_words)
 
     # Save this run as its own Analysis under the input text, remembering
@@ -317,9 +316,7 @@ def get_analysis(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Analysis not found")
 
     results = db.query(AnalysisResult).filter_by(analysis_id=analysis_id).all()
-    known_words = service.get_known_words_for_user(
-        current_user.id, db, analysis_id=analysis_id, input_text_id=analysis.input_text_id
-    )
+    known_words = service.get_known_words_for_user(current_user.id, db)
     garbage_words = service.get_user_garbage_words(current_user.id, db)
 
     word_results = [
@@ -402,12 +399,8 @@ def upsert_known_word(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    scope_analysis_id, scope_input_text_id = _resolve_scope_columns(
-        update.scope, update.analysis_id, update.input_text_id
-    )
     known_word = db.query(KnownWord).filter_by(
         user_id=current_user.id, word=update.word,
-        scope_analysis_id=scope_analysis_id, scope_input_text_id=scope_input_text_id,
     ).first()
 
     if known_word:
@@ -417,8 +410,6 @@ def upsert_known_word(
             user_id=current_user.id,
             word=update.word,
             familiarity=update.familiarity,
-            scope_analysis_id=scope_analysis_id,
-            scope_input_text_id=scope_input_text_id,
         )
         db.add(known_word)
 
@@ -429,37 +420,19 @@ def upsert_known_word(
 
 @router.get("/known-words", response_model=list[KnownWordResponse])
 def list_known_words(
-    analysis_id: int | None = None,
-    input_text_id: int | None = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """
-    Resolved (analysis > text > global - see KnownWord's scope docstring)
-    set of known words for the given viewing context. Omitting both params
-    returns only global entries.
-    """
-    rows = db.query(KnownWord).filter(
-        KnownWord.user_id == current_user.id,
-        or_(*_scope_filter_conditions(KnownWord, analysis_id, input_text_id)),
-    ).all()
-    return list(_resolve_by_scope(rows, key_fn=lambda kw: kw.word).values())
+    return db.query(KnownWord).filter(KnownWord.user_id == current_user.id).all()
 
 
 @router.delete("/known-words/{word}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_known_word(
     word: str,
-    scope_analysis_id: int | None = None,
-    scope_input_text_id: int | None = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Deletes the entry at exactly the given scope (default: the global
-    entry, matching behavior before scoping existed)."""
-    known_word = db.query(KnownWord).filter_by(
-        user_id=current_user.id, word=word,
-        scope_analysis_id=scope_analysis_id, scope_input_text_id=scope_input_text_id,
-    ).first()
+    known_word = db.query(KnownWord).filter_by(user_id=current_user.id, word=word).first()
     if not known_word:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Word not found")
     db.delete(known_word)

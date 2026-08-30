@@ -141,9 +141,11 @@ class UserWord(Base):
 
     Resolution when several entries exist for the same word: an
     analysis-scoped entry wins over an input-text-scoped entry, which wins
-    over the global entry - see service.py's build_user_overlay and
-    get_known_words_for_user docstrings, which apply this same priority.
-    Scoping is what makes it possible to try a custom dictionary word (which
+    over the global entry - see service.py's build_user_overlay docstring,
+    and Fragment's docstring for the identical priority applied there.
+    KnownWord (familiarity) does NOT use this scoping - see its own
+    docstring for why. Scoping is what makes it possible to try a custom
+    dictionary word (which
     feeds straight into DAG segmentation via the per-request UserOverlay -
     see dag_segmentor.py) against just one text without it silently
     affecting every other analysis.
@@ -233,8 +235,15 @@ class SampleSentence(Base):
 
 
 class KnownWord(Base):
-    """See UserWord's docstring for the scoping design (scope_analysis_id/
-    scope_input_text_id, resolution priority) - identical here."""
+    """
+    Familiarity score for a word - deliberately always global, unlike
+    UserWord/Fragment. This was scoped for a while (scope_analysis_id/
+    scope_input_text_id, same design as UserWord/Fragment) but that was
+    reversed: familiarity was never meant to vary by text/analysis - "how
+    well do I know this word" isn't a per-text question the way "should
+    this count toward this text's vocabulary" (UserWord) or "is this a real
+    word here or a segmentation artifact" (Fragment) are.
+    """
     __tablename__ = "known_words"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -242,26 +251,16 @@ class KnownWord(Base):
     word: Mapped[str] = mapped_column(String, nullable=False)
     familiarity: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
 
-    scope_analysis_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("analyses.id"), nullable=True, index=True)
-    scope_input_text_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("input_texts.id"), nullable=True, index=True)
-
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     user: Mapped["User"] = relationship("User")
 
     __table_args__ = (
-        Index(
-            "ix_known_words_user_word_scope", "user_id", "word", "scope_analysis_id", "scope_input_text_id",
-            unique=True, postgresql_nulls_not_distinct=True,
-        ),
+        Index("ix_known_words_user_word", "user_id", "word", unique=True),
         CheckConstraint(
             "familiarity IS NULL OR (familiarity >= 1 AND familiarity <= 5)",
             name="ck_known_words_familiarity"
-        ),
-        CheckConstraint(
-            "scope_analysis_id IS NULL OR scope_input_text_id IS NULL",
-            name="ck_known_words_scope_mutually_exclusive",
         ),
     )
 

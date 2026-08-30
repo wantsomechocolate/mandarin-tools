@@ -120,8 +120,8 @@ def build_user_overlay(
         return None
 
     # Resolve: an input-text-scoped entry wins over the global entry for the
-    # same word (mirrors get_known_words_for_user's priority, one level down
-    # since analysis-scoped entries are excluded above already).
+    # same word (mirrors Fragment's resolution priority, one level down since
+    # analysis-scoped entries are excluded above already).
     resolved: dict[str, int | None] = {}
     scoped_words: set[str] = set()
     for word, freq_combined, scope_input_text_id in rows:
