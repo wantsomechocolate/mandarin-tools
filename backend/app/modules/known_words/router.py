@@ -8,6 +8,7 @@ from app.modules.known_words import service
 
 from app.modules.known_words.models import (
     InputText,
+    Analysis,
     AnalysisResult,
     KnownWord,
     UserWord,
@@ -23,6 +24,10 @@ from app.modules.known_words.models import (
 from app.modules.known_words.schemas import (
     AnalyzeTextRequest,
     AnalysisResponse,
+    AnalysisSummary,
+    InputTextDetailResponse,
+    WordOccurrence,
+    WordContextResponse,
     WordResult,
     KnownWordUpdate,
     KnownWordResponse,
@@ -106,6 +111,31 @@ def analyze(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    # Reuse an existing InputText (re-analyze - just a new Analysis run under
+    # it) if input_text_id is given, otherwise create a new InputText from
+    # title/body as before.
+    if request.input_text_id is not None:
+        input_text = db.query(InputText).filter_by(
+            id=request.input_text_id, user_id=current_user.id
+        ).first()
+        if not input_text:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Input text not found")
+    else:
+        if not request.body:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="body is required when input_text_id is not set"
+            )
+        input_text = InputText(
+            user_id=current_user.id,
+            title=request.title,
+            body=request.body,
+        )
+        db.add(input_text)
+        db.flush()
+
+    body = input_text.body
+
     # Get user's stopwords and garbage words
     lm_stopwords, tokenizer_stopwords = service.get_user_stopwords(current_user.id, db)
     garbage_words = service.get_user_garbage_words(current_user.id, db)
@@ -113,7 +143,7 @@ def analyze(
     # Run analysis — DAG+DP is primary, longest-matching supplements it with
     # words the DAG's dictionary coverage misses (tagged source="longest_match_only")
     results = service.analyze_text_combined(
-        text_body=request.body,
+        text_body=body,
         db=db,
         user_id=current_user.id,
         min_token_length=request.min_token_length,
@@ -133,26 +163,36 @@ def analyze(
         max_familiarity=request.max_familiarity_filter,
     )
 
-    # Save input text
-    input_text = InputText(
-        user_id=current_user.id,
-        title=request.title,
-        body=request.body,
+    # Save this run as its own Analysis under the input text, remembering
+    # the config it used so future runs with different config are
+    # distinguishable from this one.
+    analysis = Analysis(
+        input_text_id=input_text.id,
+        min_token_length=request.min_token_length,
+        max_token_length=request.max_token_length,
+        min_token_count=request.min_token_count,
+        min_familiarity_filter=request.min_familiarity_filter,
+        max_familiarity_filter=request.max_familiarity_filter,
     )
-    db.add(input_text)
+    db.add(analysis)
     db.flush()
 
-    # Save analysis results
+    # Save analysis results. "positions" is only present for words that came
+    # from the DAG's own ordered walk (see aggregate_segments) - tokenizer/
+    # longest_match_only-only words just get positions=None.
     for word, data in filtered.items():
+        positions = data.get("positions")
         db.add(AnalysisResult(
-            input_text_id=input_text.id,
+            analysis_id=analysis.id,
             word=word,
             count=data["count"],
             source=data["source"],
+            positions=[[start, end] for start, end in positions] if positions else None,
         ))
 
     db.commit()
     db.refresh(input_text)
+    db.refresh(analysis)
 
     word_results = [
         WordResult(
@@ -165,6 +205,7 @@ def analyze(
     ]
 
     return AnalysisResponse(
+        analysis_id=analysis.id,
         input_text_id=input_text.id,
         title=input_text.title,
         total_words=sum(d["count"] for d in results.values()),
@@ -173,19 +214,22 @@ def analyze(
     )
 
 
-@router.get("/analyze/{input_text_id}", response_model=AnalysisResponse)
+@router.get("/analyze/{analysis_id}", response_model=AnalysisResponse)
 def get_analysis(
-    input_text_id: int,
+    analysis_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    input_text = db.query(InputText).filter_by(
-        id=input_text_id, user_id=current_user.id
-    ).first()
-    if not input_text:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Input text not found")
+    analysis = (
+        db.query(Analysis)
+        .join(InputText, Analysis.input_text_id == InputText.id)
+        .filter(Analysis.id == analysis_id, InputText.user_id == current_user.id)
+        .first()
+    )
+    if not analysis:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Analysis not found")
 
-    results = db.query(AnalysisResult).filter_by(input_text_id=input_text_id).all()
+    results = db.query(AnalysisResult).filter_by(analysis_id=analysis_id).all()
     known_words = service.get_known_words_for_user(current_user.id, db)
 
     word_results = [
@@ -199,12 +243,55 @@ def get_analysis(
     ]
 
     return AnalysisResponse(
-        input_text_id=input_text.id,
-        title=input_text.title,
+        analysis_id=analysis.id,
+        input_text_id=analysis.input_text_id,
+        title=analysis.input_text.title,
         total_words=sum(r.count for r in results),
         unique_words=len(results),
         results=word_results,
     )
+
+
+@router.get("/analyze/{analysis_id}/context/{word}", response_model=WordContextResponse)
+def get_word_context(
+    analysis_id: int,
+    word: str,
+    context_chars: int = 15,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Returns every stored occurrence of `word` within analysis_id's source
+    text, with `context_chars` characters of surrounding text on each side.
+    Empty `occurrences` (not a 404) when the word has no stored positions -
+    see AnalysisResult.positions docstring for which sources those are.
+    """
+    analysis = (
+        db.query(Analysis)
+        .join(InputText, Analysis.input_text_id == InputText.id)
+        .filter(Analysis.id == analysis_id, InputText.user_id == current_user.id)
+        .first()
+    )
+    if not analysis:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Analysis not found")
+
+    result = db.query(AnalysisResult).filter_by(analysis_id=analysis_id, word=word).first()
+    if not result or not result.positions:
+        return WordContextResponse(word=word, occurrences=[])
+
+    body = analysis.input_text.body
+    occurrences = [
+        WordOccurrence(
+            start=start,
+            end=end,
+            before=body[max(0, start - context_chars):start],
+            match=body[start:end],
+            after=body[end:end + context_chars],
+        )
+        for start, end in result.positions
+    ]
+
+    return WordContextResponse(word=word, occurrences=occurrences)
 
 
 @router.post("/known-words", response_model=KnownWordResponse, status_code=status.HTTP_201_CREATED)
@@ -346,6 +433,52 @@ def list_input_texts(
     current_user: User = Depends(get_current_user),
 ):
     return db.query(InputText).filter_by(user_id=current_user.id).order_by(InputText.created_at.desc()).all()
+
+
+@router.get("/input-texts/{input_text_id}", response_model=InputTextDetailResponse)
+def get_input_text(
+    input_text_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    input_text = db.query(InputText).filter_by(
+        id=input_text_id, user_id=current_user.id
+    ).first()
+    if not input_text:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Input text not found")
+
+    analyses = (
+        db.query(Analysis)
+        .filter_by(input_text_id=input_text_id)
+        .order_by(Analysis.created_at.desc())
+        .all()
+    )
+
+    # total_words/unique_words computed query-time per analysis, same as
+    # AnalysisResponse already does - not stored redundantly on Analysis.
+    summaries = []
+    for a in analyses:
+        results = db.query(AnalysisResult).filter_by(analysis_id=a.id).all()
+        summaries.append(AnalysisSummary(
+            id=a.id,
+            created_at=a.created_at,
+            total_words=sum(r.count for r in results),
+            unique_words=len(results),
+            min_token_length=a.min_token_length,
+            max_token_length=a.max_token_length,
+            min_token_count=a.min_token_count,
+            min_familiarity_filter=a.min_familiarity_filter,
+            max_familiarity_filter=a.max_familiarity_filter,
+        ))
+
+    return InputTextDetailResponse(
+        id=input_text.id,
+        title=input_text.title,
+        body=input_text.body,
+        created_at=input_text.created_at,
+        updated_at=input_text.updated_at,
+        analyses=summaries,
+    )
 
 
 @router.delete("/input-texts/{input_text_id}", status_code=status.HTTP_204_NO_CONTENT)

@@ -1,4 +1,5 @@
 from sqlalchemy import ARRAY, BigInteger, Boolean, CheckConstraint, DateTime, Float, ForeignKey, Index, Integer, SmallInteger, String, func
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.core.database import Base
 from datetime import datetime
@@ -262,8 +263,41 @@ class InputText(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     user: Mapped["User"] = relationship("User")
-    analysis_results: Mapped[list["AnalysisResult"]] = relationship(
-        "AnalysisResult", back_populates="input_text", cascade="all, delete-orphan"
+    # One input text can have many analysis runs (e.g. re-run after
+    # configuration changes) - see Analysis docstring.
+    analyses: Mapped[list["Analysis"]] = relationship(
+        "Analysis", back_populates="input_text", cascade="all, delete-orphan"
+    )
+
+
+class Analysis(Base):
+    """
+    One run of the analysis pipeline over an InputText's body. Deliberately
+    its own entity (not folded into InputText or AnalysisResult) so the same
+    source text can be analyzed multiple times - e.g. after segmentation
+    config changes - with each run's parameters and results kept distinct
+    and independently viewable. Comparing runs against each other is out of
+    scope for now; this just makes multiple runs possible/visible.
+    """
+    __tablename__ = "analyses"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    input_text_id: Mapped[int] = mapped_column(Integer, ForeignKey("input_texts.id"), nullable=False, index=True)
+
+    # Snapshot of the config this run used - persisted (not just accepted as
+    # transient request params) so future runs with different config are
+    # distinguishable from this one.
+    min_token_length: Mapped[int] = mapped_column(Integer, nullable=False, default=2)
+    max_token_length: Mapped[int] = mapped_column(Integer, nullable=False, default=20)
+    min_token_count: Mapped[int] = mapped_column(Integer, nullable=False, default=2)
+    min_familiarity_filter: Mapped[int] = mapped_column(Integer, nullable=False, default=4)
+    max_familiarity_filter: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    input_text: Mapped["InputText"] = relationship("InputText", back_populates="analyses")
+    results: Mapped[list["AnalysisResult"]] = relationship(
+        "AnalysisResult", back_populates="analysis", cascade="all, delete-orphan"
     )
 
 
@@ -271,14 +305,26 @@ class AnalysisResult(Base):
     __tablename__ = "analysis_results"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    input_text_id: Mapped[int] = mapped_column(Integer, ForeignKey("input_texts.id"), nullable=False, index=True)
+    analysis_id: Mapped[int] = mapped_column(Integer, ForeignKey("analyses.id"), nullable=False, index=True)
     word: Mapped[str] = mapped_column(String, nullable=False)
     count: Mapped[int] = mapped_column(Integer, nullable=False)
-    source: Mapped[str] = mapped_column(String, nullable=False)  # "trie", "token", "unknown"
+    source: Mapped[str] = mapped_column(String, nullable=False)  # "trie", "token", "unknown", "dag", "overlay", "longest_match_only"
+    # [[start, end], ...] character offsets into the parent InputText.body,
+    # exclusive end, one pair per occurrence - powers "show this word in
+    # context" without re-running segmentation. Only populated for
+    # dag/overlay-sourced words: the tokenizer's unknown-sequence scan finds
+    # overlapping substrings rather than a disjoint segmentation, so it has
+    # no natural per-occurrence span the way Segmenter.segment()'s ordered
+    # walk does (see aggregate_segments in dag_segmentor.py). Words sourced
+    # only from token/longest_match_only simply have positions=None here.
+    positions: Mapped[list[list[int]] | None] = mapped_column(JSONB, nullable=True)
 
-    input_text: Mapped["InputText"] = relationship("InputText", back_populates="analysis_results")
+    analysis: Mapped["Analysis"] = relationship("Analysis", back_populates="results")
 
     __table_args__ = (
-        Index("ix_analysis_results_input_text_word", "input_text_id", "word", unique=True),
-        CheckConstraint("source IN ('trie', 'token', 'unknown')", name="ck_analysis_results_source"),
+        Index("ix_analysis_results_analysis_word", "analysis_id", "word", unique=True),
+        CheckConstraint(
+            "source IN ('trie', 'token', 'unknown', 'dag', 'overlay', 'longest_match_only')",
+            name="ck_analysis_results_source",
+        ),
     )

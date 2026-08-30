@@ -3,8 +3,12 @@ from datetime import datetime
 
 
 class AnalyzeTextRequest(BaseModel):
+    # Set to re-run analysis against an existing InputText (a new Analysis +
+    # AnalysisResults is created under it, body is ignored). Leave unset to
+    # create a new InputText from title/body, as before.
+    input_text_id: int | None = None
     title: str | None = None
-    body: str
+    body: str | None = None
     min_token_length: int = 2
     max_token_length: int = 20
     min_token_count: int = 2
@@ -43,11 +47,50 @@ class CompareSegmentationResponse(BaseModel):
 
 
 class AnalysisResponse(BaseModel):
+    analysis_id: int
     input_text_id: int
     title: str | None = None
     total_words: int
     unique_words: int
     results: list[WordResult]
+
+
+class AnalysisSummary(BaseModel):
+    """One entry in an input text's list of past analysis runs."""
+    id: int
+    created_at: datetime
+    total_words: int
+    unique_words: int
+    min_token_length: int
+    max_token_length: int
+    min_token_count: int
+    min_familiarity_filter: int
+    max_familiarity_filter: int
+
+
+class InputTextDetailResponse(BaseModel):
+    id: int
+    title: str | None = None
+    body: str
+    created_at: datetime
+    updated_at: datetime
+    analyses: list[AnalysisSummary]
+
+
+class WordOccurrence(BaseModel):
+    start: int
+    end: int
+    before: str
+    match: str
+    after: str
+
+
+class WordContextResponse(BaseModel):
+    word: str
+    # Empty when the word has no stored positions (e.g. it was only found by
+    # the tokenizer or longest-matching passes, which have no natural
+    # per-occurrence span - see AnalysisResult.positions docstring).
+    occurrences: list[WordOccurrence]
 
 
 class KnownWordUpdate(BaseModel):

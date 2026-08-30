@@ -224,9 +224,19 @@ class Segmenter:
 
 def aggregate_segments(results: list[SegmentResult]) -> dict[str, dict]:
     """
-    Collapses an ordered segment list into {word: {"count", "source"}},
+    Collapses an ordered segment list into {word: {"count", "source", "positions"}},
     matching the shape segmentor.longest_matching/tokenizer.tokenize already
-    return, so results are comparable/mergeable with the existing pipeline.
+    return (plus "positions"), so results are comparable/mergeable with the
+    existing pipeline.
+
+    "positions" is a list of (start, end) pairs, one per occurrence - every
+    entry here comes from the DAG's own ordered, non-overlapping walk of the
+    text, so exact positions are always available at this point, regardless
+    of which source label ends up assigned. This is what makes "positions"
+    NOT available later for words added only by the tokenizer or
+    longest-matching passes (see analyze_text_dag/analyze_text_combined in
+    service.py) - those scan overlapping substrings rather than a disjoint
+    segmentation, so they have no single natural span per occurrence.
     """
     output: dict[str, dict] = {}
     for r in results:
@@ -238,6 +248,7 @@ def aggregate_segments(results: list[SegmentResult]) -> dict[str, dict]:
             source = "dag"
         if r.word in output:
             output[r.word]["count"] += 1
+            output[r.word]["positions"].append((r.start, r.end))
         else:
-            output[r.word] = {"count": 1, "source": source}
+            output[r.word] = {"count": 1, "source": source, "positions": [(r.start, r.end)]}
     return output

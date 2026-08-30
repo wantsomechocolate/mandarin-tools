@@ -136,6 +136,26 @@ class TestAggregateSegments:
         agg = aggregate_segments(result)
         assert agg["研究生命"]["source"] == "overlay"
 
+    def test_positions_recorded_per_occurrence(self, segmenter: Segmenter):
+        # "我来到北京我来到北京" -> 我/来到/北京/我/来到/北京
+        result = segmenter.segment("我来到北京我来到北京")
+        agg = aggregate_segments(result)
+        assert agg["我"]["positions"] == [(0, 1), (5, 6)]
+        assert agg["来到"]["positions"] == [(1, 3), (6, 8)]
+        assert agg["北京"]["positions"] == [(3, 5), (8, 10)]
+
+    def test_positions_recorded_for_unknown_and_overlay_sources(self, segmenter: Segmenter):
+        # Positions come from the DAG's own ordered walk, so they're
+        # available regardless of which source label a word ends up with -
+        # not just for plain "dag" words.
+        unknown_result = segmenter.segment("谊")
+        assert aggregate_segments(unknown_result)["谊"]["positions"] == [(0, 1)]
+
+        overlay = UserOverlay()
+        overlay.add_word("研究生命", freq=None, dominance_floor=segmenter.dominance_floor())
+        overlay_result = segmenter.segment("研究生命起源", overlay=overlay)
+        assert aggregate_segments(overlay_result)["研究生命"]["positions"] == [(0, 4)]
+
 
 class TestAffixDiscount:
     """
