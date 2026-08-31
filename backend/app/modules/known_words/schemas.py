@@ -3,7 +3,7 @@ from typing import Literal
 from pydantic import BaseModel
 from datetime import datetime
 
-# Shared by KnownWord/UserWord/Fragment create+upsert requests: "global" (the
+# Shared by UserWord create+upsert requests: "global" (the
 # default, unchanged from before scoping existed) applies everywhere; "text"
 # scopes to every Analysis of the given input_text_id; "analysis" scopes to
 # just the given analysis_id. See each model's scope_analysis_id/
@@ -130,6 +130,10 @@ class UserWordCreate(BaseModel):
     hsk_v2_2012: int | None = None
     hsk_v3_2021: int | None = None
     hsk_v3_2026: int | None = None
+    # Whether this entry's frequency boosts DAG segmentation - see
+    # UserWord's docstring (models.py). Defaults to True, matching the
+    # behavior every UserWord had before this field existed.
+    affects_dag: bool = True
     analysis_id: int | None = None
     input_text_id: int | None = None
     scope: ScopeChoice = "global"
@@ -140,11 +144,14 @@ class UserWordUpsert(BaseModel):
     Partial update used by the word-detail panel: any field left unset is
     left untouched on an existing row, and the row is created if it doesn't
     exist yet — filling in a pronunciation or meaning is enough to make a
-    word a UserWord, no separate "add" step required.
+    word a UserWord, no separate "add" step required. affects_dag follows
+    the same exclude-unset rule as every other field here - omit it to
+    leave an existing row's segmentation-boost setting untouched.
     """
     pronunciation: str | None = None
     meaning: str | None = None
     notes: str | None = None
+    affects_dag: bool = True
     analysis_id: int | None = None
     input_text_id: int | None = None
     scope: ScopeChoice = "global"
@@ -157,6 +164,7 @@ class UserWordResponse(BaseModel):
     meaning: str | None = None
     notes: str | None = None
     dictionary_word_id: int | None = None
+    affects_dag: bool = True
     scope_analysis_id: int | None = None
     scope_input_text_id: int | None = None
     # Informational only - see UserWord's docstring (models.py).
@@ -211,52 +219,13 @@ class GarbageWordResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class FragmentCreate(BaseModel):
-    word: str
-    note: str | None = None
-    # Tri-state - see Fragment's docstring (models.py). Defaults to True,
-    # preserving the pre-tri-state behavior for anyone just marking
-    # something a fragment normally.
-    is_fragment: bool = True
-    analysis_id: int | None = None
-    input_text_id: int | None = None
-    scope: ScopeChoice = "global"
-
-
-class FragmentUpsert(BaseModel):
-    """
-    Partial update, same upsert pattern as UserWordUpsert — marking a
-    fragment and annotating it with a note are the same action. Like every
-    other field here, `is_fragment` follows the exclude-unset partial-update
-    rule: omit it to leave an existing row's tri-state choice untouched;
-    include it (true or false) to set/change it. The default of True only
-    matters for the create-from-nothing case.
-    """
-    note: str | None = None
-    is_fragment: bool = True
-    analysis_id: int | None = None
-    input_text_id: int | None = None
-    scope: ScopeChoice = "global"
-
-
-class FragmentResponse(BaseModel):
-    id: int
-    word: str
-    note: str | None = None
-    is_fragment: bool
-    scope_analysis_id: int | None = None
-    scope_input_text_id: int | None = None
-
-    model_config = {"from_attributes": True}
-
-
 class StarredWordCreate(BaseModel):
     word: str
     note: str | None = None
 
 
 class StarredWordUpsert(BaseModel):
-    """Partial update, same upsert pattern as FragmentUpsert."""
+    """Partial update, same upsert pattern as UserWordUpsert."""
     note: str | None = None
 
 
@@ -322,19 +291,6 @@ class WordDetail(BaseModel):
     # entry's weight per its own unrelated priority logic - this field must
     # never be read as if it were that resolution.
     user_words: list[UserWordResponse] = []
-    # The single resolved Fragment for this viewing context (analysis > text
-    # > global priority, same as before) - None if no applicable row exists
-    # at any scope. Check `.is_fragment` on this, not just non-null
-    # truthiness: a resolved row can now represent an explicit "not a
-    # fragment" override (see Fragment's docstring, models.py), so its mere
-    # presence no longer means "this is a fragment."
-    fragment: FragmentResponse | None = None
-    # Every Fragment row across the three scope levels relevant to the
-    # current viewing context, most-specific first (same shape/reasoning as
-    # user_words above) - lets the tri-state scope selector read any scope's
-    # current choice client-side without a round trip when the scope
-    # dropdown changes. `fragment` above is just fragments[0] if present.
-    fragments: list[FragmentResponse] = []
     # Independent of user_words (a word doesn't need to be in the user's
     # dictionary to have sample sentences) - see SampleSentence's docstring.
     sample_sentences: list[SampleSentenceResponse] = []

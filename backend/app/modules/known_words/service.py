@@ -255,7 +255,7 @@ def get_known_words_for_user(user_id: int, db: Session) -> dict[str, int]:
     """
     Returns a dict of {word: familiarity} for all of a user's known words.
     Always global - see KnownWord's docstring for why familiarity isn't
-    scoped to an analysis/text the way UserWord/Fragment are.
+    scoped to an analysis/text the way UserWord is.
     """
     rows = db.execute(text("""
         SELECT word, familiarity FROM known_words WHERE user_id = :user_id

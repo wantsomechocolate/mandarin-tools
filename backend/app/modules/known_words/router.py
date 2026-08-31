@@ -18,7 +18,6 @@ from app.modules.known_words.models import (
     SampleSentence,
     Stopword,
     GarbageWord,
-    Fragment,
     StarredWord,
     DictionaryWord,
     HskEntry,
@@ -46,9 +45,6 @@ from app.modules.known_words.schemas import (
     StopwordResponse,
     GarbageWordCreate,
     GarbageWordResponse,
-    FragmentCreate,
-    FragmentResponse,
-    FragmentUpsert,
     StarredWordCreate,
     StarredWordResponse,
     StarredWordUpsert,
@@ -64,10 +60,10 @@ from app.modules.known_words.schemas import (
 router = APIRouter(prefix="/known-words", tags=["known-words"])
 
 
-# --- Scoping helpers, shared by the user-words/fragments CRUD endpoints
-# below (see UserWord/Fragment's scope_analysis_id/scope_input_text_id
-# docstrings in models.py for the full design). KnownWord (familiarity) is
-# deliberately NOT scoped - see its own docstring - so it doesn't use these. ---
+# --- Scoping helpers, shared by the user-words CRUD endpoints below (see
+# UserWord's scope_analysis_id/scope_input_text_id docstring in models.py
+# for the full design). KnownWord (familiarity) is deliberately NOT scoped -
+# see its own docstring - so it doesn't use these. ---
 
 def _resolve_scope_columns(
     scope: str, analysis_id: int | None, input_text_id: int | None
@@ -147,8 +143,8 @@ def _sort_most_specific_first(rows):
     Same priority as _resolve_by_scope, but for a single word's already
     scope-filtered rows (e.g. from get_word_detail) where every applicable
     entry should be kept and shown, not collapsed to one winner - see
-    UserWord/Fragment's docstrings (models.py) for why no entry should ever
-    be hidden just because a more-specific one exists.
+    UserWord's docstring (models.py) for why no entry should ever be hidden
+    just because a more-specific one exists.
     """
     return sorted(rows, key=_scope_priority, reverse=True)
 
@@ -871,127 +867,9 @@ def delete_garbage_word(
     db.commit()
 
 
-# Fragments — segmentation artifacts / partial strings worth annotating but
-# not studying. A fragment stays in the persisted analysis results exactly
-# as segmented, same as every other word now (see filter_results docstring -
-# nothing is excluded at persist time, including garbage words). Hiding it
-# from the default view and letting the user reveal/annotate it is handled
-# client-side, the same way source="longest_match_only" and garbage words
-# are handled — this keeps fragment marking fully reversible and
-# inspectable, rather than a one-way deletion.
-@router.get("/fragments", response_model=list[FragmentResponse])
-def list_fragments(
-    analysis_id: int | None = None,
-    input_text_id: int | None = None,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """
-    Resolved (analysis > text > global - see Fragment's scope docstring) set
-    of fragments for the given viewing context. Omitting both params
-    returns only global entries.
-    """
-    rows = db.query(Fragment).filter(
-        Fragment.user_id == current_user.id,
-        or_(*_scope_filter_conditions(Fragment, analysis_id, input_text_id)),
-    ).all()
-    return list(_resolve_by_scope(rows, key_fn=lambda f: f.word).values())
-
-
-@router.post("/fragments", response_model=FragmentResponse, status_code=status.HTTP_201_CREATED)
-def create_fragment(
-    fragment_in: FragmentCreate,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    scope_analysis_id, scope_input_text_id = _resolve_scope_columns(
-        fragment_in.scope, fragment_in.analysis_id, fragment_in.input_text_id
-    )
-    existing = db.query(Fragment).filter_by(
-        user_id=current_user.id, word=fragment_in.word,
-        scope_analysis_id=scope_analysis_id, scope_input_text_id=scope_input_text_id,
-    ).first()
-    if existing:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Fragment already exists"
-        )
-    fragment = Fragment(
-        user_id=current_user.id,
-        word=fragment_in.word,
-        note=fragment_in.note,
-        is_fragment=fragment_in.is_fragment,
-        scope_analysis_id=scope_analysis_id,
-        scope_input_text_id=scope_input_text_id,
-    )
-    db.add(fragment)
-    db.commit()
-    db.refresh(fragment)
-    return fragment
-
-
-@router.put("/fragments/{word}", response_model=FragmentResponse)
-def upsert_fragment(
-    word: str,
-    update: FragmentUpsert,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """Creates or updates a fragment note at the given scope (default:
-    global) — same upsert + scope pattern as /user-words/{word}: marking a
-    fragment and annotating it are one action."""
-    scope_analysis_id, scope_input_text_id = _resolve_scope_columns(
-        update.scope, update.analysis_id, update.input_text_id
-    )
-    fragment = db.query(Fragment).filter_by(
-        user_id=current_user.id, word=word,
-        scope_analysis_id=scope_analysis_id, scope_input_text_id=scope_input_text_id,
-    ).first()
-
-    provided = update.model_dump(exclude_unset=True, exclude={"analysis_id", "input_text_id", "scope"})
-
-    if fragment:
-        for field, value in provided.items():
-            setattr(fragment, field, value)
-    else:
-        fragment = Fragment(
-            user_id=current_user.id,
-            word=word,
-            scope_analysis_id=scope_analysis_id,
-            scope_input_text_id=scope_input_text_id,
-            **provided,
-        )
-        db.add(fragment)
-
-    db.commit()
-    db.refresh(fragment)
-    return fragment
-
-
-@router.delete("/fragments/{word}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_fragment(
-    word: str,
-    scope_analysis_id: int | None = None,
-    scope_input_text_id: int | None = None,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """Deletes the entry at exactly the given scope (default: the global
-    entry, matching behavior before scoping existed)."""
-    fragment = db.query(Fragment).filter_by(
-        user_id=current_user.id, word=word,
-        scope_analysis_id=scope_analysis_id, scope_input_text_id=scope_input_text_id,
-    ).first()
-    if not fragment:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Fragment not found")
-    db.delete(fragment)
-    db.commit()
-
-
 # Starred words — a lightweight personal bookmark ("this looks interesting,
 # come back to it"), global only (see StarredWord's docstring for why it's
-# not scoped like KnownWord/UserWord/Fragment). Endpoints mirror the
-# Fragment ones exactly, minus scoping.
+# not scoped like KnownWord/UserWord).
 @router.get("/starred-words", response_model=list[StarredWordResponse])
 def list_starred_words(
     db: Session = Depends(get_db),
@@ -1079,18 +957,14 @@ def get_word_detail(
 ):
     """
     analysis_id/input_text_id (the caller's current viewing context) decide
-    which scoped user_word/fragment rows are relevant - global always,
-    plus this analysis's/this text's own row if applicable (see
+    which scoped user_word rows are relevant - global always, plus this
+    analysis's/this text's own row if applicable (see
     _scope_filter_conditions). Omitting both shows only global entries.
 
     user_words returns every applicable row, most-specific first - never
     resolved to one, so the panel can show/edit/delete each independently
     without implying a relationship between scopes (see UserWord's
-    docstring). fragment/fragments: `fragment` is the single resolved
-    entry (analysis > text > global, same priority as before - still
-    needed for the bulk "what does this word look like right now" case),
-    while `fragments` is every applicable row for the tri-state scope
-    selector to read from client-side.
+    docstring).
     """
 
     dict_word = db.query(DictionaryWord).filter_by(word=word).first()
@@ -1107,13 +981,6 @@ def get_word_detail(
         or_(*_scope_filter_conditions(UserWord, analysis_id, input_text_id)),
     ).all()
     user_words = _sort_most_specific_first(user_word_rows)
-
-    fragment_rows = db.query(Fragment).filter(
-        Fragment.user_id == current_user.id, Fragment.word == word,
-        or_(*_scope_filter_conditions(Fragment, analysis_id, input_text_id)),
-    ).all()
-    fragments = _sort_most_specific_first(fragment_rows)
-    fragment = fragments[0] if fragments else None
 
     sample_sentences = (
         db.query(SampleSentence)
@@ -1146,7 +1013,5 @@ def get_word_detail(
             for c in cedict_entries
         ],
         user_words=user_words,
-        fragment=fragment,
-        fragments=fragments,
         sample_sentences=sample_sentences,
     )

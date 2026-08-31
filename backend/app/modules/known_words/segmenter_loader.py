@@ -108,9 +108,18 @@ def build_user_overlay(
     could ever match against. This is also the literal mechanism that keeps
     an analysis/text-scoped custom word from leaking into *other* texts'
     segmentation - callers simply don't pass its input_text_id.
+
+    affects_dag=false rows are resolved the same as any other (a text-scoped
+    false can still win over a global true, etc.) but are then skipped
+    entirely when building the overlay - see UserWord's docstring for why
+    this exists (it replaced the standalone Fragment concept). A word whose
+    resolved entry has affects_dag=false gets no overlay boost at all,
+    segmenting exactly as if it had no UserWord entry here - its
+    pronunciation/meaning/notes are untouched by this, since none of that is
+    read here in the first place.
     """
     rows = db.execute(text("""
-        SELECT word, freq_combined, scope_input_text_id FROM user_words
+        SELECT word, freq_combined, scope_input_text_id, affects_dag FROM user_words
         WHERE user_id = :user_id
         AND scope_analysis_id IS NULL
         AND (scope_input_text_id IS NULL OR scope_input_text_id = :input_text_id)
@@ -120,19 +129,25 @@ def build_user_overlay(
         return None
 
     # Resolve: an input-text-scoped entry wins over the global entry for the
-    # same word (mirrors Fragment's resolution priority, one level down since
-    # analysis-scoped entries are excluded above already).
-    resolved: dict[str, int | None] = {}
+    # same word (analysis-scoped entries are already excluded above).
+    resolved: dict[str, tuple[int | None, bool]] = {}
     scoped_words: set[str] = set()
-    for word, freq_combined, scope_input_text_id in rows:
+    for word, freq_combined, scope_input_text_id, affects_dag in rows:
         if scope_input_text_id is not None:
-            resolved[word] = freq_combined
+            resolved[word] = (freq_combined, affects_dag)
             scoped_words.add(word)
         elif word not in scoped_words:
-            resolved[word] = freq_combined
+            resolved[word] = (freq_combined, affects_dag)
 
     overlay = UserOverlay()
     floor = segmenter.dominance_floor()
-    for word, freq_combined in resolved.items():
+    for word, (freq_combined, affects_dag) in resolved.items():
+        if not affects_dag:
+            continue
         overlay.add_word(word, freq_combined, dominance_floor=floor)
-    return overlay
+    # Keep the "None means nothing to add" contract honest even when every
+    # resolved row turned out to be affects_dag=false - functionally an
+    # empty UserOverlay already behaves identically to None in Segmenter
+    # (empty trie/freq dict, every lookup misses), but returning None here
+    # lets callers skip overlay handling entirely, same as the no-rows case.
+    return overlay if overlay.freq else None
