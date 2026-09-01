@@ -22,7 +22,7 @@
 		loading = true;
 		try {
 			const result = await api.analyzeText(title || null, body) as any;
-			goto(`/analyze/${result.input_text_id}`);
+			goto(`/analyze/${result.analysis_id}`);
 		} catch (e: unknown) {
 			error = e instanceof Error ? e.message : 'Analysis failed';
 		} finally {

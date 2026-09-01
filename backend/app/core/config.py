@@ -13,7 +13,10 @@ class Settings(BaseSettings):
     # Auth
     secret_key: str
     algorithm: str = "HS256"
-    access_token_expire_minutes: int = 30
+    # No prod/dev config split exists yet (single environment so far - see
+    # CLAUDE.md's Deployment section) - still override-able via
+    # MANDARIN_TOOLS_ACCESS_TOKEN_EXPIRE_MINUTES once one does.
+    access_token_expire_minutes: int = 60
 
     # App
     app_name: str = "Mandarin Tools"

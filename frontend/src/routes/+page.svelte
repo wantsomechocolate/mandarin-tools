@@ -50,7 +50,7 @@
 	</nav>
 
 	<main class="max-w-4xl mx-auto px-6 py-8">
-		<h2 class="text-2xl font-bold text-gray-800 mb-6">Your Analyses</h2>
+		<h2 class="text-2xl font-bold text-gray-800 mb-6">Your Texts</h2>
 
 		{#if error}
 			<div class="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded mb-4">
@@ -62,7 +62,7 @@
 			<p class="text-gray-500">Loading...</p>
 		{:else if inputTexts.length === 0}
 			<div class="text-center py-16 text-gray-500">
-				<p class="text-lg mb-4">No analyses yet.</p>
+				<p class="text-lg mb-4">No texts yet.</p>
 				<a href="/analyze" class="bg-blue-600 text-white px-6 py-3 rounded-md hover:bg-blue-700 font-medium">
 					Analyze your first text
 				</a>
@@ -72,8 +72,8 @@
 				{#each inputTexts as text}
 					<div class="bg-white rounded-lg shadow-sm p-4 flex justify-between items-center">
 						<div>
-							<a							
-							href="/analyze/{text.id}"
+							<a
+							href="/input-texts/{text.id}"
 							    class="font-medium text-blue-600 hover:underline"
 							>
 							    {text.title ?? 'Untitled'}
@@ -82,12 +82,22 @@
 								{new Date(text.created_at).toLocaleDateString()}
 							</p>
 						</div>
-						<button
-							onclick={() => handleDelete(text.id)}
-							class="text-red-500 hover:text-red-700 text-sm"
-						>
-							Delete
-						</button>
+						<div class="flex items-center gap-4">
+							{#if text.latest_analysis_id}
+								<a
+									href="/analyze/{text.latest_analysis_id}"
+									class="text-sm text-blue-600 hover:underline"
+								>
+									View latest results →
+								</a>
+							{/if}
+							<button
+								onclick={() => handleDelete(text.id)}
+								class="text-red-500 hover:text-red-700 text-sm"
+							>
+								Delete
+							</button>
+						</div>
 					</div>
 				{/each}
 			</div>
