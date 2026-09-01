@@ -43,6 +43,13 @@ class WordResult(BaseModel):
     # then always False). Drives the results-table quick-action's corner
     # scope badge and the menu-building logic client-side.
     hidden_governing_scope: str = "default"
+    # Resolved (never persisted), same pattern as is_garbage/is_hidden -
+    # whether this word has an applicable UserWord row (any scope relevant
+    # to this viewing context - see router.py's _resolve_user_word_presence).
+    # Existence-based like WordVisibility, not tri-state like affects_dag -
+    # there's no separate per-row opinion to resolve here, just "is this
+    # word in the user's dictionary."
+    is_user_word: bool = False
 
 
 class CompareSegmentationRequest(BaseModel):

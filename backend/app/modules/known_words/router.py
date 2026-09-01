@@ -183,6 +183,24 @@ def _resolve_word_visibility(
     return resolved
 
 
+def _resolve_user_word_presence(
+    user_id: int, db: Session, analysis_id: int | None, input_text_id: int | None
+) -> set[str]:
+    """
+    Words that have at least one applicable UserWord row for this viewing
+    context (global, plus this text's/this analysis's own row if
+    applicable - same _scope_filter_conditions used by get_word_detail/
+    list_user_words). Existence-based, like WordVisibility - unlike
+    affects_dag there's no separate per-row opinion to resolve, just "is
+    this word in the user's dictionary here." Powers WordResult.is_user_word.
+    """
+    rows = db.query(UserWord.word).filter(
+        UserWord.user_id == user_id,
+        or_(*_scope_filter_conditions(UserWord, analysis_id, input_text_id)),
+    ).distinct().all()
+    return {word for (word,) in rows}
+
+
 @router.post("/compare-segmentation", response_model=CompareSegmentationResponse)
 def compare_segmentation(
     request: CompareSegmentationRequest,
@@ -329,6 +347,7 @@ def analyze(
     # brand-new analysis, same reasoning as build_user_overlay never
     # resolving analysis-scoped UserWord rows.
     visibility = _resolve_word_visibility(current_user.id, db, analysis.id, input_text.id)
+    user_words_present = _resolve_user_word_presence(current_user.id, db, analysis.id, input_text.id)
 
     word_results = [
         WordResult(
@@ -339,6 +358,7 @@ def analyze(
             is_garbage=data.get("is_garbage", False),
             is_hidden=visibility.get(word, (False, "default"))[0],
             hidden_governing_scope=visibility.get(word, (False, "default"))[1],
+            is_user_word=word in user_words_present,
         )
         for word, data in sorted(filtered.items(), key=lambda x: x[1]["count"], reverse=True)
     ]
@@ -379,6 +399,7 @@ def get_analysis(
     # -exposed analysis - an analysis-scoped WordVisibility row can and does
     # apply when reopening it, see _resolve_word_visibility.
     visibility = _resolve_word_visibility(current_user.id, db, analysis.id, analysis.input_text_id)
+    user_words_present = _resolve_user_word_presence(current_user.id, db, analysis.id, analysis.input_text_id)
 
     word_results = [
         WordResult(
@@ -389,6 +410,7 @@ def get_analysis(
             is_garbage=r.word in garbage_words,
             is_hidden=visibility.get(r.word, (False, "default"))[0],
             hidden_governing_scope=visibility.get(r.word, (False, "default"))[1],
+            is_user_word=r.word in user_words_present,
         )
         for r in sorted(results, key=lambda x: x.count, reverse=True)
     ]
