@@ -195,6 +195,13 @@ class UserWordResponse(BaseModel):
     # Informational only - see UserWord's docstring (models.py).
     created_from_analysis_id: int | None = None
     created_from_input_text_id: int | None = None
+    # Only populated by GET /user-words?all_scopes=true (see list_user_words,
+    # router.py) - the title of whatever InputText this row is ultimately
+    # scoped under (directly for a text-scoped row, via its Analysis for an
+    # analysis-scoped row), None for a global row or for the normal
+    # resolved-view list mode. Lets the "all your user words" management
+    # view label/link scoped rows without a second round trip per row.
+    input_text_title: str | None = None
 
     model_config = {"from_attributes": True}
 
@@ -321,6 +328,11 @@ class CedictSense(BaseModel):
 class WordDetail(BaseModel):
     word: str
     frequency: int | None = None
+    # Derived read-cache columns from DictionaryWord (see its docstring,
+    # models.py) - both null whenever frequency is (nothing to compute a
+    # tier from). Populated by scripts/compute_word_rarity.py, not live.
+    freq_per_million: float | None = None
+    rarity_tier: str | None = None
     hsk_v2_2012: int | None = None
     hsk_v3_2021: int | None = None
     hsk_v3_2026: int | None = None

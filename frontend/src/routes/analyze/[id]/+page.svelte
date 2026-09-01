@@ -4,6 +4,7 @@
 	import { isLoggedIn } from '$lib/auth';
 	import * as api from '$lib/api';
 	import type { Scope } from '$lib/api';
+	import { familiarityLabel, familiarityColor } from '$lib/wordDisplay';
 	import { goto } from '$app/navigation';
 	import type { PageProps } from './$types';
 
@@ -114,6 +115,11 @@
 	interface WordDetail {
 		word: string;
 		frequency: number | null;
+		// Derived read-cache columns from DictionaryWord (see its docstring,
+		// models.py) - both null whenever frequency is. Populated by
+		// scripts/compute_word_rarity.py, not live.
+		freq_per_million: number | null;
+		rarity_tier: string | null;
 		hsk_v2_2012: number | null;
 		hsk_v3_2021: number | null;
 		hsk_v3_2026: number | null;
@@ -1044,30 +1050,6 @@
 		}
 	}
 
-	function familiarityLabel(score: number | null): string {
-		if (score === null || score === undefined) return 'Unknown';
-		const labels: Record<number, string> = {
-			1: 'Seen it',
-			2: 'Recognize',
-			3: 'Know it',
-			4: 'Know well',
-			5: 'Mastered',
-		};
-		return labels[score] ?? 'Unknown';
-	}
-
-	function familiarityColor(score: number | null): string {
-		if (score === null || score === undefined) return 'bg-gray-100 text-gray-600';
-		const colors: Record<number, string> = {
-			1: 'bg-red-100 text-red-700',
-			2: 'bg-orange-100 text-orange-700',
-			3: 'bg-yellow-100 text-yellow-700',
-			4: 'bg-green-100 text-green-700',
-			5: 'bg-emerald-100 text-emerald-700',
-		};
-		return colors[score] ?? 'bg-gray-100 text-gray-600';
-	}
-
 	// Tooltip for the results-table/card bookmark button, which only ever
 	// reflects the word's GLOBAL UserWord entry (see userWordAffectsDag's
 	// own comment) - distinguishes all three tri-state values (see
@@ -1106,6 +1088,33 @@
 			longest_match_only: 'bg-amber-100 text-amber-700',
 		};
 		return colors[source] ?? 'bg-gray-100 text-gray-600';
+	}
+
+	// Word-detail panel's rarity badge (DictionaryWord.rarity_tier - see its
+	// docstring, models.py). Deliberately its own gray-to-warm color scale,
+	// distinct from the HSK badges' blue/purple/green in the same panel
+	// section, so the two badge families don't get confused with each other
+	// at a glance.
+	function rarityLabel(tier: string): string {
+		const labels: Record<string, string> = {
+			extremely_rare: 'Extremely rare',
+			rare: 'Rare',
+			uncommon: 'Moderate',
+			common: 'Common',
+			extremely_common: 'Extremely common',
+		};
+		return labels[tier] ?? tier;
+	}
+
+	function rarityColor(tier: string): string {
+		const colors: Record<string, string> = {
+			extremely_rare: 'bg-gray-100 text-gray-500',
+			rare: 'bg-stone-200 text-stone-600',
+			uncommon: 'bg-yellow-100 text-yellow-700',
+			common: 'bg-orange-100 text-orange-700',
+			extremely_common: 'bg-red-100 text-red-700',
+		};
+		return colors[tier] ?? 'bg-gray-100 text-gray-500';
 	}
 
 	function toggleInfo(word: string) {
@@ -2000,10 +2009,21 @@
 							</div>
 						</div>
 
-						<!-- Corpus frequency -->
+						<!-- Corpus frequency - shown as just the rarity chip, not a
+						     separate raw number next to it; the raw count and the
+						     per-million figure both live in the chip's hover tooltip
+						     instead, so this stays one compact chip rather than a
+						     number-plus-badge pair. -->
 						<p class="text-xs font-medium text-gray-400 uppercase tracking-wide mb-2">Corpus frequency</p>
-						{#if selectedWord.frequency}
-							<p class="text-sm text-gray-700">{selectedWord.frequency.toLocaleString()}</p>
+						{#if selectedWord.rarity_tier}
+							<span
+								class="text-xs px-2 py-1 rounded-full {rarityColor(selectedWord.rarity_tier)}"
+								title={selectedWord.frequency != null && selectedWord.freq_per_million != null
+									? `${selectedWord.frequency.toLocaleString()} occurrences (${selectedWord.freq_per_million.toFixed(selectedWord.freq_per_million < 1 ? 4 : 2)} per million)`
+									: ''}
+							>
+								{rarityLabel(selectedWord.rarity_tier)}
+							</span>
 						{:else}
 							<p class="text-sm text-gray-400">No frequency data for this word.</p>
 						{/if}

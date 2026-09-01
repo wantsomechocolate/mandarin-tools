@@ -313,6 +313,55 @@ Source sorts by the *displayed* label (`sourceLabel`), not the raw
 adjacently; Familiarity treats unset (`null`) as lower than any scored
 value 1-5.
 
+## Rarity tier: a persisted read-cache derived from corpus frequency
+
+`DictionaryWord.freq_per_million`/`.rarity_tier` are derived, persisted
+columns (both NULL whenever `frequency` is), not computed live — populated
+by `backend/scripts/compute_word_rarity.py`, run after
+`import_frequencies.py`/whenever frequency data changes. `rarity_tier` is
+one of 5 fixed values (`extremely_rare`/`rare`/`uncommon`/`common`/
+`extremely_common`), enforced via a CHECK constraint (this schema's
+existing pattern for a small fixed string set — see
+`ck_analysis_results_source` — rather than a native Postgres enum type).
+
+**Cutoffs are finalized, not something to recompute per environment**:
+`backend/scripts/analyze_word_rarity.py` (read-only, run once) found them
+by log10-transforming occurrences-per-million (raw/equal-width bucketing
+both fail here — word frequency follows Zipf's law, a handful of words
+account for a huge share of occurrences — log-space is what makes
+equal-width buckets actually mean "roughly an order of magnitude more/less
+common than its neighbor"), then cross-checked the candidate cutoffs
+against HSK levels (lower HSK levels should skew toward the common end -
+they did). `compute_word_rarity.py` itself does no log-space work at
+all — the log transform was only ever needed to *find* sensible cutoffs;
+final tier assignment is a plain occurrences-per-million range check
+(`extremely_rare` < 0.03, `rare` 0.03-1, `uncommon` 1-50, `common`
+50-2250, `extremely_common` >= 2250).
+
+**`compute_word_rarity.py` is 2 bulk `UPDATE`s, not a Python row loop** —
+a deliberate deviation from "batch commits" read literally: the same
+"single bulk UPDATE across the whole table" shape `import_frequencies.py`'s
+`calc_combined`/`frequency` steps already use, not a new pattern. At ~1.6M
+rows this is fewer round trips than any per-row/chunked approach, and
+still satisfies re-runnability — both columns are reset to NULL first for
+rows that no longer qualify (`frequency` NULL or 0), so a re-run after
+frequency data changes doesn't leave stale tiers behind. No
+insert/conflict handling needed either way, since every row already
+exists (`dictionary_words` is populated by `build_dictionary.py`/
+`import_frequencies.py` beforehand) — this only ever `UPDATE`s.
+
+**Frontend**: the word-detail panel's rarity badge sits directly next to
+the existing "Corpus frequency" number (`analyze/[id]/+page.svelte`),
+using the same small-pill visual language as the HSK badges in that same
+section — but its own gray-to-warm color scale (`rarityColor`), distinct
+from HSK's blue/purple/green, so the two badge families read as separate
+things at a glance. The raw `freq_per_million` number lives in the
+badge's `title` tooltip rather than inline, to avoid a second number
+competing with the frequency count right next to it. Omitted entirely
+(not an empty/placeholder badge) whenever `rarity_tier` is null — same
+"omit if absent" pattern the optional HSK badges in that section already
+use.
+
 ## Word-detail panel: early steps toward a Pleco-style multi-source view
 
 Long-term goal (explicitly deferred, not built): instead of merging all data
@@ -338,6 +387,66 @@ concern — segmentation resolution stays entirely in
 `build_user_overlay`/`segmenter_loader.py`, which picks exactly one row's
 weight (and skips it if `affects_dag` is false) per its own unrelated
 scope-priority logic.
+
+## Profile pages: standalone management screens for the "global" lists
+
+Before this, `KnownWord`/`UserWord`/`GarbageWord`/`Stopword`/`StarredWord`
+were only ever visible/editable through the lens of one analysis's results
+page - there was no way to see "all my known words" or "all my user words
+across every text" in one place. `frontend/src/routes/profile/` adds one
+tab per list (`+layout.svelte` renders the shared nav/tab bar; `+page.svelte`
+is a landing page of count-cards linking into each tab), each a fully
+independent page (own fetch, own search box, own add-form) rather than one
+mega-component - this matches the rest of the app's existing "one page owns
+its own state" convention (no shared page-level components existed before
+this either).
+
+**`UserWord` needed a genuinely new backend capability, the other four
+didn't.** `KnownWord`/`GarbageWord`/`Stopword`/`StarredWord` have no
+per-text/per-analysis scoping, so their existing `GET` list endpoints were
+already complete "show me everything" views with zero backend changes
+needed. `UserWord` does have scoping, and `GET /user-words` always resolved
+to one row per word (analysis > text > global winner) — exactly right for
+segmentation/the results page, exactly wrong for "show me every entry I've
+ever made, wherever it's scoped." Added `all_scopes: bool = False` to that
+endpoint (`list_user_words`, router.py): when true, resolution is bypassed
+entirely and every row for the user comes back unresolved, each annotated
+with `input_text_title` (via `_resolve_input_text_titles` — a 2-query bulk
+join, not per-row) so the page can label/link a scoped row without a
+second round trip per row. `api.ts` exposes this as `listAllUserWords()`,
+kept a separate function from `listUserWords(analysisId, inputTextId)`
+rather than overloading it, since the two return shapes mean genuinely
+different things (one resolved answer per word vs. every row) and mixing
+them behind one signature invited a caller using the wrong mode by
+accident.
+
+**The User Words page's "+ Add" only ever creates a global entry** - unlike
+every other list here, a brand-new `UserWord` row from this page has no
+"current text/analysis" to scope to (that's still only available from
+inside a specific analysis's word-detail panel, which is unchanged). Its
+per-row edit form reuses the exact tri-state `affects_dag` radio-group
+markup from that same panel (`entry.scope_analysis_id == null` gate, three
+`<input type="radio">`s, not a checkbox) rather than a boolean checkbox -
+a plain checkbox literally cannot represent `NULL` ("no preference,
+inherit from a broader scope") as distinct from `false` ("explicitly
+excluded"), and would silently coerce an untouched `NULL` to `false` on
+every save. This was caught live while building this page (the exact same
+bug pattern the nullability fix earlier in this doc was about, recurring
+in a second location) - fixed there and cross-checked that the original
+results-page panel never had it in the first place.
+
+**Garbage Words and Stopwords show raw, unresolved rows** (system defaults
+mixed with the user's own additions/overrides), not a single merged view -
+`service.get_user_garbage_words`'s exact `garbage - overrides` math is
+re-implemented client-side (same as the results page's own `garbageWords`
+Set already does) to produce a "your effective garbage words" section plus
+a secondary "excluded from garbage" section for override rows, but
+Stopwords' code-level defaults (`DEFAULT_LM_STOPWORDS`/
+`DEFAULT_TOKENIZER_STOPWORDS`, service.py) have no API surfacing them at
+all — `GET /stopwords` only ever returned DB rows — so they're absent from
+that page entirely; flagged here since it's an intentional scoping choice
+(nothing there would be editable/deletable anyway), not a gap to fix later
+without a reason to.
 
 ## Known naming history (context, not action needed)
 

@@ -558,10 +558,48 @@ def create_user_word(
     return user_word
 
 
+def _resolve_input_text_titles(rows: list[UserWord], db: Session) -> dict[int, str | None]:
+    """
+    Maps each of `rows`' own id to the title of whatever InputText it's
+    ultimately scoped under - directly for a text-scoped row, via its
+    Analysis for an analysis-scoped row, None for a global row. Bulk
+    (2 queries total, not N+1) - only used by list_user_words' all_scopes
+    view.
+    """
+    text_ids = {r.scope_input_text_id for r in rows if r.scope_input_text_id is not None}
+    analysis_ids = {r.scope_analysis_id for r in rows if r.scope_analysis_id is not None}
+
+    titles_by_text_id: dict[int, str | None] = {}
+    if text_ids:
+        for t_id, title in db.query(InputText.id, InputText.title).filter(InputText.id.in_(text_ids)).all():
+            titles_by_text_id[t_id] = title
+
+    text_id_by_analysis_id: dict[int, int] = {}
+    if analysis_ids:
+        for a_id, t_id in db.query(Analysis.id, Analysis.input_text_id).filter(Analysis.id.in_(analysis_ids)).all():
+            text_id_by_analysis_id[a_id] = t_id
+        more_text_ids = set(text_id_by_analysis_id.values()) - set(titles_by_text_id.keys())
+        if more_text_ids:
+            for t_id, title in db.query(InputText.id, InputText.title).filter(InputText.id.in_(more_text_ids)).all():
+                titles_by_text_id[t_id] = title
+
+    result: dict[int, str | None] = {}
+    for r in rows:
+        if r.scope_input_text_id is not None:
+            result[r.id] = titles_by_text_id.get(r.scope_input_text_id)
+        elif r.scope_analysis_id is not None:
+            t_id = text_id_by_analysis_id.get(r.scope_analysis_id)
+            result[r.id] = titles_by_text_id.get(t_id) if t_id is not None else None
+        else:
+            result[r.id] = None
+    return result
+
+
 @router.get("/user-words", response_model=list[UserWordResponse])
 def list_user_words(
     analysis_id: int | None = None,
     input_text_id: int | None = None,
+    all_scopes: bool = False,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -569,7 +607,23 @@ def list_user_words(
     Resolved (analysis > text > global - see UserWord's scope docstring) set
     of user words for the given viewing context. Omitting both params
     returns only global entries.
+
+    all_scopes=true bypasses analysis_id/input_text_id and the resolution
+    above entirely, instead returning every UserWord row for this user
+    across every scope, unresolved - for a management view ("see all your
+    user words, wherever they're scoped"), not the DAG overlay's
+    pick-one-per-word resolution used elsewhere. Each row is annotated with
+    input_text_title (see _resolve_input_text_titles) so the UI can label
+    scoped rows without a per-row round trip.
     """
+    if all_scopes:
+        rows = db.query(UserWord).filter(UserWord.user_id == current_user.id).all()
+        titles = _resolve_input_text_titles(rows, db)
+        return [
+            UserWordResponse.model_validate(r).model_copy(update={"input_text_title": titles.get(r.id)})
+            for r in rows
+        ]
+
     rows = db.query(UserWord).filter(
         UserWord.user_id == current_user.id,
         or_(*_scope_filter_conditions(UserWord, analysis_id, input_text_id)),
@@ -1136,6 +1190,8 @@ def get_word_detail(
     return WordDetail(
         word=word,
         frequency=dict_word.frequency if dict_word else None,
+        freq_per_million=dict_word.freq_per_million if dict_word else None,
+        rarity_tier=dict_word.rarity_tier if dict_word else None,
         hsk_v2_2012=hsk_entry.hsk_v2_2012 if hsk_entry else None,
         hsk_v3_2021=hsk_entry.hsk_v3_2021 if hsk_entry else None,
         hsk_v3_2026=hsk_entry.hsk_v3_2026 if hsk_entry else None,

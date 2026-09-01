@@ -115,6 +115,21 @@ class SegmentationAffixExemption(Base):
 
 
 class DictionaryWord(Base):
+    """
+    freq_per_million/rarity_tier are both derived, persisted read-cache
+    columns - computed by scripts/compute_word_rarity.py from `frequency`
+    (freq_per_million = frequency / total corpus frequency * 1_000_000,
+    same total definition as Segmenter.total/segmenter_loader.py's freq_dict
+    sum), not maintained live. Both stay NULL for any row with no usable
+    frequency (NULL or 0) - there's nothing to compute a tier from, so NULL
+    correctly means "no data," same reasoning as `frequency` itself being
+    nullable. rarity_tier's 5 values and their occurrences-per-million
+    cutoffs (extremely_rare < 0.03, rare 0.03-1, uncommon 1-50, common
+    50-2250, extremely_common >= 2250) were chosen by
+    scripts/analyze_word_rarity.py's log-frequency distribution analysis,
+    cross-checked against HSK levels - see that script's docstring for the
+    reasoning, not repeated here.
+    """
     __tablename__ = "dictionary_words"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -123,10 +138,19 @@ class DictionaryWord(Base):
     hsk_v2_2012: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
     hsk_v3_2021: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
     hsk_v3_2026: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
+    freq_per_million: Mapped[float | None] = mapped_column(Float, nullable=True)
+    rarity_tier: Mapped[str | None] = mapped_column(String, nullable=True)
 
     # Relationships
     #user_words: Mapped[list["UserWord"]] = relationship("UserWord", back_populates="dictionary_word")
     #known_words: Mapped[list["KnownWord"]] = relationship("KnownWord", back_populates="dictionary_word")
+
+    __table_args__ = (
+        CheckConstraint(
+            "rarity_tier IN ('extremely_rare', 'rare', 'uncommon', 'common', 'extremely_common')",
+            name="ck_dictionary_words_rarity_tier",
+        ),
+    )
 
 
 class UserWord(Base):

@@ -166,6 +166,16 @@ export async function listUserWords(analysisId?: number, inputTextId?: number) {
     return request('GET', `/known-words/user-words${viewingContextQuery(analysisId, inputTextId)}`);
 }
 
+// Every UserWord row for the user across every scope, unresolved - each
+// annotated with `input_text_title` for text/analysis-scoped rows (see
+// list_user_words' all_scopes docstring, router.py). For the profile
+// "all your user words" management page - NOT for anything that feeds
+// segmentation or a single analysis's viewing context, which both stay on
+// the resolved listUserWords(analysisId, inputTextId) above.
+export async function listAllUserWords() {
+    return request('GET', '/known-words/user-words?all_scopes=true');
+}
+
 export async function deleteUserWord(word: string, scopeAnalysisId?: number | null, scopeInputTextId?: number | null) {
     return request(
         'DELETE',

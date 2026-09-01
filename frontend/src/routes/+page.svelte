@@ -36,7 +36,10 @@
 <div class="min-h-screen bg-gray-50">
 	<nav class="bg-white shadow-sm px-6 py-4 flex justify-between items-center">
 		<h1 class="text-xl font-bold text-gray-800">Mandarin Tools</h1>
-		<div class="flex gap-4">
+		<div class="flex gap-4 items-center">
+			<a href="/profile" class="text-gray-600 hover:text-gray-800 text-sm font-medium">
+				Profile
+			</a>
 			<a href="/analyze" class="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700 text-sm font-medium">
 				New Analysis
 			</a>
