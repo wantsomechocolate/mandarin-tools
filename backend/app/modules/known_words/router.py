@@ -15,6 +15,7 @@ from app.modules.known_words.models import (
     AnalysisResult,
     KnownWord,
     UserWord,
+    WordVisibility,
     SampleSentence,
     Stopword,
     GarbageWord,
@@ -38,6 +39,8 @@ from app.modules.known_words.schemas import (
     UserWordCreate,
     UserWordResponse,
     UserWordUpsert,
+    WordVisibilityUpsert,
+    WordVisibilityResponse,
     SampleSentenceCreate,
     SampleSentenceResponse,
     InputTextResponse,
@@ -147,6 +150,37 @@ def _sort_most_specific_first(rows):
     just because a more-specific one exists.
     """
     return sorted(rows, key=_scope_priority, reverse=True)
+
+
+def _resolve_word_visibility(
+    user_id: int, db: Session, analysis_id: int | None, input_text_id: int | None
+) -> dict[str, tuple[bool, str]]:
+    """
+    Resolves {word: (hidden, governing_scope)} for every word that has at
+    least one applicable WordVisibility row for this viewing context -
+    reuses _scope_filter_conditions (which rows are even in play) and
+    _resolve_by_scope (picking the single highest-priority row per word),
+    same building blocks list_user_words uses for the analogous UserWord
+    resolution. A word with no row anywhere simply isn't a key here -
+    callers should default such words to (False, "default"), matching
+    WordVisibility's "absence of a row IS the no-opinion state" docstring
+    (models.py).
+    """
+    rows = db.query(WordVisibility).filter(
+        WordVisibility.user_id == user_id,
+        or_(*_scope_filter_conditions(WordVisibility, analysis_id, input_text_id)),
+    ).all()
+    winners = _resolve_by_scope(rows, key_fn=lambda wv: wv.word)
+    resolved: dict[str, tuple[bool, str]] = {}
+    for word, row in winners.items():
+        if row.scope_analysis_id is not None:
+            scope_name = "analysis"
+        elif row.scope_input_text_id is not None:
+            scope_name = "text"
+        else:
+            scope_name = "global"
+        resolved[word] = (row.hidden, scope_name)
+    return resolved
 
 
 @router.post("/compare-segmentation", response_model=CompareSegmentationResponse)
@@ -287,6 +321,15 @@ def analyze(
     db.refresh(input_text)
     db.refresh(analysis)
 
+    # Resolved fresh, same as familiarity/is_garbage - never persisted (see
+    # WordVisibility's docstring, models.py). analysis.id already exists
+    # here (post-flush/commit) but no WordVisibility row could reference it
+    # yet regardless, since it was never exposed to the user before this
+    # response - only text/global scope can meaningfully apply to a
+    # brand-new analysis, same reasoning as build_user_overlay never
+    # resolving analysis-scoped UserWord rows.
+    visibility = _resolve_word_visibility(current_user.id, db, analysis.id, input_text.id)
+
     word_results = [
         WordResult(
             word=word,
@@ -294,6 +337,8 @@ def analyze(
             source=data["source"],
             familiarity=data.get("familiarity"),
             is_garbage=data.get("is_garbage", False),
+            is_hidden=visibility.get(word, (False, "default"))[0],
+            hidden_governing_scope=visibility.get(word, (False, "default"))[1],
         )
         for word, data in sorted(filtered.items(), key=lambda x: x[1]["count"], reverse=True)
     ]
@@ -330,6 +375,10 @@ def get_analysis(
     results = db.query(AnalysisResult).filter_by(analysis_id=analysis_id).all()
     known_words = service.get_known_words_for_user(current_user.id, db)
     garbage_words = service.get_user_garbage_words(current_user.id, db)
+    # Unlike analyze()'s call to this, analysis_id here is a real, previously
+    # -exposed analysis - an analysis-scoped WordVisibility row can and does
+    # apply when reopening it, see _resolve_word_visibility.
+    visibility = _resolve_word_visibility(current_user.id, db, analysis.id, analysis.input_text_id)
 
     word_results = [
         WordResult(
@@ -338,6 +387,8 @@ def get_analysis(
             source=r.source,
             familiarity=known_words.get(r.word),
             is_garbage=r.word in garbage_words,
+            is_hidden=visibility.get(r.word, (False, "default"))[0],
+            hidden_governing_scope=visibility.get(r.word, (False, "default"))[1],
         )
         for r in sorted(results, key=lambda x: x.count, reverse=True)
     ]
@@ -569,6 +620,68 @@ def upsert_user_word_detail(
     db.commit()
     db.refresh(user_word)
     return user_word
+
+
+# Word visibility ("hide from results") - see WordVisibility's docstring
+# (models.py) for why this is its own scoped table rather than a column on
+# UserWord.
+@router.put("/word-visibility/{word}", response_model=WordVisibilityResponse)
+def upsert_word_visibility(
+    word: str,
+    update: WordVisibilityUpsert,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Creates or updates the hidden flag at the given scope (default: global,
+    same convention as upsert_user_word_detail). Simpler than that endpoint:
+    WordVisibility has exactly one meaningful field, so there's no
+    exclude_unset partial-update logic needed - `hidden` is always present
+    and always written.
+    """
+    scope_analysis_id, scope_input_text_id = _resolve_scope_columns(
+        update.scope, update.analysis_id, update.input_text_id
+    )
+    row = db.query(WordVisibility).filter_by(
+        user_id=current_user.id, word=word,
+        scope_analysis_id=scope_analysis_id, scope_input_text_id=scope_input_text_id,
+    ).first()
+    if row:
+        row.hidden = update.hidden
+    else:
+        row = WordVisibility(
+            user_id=current_user.id, word=word, hidden=update.hidden,
+            scope_analysis_id=scope_analysis_id, scope_input_text_id=scope_input_text_id,
+        )
+        db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+@router.delete("/word-visibility/{word}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_word_visibility(
+    word: str,
+    scope_analysis_id: int | None = None,
+    scope_input_text_id: int | None = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Deletes the override at exactly the given scope (default: global) -
+    same pattern as delete_user_word. Reverts that scope to "no opinion,
+    inherit from the next broader scope," it does NOT necessarily make the
+    word shown again - a broader scope's own row (or lack thereof) still
+    governs after this.
+    """
+    row = db.query(WordVisibility).filter_by(
+        user_id=current_user.id, word=word,
+        scope_analysis_id=scope_analysis_id, scope_input_text_id=scope_input_text_id,
+    ).first()
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Visibility override not found")
+    db.delete(row)
+    db.commit()
 
 
 # Sample sentences - a word can have many, meant for pasting in real usage
@@ -982,6 +1095,15 @@ def get_word_detail(
     ).all()
     user_words = _sort_most_specific_first(user_word_rows)
 
+    # Same shape/reasoning as user_words above - every applicable scope's
+    # row, most-specific first, never resolved to one, so the panel's
+    # Visibility section can show/edit/remove each scope independently.
+    word_visibility_rows = db.query(WordVisibility).filter(
+        WordVisibility.user_id == current_user.id, WordVisibility.word == word,
+        or_(*_scope_filter_conditions(WordVisibility, analysis_id, input_text_id)),
+    ).all()
+    word_visibility = _sort_most_specific_first(word_visibility_rows)
+
     sample_sentences = (
         db.query(SampleSentence)
         .filter(SampleSentence.user_id == current_user.id, SampleSentence.word == word)
@@ -1013,5 +1135,6 @@ def get_word_detail(
             for c in cedict_entries
         ],
         user_words=user_words,
+        word_visibility=word_visibility,
         sample_sentences=sample_sentences,
     )

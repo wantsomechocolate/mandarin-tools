@@ -109,14 +109,24 @@ def build_user_overlay(
     an analysis/text-scoped custom word from leaking into *other* texts'
     segmentation - callers simply don't pass its input_text_id.
 
-    affects_dag=false rows are resolved the same as any other (a text-scoped
-    false can still win over a global true, etc.) but are then skipped
-    entirely when building the overlay - see UserWord's docstring for why
-    this exists (it replaced the standalone Fragment concept). A word whose
-    resolved entry has affects_dag=false gets no overlay boost at all,
-    segmenting exactly as if it had no UserWord entry here - its
-    pronunciation/meaning/notes are untouched by this, since none of that is
-    read here in the first place.
+    affects_dag is tri-state (NULL/true/false - see UserWord's docstring,
+    models.py) - a NULL means "no opinion at this scope," so the walk skips
+    straight past it to the next broader scope, exactly as if that row
+    didn't exist for this purpose (its own freq_combined is skipped right
+    along with it - a row with no opinion on whether to affect segmentation
+    has nothing to contribute to it either). This is distinct from "no row
+    exists at this scope" only in that the row still exists for its other
+    fields (pronunciation/meaning/notes, untouched by any of this); the
+    *segmentation* outcome is identical either way. A text-scoped row with
+    a non-NULL affects_dag still wins over a global row outright, false
+    included, same as before this tri-state existed. Only when EVERY scope
+    (text, global - analysis is already excluded above) has either no row
+    or a NULL affects_dag does resolution fall back to a hardcoded `true`
+    default - but with no row left to source a frequency from at that
+    point, there's nothing to add to the overlay either, so this case is
+    functionally identical to the word having no UserWord entry at all:
+    segmentation falls through to the segmenter's own global dictionary
+    frequency, same as build_user_overlay returning None entirely.
     """
     rows = db.execute(text("""
         SELECT word, freq_combined, scope_input_text_id, affects_dag FROM user_words
@@ -128,26 +138,42 @@ def build_user_overlay(
     if not rows:
         return None
 
-    # Resolve: an input-text-scoped entry wins over the global entry for the
-    # same word (analysis-scoped entries are already excluded above).
-    resolved: dict[str, tuple[int | None, bool]] = {}
-    scoped_words: set[str] = set()
+    # Split into text-scoped vs. global candidates per word (priority
+    # order: text, then global - analysis-scoped rows are already excluded
+    # by the query above).
+    text_scoped: dict[str, tuple[int | None, bool | None]] = {}
+    global_scoped: dict[str, tuple[int | None, bool | None]] = {}
     for word, freq_combined, scope_input_text_id, affects_dag in rows:
         if scope_input_text_id is not None:
-            resolved[word] = (freq_combined, affects_dag)
-            scoped_words.add(word)
-        elif word not in scoped_words:
-            resolved[word] = (freq_combined, affects_dag)
+            text_scoped[word] = (freq_combined, affects_dag)
+        else:
+            global_scoped[word] = (freq_combined, affects_dag)
 
     overlay = UserOverlay()
     floor = segmenter.dominance_floor()
-    for word, (freq_combined, affects_dag) in resolved.items():
+    for word in set(text_scoped) | set(global_scoped):
+        # Walk text -> global, skipping any row whose affects_dag is NULL -
+        # "no opinion here, inherit from the next broader scope" (see
+        # docstring above). The first non-NULL opinion found wins, along
+        # with that same row's freq_combined.
+        resolved = None
+        for candidates in (text_scoped, global_scoped):
+            if word in candidates and candidates[word][1] is not None:
+                resolved = candidates[word]
+                break
+        if resolved is None:
+            # No scope expressed an opinion anywhere - defaults to
+            # affects_dag=true, but there's no row left to source a weight
+            # from, so there's nothing to add (see docstring above).
+            continue
+        freq_combined, affects_dag = resolved
         if not affects_dag:
             continue
         overlay.add_word(word, freq_combined, dominance_floor=floor)
     # Keep the "None means nothing to add" contract honest even when every
-    # resolved row turned out to be affects_dag=false - functionally an
-    # empty UserOverlay already behaves identically to None in Segmenter
-    # (empty trie/freq dict, every lookup misses), but returning None here
-    # lets callers skip overlay handling entirely, same as the no-rows case.
+    # resolved row turned out to be affects_dag=false (or NULL all the way
+    # up) - functionally an empty UserOverlay already behaves identically
+    # to None in Segmenter (empty trie/freq dict, every lookup misses), but
+    # returning None here lets callers skip overlay handling entirely, same
+    # as the no-rows case.
     return overlay if overlay.freq else None

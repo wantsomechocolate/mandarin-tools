@@ -150,21 +150,34 @@ class UserWord(Base):
     affecting every other analysis.
 
     affects_dag: whether this entry's frequency boosts DAG segmentation at
-    all. Every UserWord used to unconditionally boost segmentation - this
-    is what lets a word be "in your dictionary" (pronunciation/meaning/
-    notes worth keeping) without necessarily being real vocabulary the
-    segmenter should treat as a unit. This absorbed the old, now-removed
-    Fragment concept: a word that's a genuine word in one text but a
-    segmentation artifact in another is a single UserWord row with
-    affects_dag=false at whatever scope it's an artifact in - see
-    build_user_overlay (segmenter_loader.py) for exactly how a false value
-    is skipped when building the per-request overlay. Note this can only
-    ever have an observable effect at global or text scope: an
-    analysis-scoped row can't influence segmentation, since the analysis
-    it's scoped to has already finished segmenting by the time such a row
-    could exist (build_user_overlay never resolves analysis-scoped rows at
-    all, for exactly this reason) - the UI hides the toggle for
-    analysis-scoped entries accordingly.
+    all - tri-state (NULL/true/false), NOT a plain boolean. NULL means "no
+    opinion at this scope, inherit from the next broader scope" - this is
+    the field's default for newly-created rows, deliberately not `true`:
+    a UserWord row created purely to hold a note (pronunciation/meaning/
+    notes worth keeping) has no opinion on segmentation weight, and
+    silently defaulting that to `true` would let a note-only row override
+    a broader scope's explicit `affects_dag = false` without the user ever
+    touching this setting. `true`/`false` are explicit opinions - see
+    build_user_overlay (segmenter_loader.py) for exactly how the
+    resolution walk treats a NULL row as "keep walking to the next
+    broader scope" (distinct from "no row exists here" but functionally
+    the same outcome), only falling back to a hardcoded `true` default if
+    every scope has neither a row nor a non-NULL opinion. This absorbed
+    the old, now-removed Fragment concept: a word that's a genuine word in
+    one text but a segmentation artifact in another is a single UserWord
+    row with affects_dag=false at whatever scope it's an artifact in. Note
+    this can only ever have an observable effect at global or text scope:
+    an analysis-scoped row can't influence segmentation, since the
+    analysis it's scoped to has already finished segmenting by the time
+    such a row could exist (build_user_overlay never resolves
+    analysis-scoped rows at all, for exactly this reason) - the UI hides
+    the toggle for analysis-scoped entries accordingly.
+
+    Existing rows from before this field became nullable were left exactly
+    as they were (no backfill to NULL) - every row that already held an
+    explicit true/false keeps meaning exactly that; nullability only
+    changes what happens for rows created going forward that intentionally
+    leave this field untouched.
 
     created_from_analysis_id/created_from_input_text_id are purely
     informational (never used for resolution) - they remember where an
@@ -191,8 +204,9 @@ class UserWord(Base):
     meaning: Mapped[str | None] = mapped_column(String, nullable=True)
     notes: Mapped[str | None] = mapped_column(String, nullable=True)
 
-    # See class docstring's affects_dag paragraph.
-    affects_dag: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=text("true"))
+    # See class docstring's affects_dag paragraph - tri-state, NULL is a
+    # real, distinct value ("no opinion"), not just "unset."
+    affects_dag: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=None)
 
     # See class docstring - at most one of these two is ever set.
     scope_analysis_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("analyses.id"), nullable=True, index=True)
@@ -224,6 +238,66 @@ class UserWord(Base):
         CheckConstraint(
             "scope_analysis_id IS NULL OR scope_input_text_id IS NULL",
             name="ck_user_words_scope_mutually_exclusive",
+        ),
+    )
+
+
+class WordVisibility(Base):
+    """
+    Whether a word should be hidden from analysis results - deliberately
+    its own table, not a column on UserWord: a word can be hidden with
+    zero interest in pronunciation/meaning/notes/affects_dag (e.g. 的, 了,
+    是), and forcing an empty UserWord row to exist just to carry one
+    boolean would make "has a UserWord row" stop reliably meaning "has
+    customized dictionary info," which the results table's +Add word/
+    Added button already relies on (see `userWords`/`userWordAffectsDag`
+    in +page.svelte).
+
+    Same scope_analysis_id/scope_input_text_id columns, mutual-exclusion
+    CHECK, and analysis > text > global resolution priority as UserWord -
+    see that model's docstring for the full scoping design. Reuses
+    router.py's _resolve_scope_columns/_scope_filter_conditions/
+    _resolve_by_scope helpers for CRUD and resolution rather than
+    reimplementing them.
+
+    Unlike UserWord.affects_dag, `hidden` is a plain NOT NULL boolean, no
+    tri-state needed: this table's only reason to exist at a given scope
+    is to express an opinion on this one field, so a row's mere presence
+    already means "opinion" - there's no "row exists to hold other data
+    but has no opinion on this field" case the way affects_dag has to
+    handle on UserWord. Absence of a row at a scope IS the "no opinion,
+    inherit from the next broader scope" state; resolution is simply the
+    first row found walking analysis -> text -> global, defaulting to
+    hidden=false if no row exists at any scope.
+    """
+    __tablename__ = "word_visibility"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    word: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    hidden: Mapped[bool] = mapped_column(Boolean, nullable=False)
+
+    # See class docstring - at most one of these two is ever set, same as
+    # UserWord.
+    scope_analysis_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("analyses.id"), nullable=True, index=True)
+    scope_input_text_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("input_texts.id"), nullable=True, index=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    user: Mapped["User"] = relationship("User")
+
+    __table_args__ = (
+        # Same NULLS NOT DISTINCT reasoning as UserWord's matching index -
+        # without it, a plain unique index would treat every NULL/NULL
+        # (global) pair as distinct and allow duplicate global rows.
+        Index(
+            "ix_word_visibility_user_word_scope", "user_id", "word", "scope_analysis_id", "scope_input_text_id",
+            unique=True, postgresql_nulls_not_distinct=True,
+        ),
+        CheckConstraint(
+            "scope_analysis_id IS NULL OR scope_input_text_id IS NULL",
+            name="ck_word_visibility_scope_mutually_exclusive",
         ),
     )
 

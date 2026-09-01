@@ -34,6 +34,15 @@ class WordResult(BaseModel):
     # are persisted and returned like every other word, never excluded, so
     # the analysis results stay a faithful representation of the full text.
     is_garbage: bool = False
+    # Resolved (never persisted) same as is_garbage - see WordVisibility's
+    # docstring (models.py) and router.py's _resolve_word_visibility for how
+    # this is computed fresh on every read, walking analysis > text > global.
+    is_hidden: bool = False
+    # Which scope produced is_hidden's value - "global"/"text"/"analysis",
+    # or "default" if no WordVisibility row applies anywhere (is_hidden is
+    # then always False). Drives the results-table quick-action's corner
+    # scope badge and the menu-building logic client-side.
+    hidden_governing_scope: str = "default"
 
 
 class CompareSegmentationRequest(BaseModel):
@@ -130,10 +139,11 @@ class UserWordCreate(BaseModel):
     hsk_v2_2012: int | None = None
     hsk_v3_2021: int | None = None
     hsk_v3_2026: int | None = None
-    # Whether this entry's frequency boosts DAG segmentation - see
-    # UserWord's docstring (models.py). Defaults to True, matching the
-    # behavior every UserWord had before this field existed.
-    affects_dag: bool = True
+    # Whether this entry's frequency boosts DAG segmentation - tri-state,
+    # see UserWord's docstring (models.py). Defaults to None ("no opinion"),
+    # NOT True - a request that only sets e.g. `notes` must never silently
+    # opt this entry into boosting segmentation.
+    affects_dag: bool | None = None
     analysis_id: int | None = None
     input_text_id: int | None = None
     scope: ScopeChoice = "global"
@@ -146,12 +156,20 @@ class UserWordUpsert(BaseModel):
     exist yet — filling in a pronunciation or meaning is enough to make a
     word a UserWord, no separate "add" step required. affects_dag follows
     the same exclude-unset rule as every other field here - omit it to
-    leave an existing row's segmentation-boost setting untouched.
+    leave an existing row's segmentation-boost setting untouched (on an
+    existing row), or to leave it at its NULL "no opinion" default (on a
+    newly-created row) - never send `true` just because the field was
+    merely absent from the request.
     """
     pronunciation: str | None = None
     meaning: str | None = None
     notes: str | None = None
-    affects_dag: bool = True
+    # Tri-state - see UserWord's docstring (models.py). None is a real,
+    # explicit value distinct from "field omitted" (handled by
+    # exclude_unset in the router) - sending `"affects_dag": null` clears an
+    # existing opinion back to "inherit", while omitting the key entirely
+    # leaves whatever the row already had untouched.
+    affects_dag: bool | None = None
     analysis_id: int | None = None
     input_text_id: int | None = None
     scope: ScopeChoice = "global"
@@ -164,7 +182,7 @@ class UserWordResponse(BaseModel):
     meaning: str | None = None
     notes: str | None = None
     dictionary_word_id: int | None = None
-    affects_dag: bool = True
+    affects_dag: bool | None = None
     scope_analysis_id: int | None = None
     scope_input_text_id: int | None = None
     # Informational only - see UserWord's docstring (models.py).
@@ -173,6 +191,29 @@ class UserWordResponse(BaseModel):
 
     model_config = {"from_attributes": True}
 
+
+class WordVisibilityUpsert(BaseModel):
+    """
+    Sets hidden=True/False at the given scope - create-or-update, same
+    upsert pattern as UserWordUpsert/StarredWordUpsert. Simpler than
+    UserWordUpsert: WordVisibility has exactly one meaningful field (see
+    its docstring, models.py), so there's no partial-update/exclude_unset
+    nuance here - `hidden` is always required and always written.
+    """
+    hidden: bool
+    analysis_id: int | None = None
+    input_text_id: int | None = None
+    scope: ScopeChoice = "global"
+
+
+class WordVisibilityResponse(BaseModel):
+    id: int
+    word: str
+    hidden: bool
+    scope_analysis_id: int | None = None
+    scope_input_text_id: int | None = None
+
+    model_config = {"from_attributes": True}
 
 
 class InputTextResponse(BaseModel):
@@ -291,6 +332,12 @@ class WordDetail(BaseModel):
     # entry's weight per its own unrelated priority logic - this field must
     # never be read as if it were that resolution.
     user_words: list[UserWordResponse] = []
+    # Same multi-entry, most-specific-first, never-resolved-to-one shape as
+    # user_words above, for the exact same reason - the panel's Visibility
+    # section shows every applicable scope's row independently (see
+    # WordVisibility's docstring, models.py). Independent of user_words -
+    # a word can be hidden with no UserWord row at all, and vice versa.
+    word_visibility: list[WordVisibilityResponse] = []
     # Independent of user_words (a word doesn't need to be in the user's
     # dictionary to have sample sentences) - see SampleSentence's docstring.
     sample_sentences: list[SampleSentenceResponse] = []
