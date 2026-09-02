@@ -60,12 +60,30 @@
 		hidden_governing_scope: string;
 		// Resolved (never persisted), same pattern as is_garbage/is_hidden -
 		// whether this word has an applicable UserWord row anywhere relevant
-		// to this viewing context (see backend's _resolve_user_word_presence,
-		// router.py). Distinct from the `userWords` Set below, which is
-		// global-only (drives the results-table "+ Add word" button
-		// specifically) - this field reflects the full analysis/text/global
-		// resolution, used by the "User words" filter bucket.
+		// to this viewing context (see backend's _resolve_user_word_detail,
+		// router.py). Equivalent to userword_scopes.length > 0 - kept as its
+		// own field since it's what the "User words" filter bucket tests.
 		is_user_word: boolean;
+		// Which of "global"/"text"/"analysis" currently have a UserWord row
+		// for this word, canonical order, 0-3 entries - UserWord entries
+		// coexist rather than cascading (see UserWord's docstring, models.py),
+		// so this can't collapse to a single governing scope the way
+		// hidden_governing_scope does. Drives the results-table quick-
+		// action's badge fan (see userWordScopeBadges).
+		userword_scopes: string[];
+		// The winning entry's affects_dag, resolved analysis > text > global
+		// (skipping a NULL opinion, falling back to true if nothing
+		// resolves) - see _resolve_user_word_detail's docstring (router.py).
+		// Already collapsed to plain true/false. Not used for the quick-
+		// action icon's own color (that's neutral, existence-only, like
+		// visibilityAction's) - the per-scope badges carry the color
+		// instead, from userword_scope_affects_dag below.
+		userword_resolved_affects_dag: boolean;
+		// Each scope-in-userword_scopes' OWN raw affects_dag (tri-state,
+		// unresolved/uninherited) - e.g. {global: true, text: null}. Drives
+		// each badge in the fan showing ITS OWN scope's setting, rather
+		// than every badge showing the one resolved winner's.
+		userword_scope_affects_dag: Record<string, boolean | null>;
 	}
 
 	interface HskForm {
@@ -159,14 +177,6 @@
 	let garbageWords = $state(new Set<string>());
 	let togglingGarbage = $state('');
 	let knownWords = $state<Record<string, number | null>>({});
-	let userWords = $state(new Set<string>());
-	// affects_dag of each word's GLOBAL UserWord entry specifically (mirrors
-	// how `userWords` itself is global-only - see its own comment in
-	// onMount) - lets the results-table quick-add button distinguish "in
-	// your dictionary, boosts segmentation" from "in your dictionary,
-	// excluded from segmentation" with a color difference, without a
-	// per-row fetch.
-	let userWordAffectsDag: Record<string, boolean | null> = $state({});
 	let addingUserWord = $state('');
 	let starredWords = $state(new Set<string>());
 	let togglingStarred = $state('');
@@ -180,6 +190,17 @@
 	let loadingVisibilityFor = $state(new Set<string>());
 	let visibilityMenuOpenFor: string | null = $state(null);
 	let togglingVisibilityAction: string | null = $state(null);
+	// UserWord quick-action - same lazy+cache pattern as visibilityRowsByWord
+	// above, for the exact same reason (the results-table menu needs the raw
+	// up-to-3 scoped rows to build its per-scope summary/add/remove actions,
+	// not just the resolved userword_scopes/userword_resolved_affects_dag on
+	// WordResult). Kept in sync with the panel's own selectedWord.user_words
+	// when either mutates - see addUserWord/removeUserWord/saveEntry/
+	// deleteEntry/saveNewEntry.
+	let userWordRowsByWord: Record<string, UserWordDetail[]> = $state({});
+	let loadingUserWordFor = $state(new Set<string>());
+	let userWordMenuOpenFor: string | null = $state(null);
+	let togglingUserWordAction: string | null = $state(null);
 	// Panel's own Visibility section - which scope's request is in flight,
 	// and which scope's "+ Override" is currently expanded to show its
 	// Shown/Hidden choice.
@@ -418,18 +439,9 @@
 			// text-scoped entries, which isn't known until this resolves.
 			analysis = await api.getAnalysis(id) as Analysis;
 
-			const [knownWordsData, garbageData, userWordsData, starredData] = await Promise.all([
+			const [knownWordsData, garbageData, starredData] = await Promise.all([
 				api.listKnownWords() as Promise<any[]>,
 				api.listGarbageWords() as Promise<any[]>,
-				// Global only (bare, no viewing context) - this Set drives the
-				// results-table "+ Add word" quick button, which always writes
-				// global, so its "already added" state must reflect global
-				// specifically, not whatever scope happens to resolve for the
-				// current text/analysis (a word could have only a text-scoped
-				// entry, which would otherwise make the button look "filled"
-				// while removing it 404s trying to delete a global row that
-				// doesn't exist).
-				api.listUserWords() as Promise<any[]>,
 				api.listStarredWords() as Promise<any[]>,
 			]);
 
@@ -452,8 +464,6 @@
 					.map((g: any) => g.word)
 			);
 
-			userWords = new Set(userWordsData.map((uw: any) => uw.word));
-			userWordAffectsDag = Object.fromEntries(userWordsData.map((uw: any) => [uw.word, uw.affects_dag]));
 			starredWords = new Set(starredData.map((s: any) => s.word));
 		} catch (e: unknown) {
 			error = e instanceof Error ? e.message : 'Failed to load analysis';
@@ -603,12 +613,63 @@
 	// Patches the resolved is_hidden/hidden_governing_scope directly onto
 	// analysis.results after a local WordVisibility mutation, so the
 	// results-table quick-action's icon/badge update immediately without a
-	// full analysis refetch - same "patch locally" approach already used
-	// for userWords/userWordAffectsDag elsewhere on this page.
+	// full analysis refetch - see patchResolvedUserWord below for the same
+	// approach applied to UserWord.
 	function patchResolvedVisibility(word: string, entries: WordVisibilityEntry[]) {
 		if (!analysis) return;
 		const resolved = resolveVisibilityFromEntries(entries);
 		analysis = { ...analysis, results: analysis.results.map((r) => r.word === word ? { ...r, ...resolved } : r) };
+	}
+
+	// Mirrors the backend's _resolve_user_word_detail (router.py)
+	// client-side, no HTTP - unlike resolveVisibilityFromEntries (a single
+	// governing scope), UserWord entries coexist rather than cascading, so
+	// this returns every scope present (canonical order) rather than one
+	// winner, alongside the resolved affects_dag (analysis > text > global,
+	// skipping a NULL opinion, falling back to true).
+	function resolveUserWordFromEntries(entries: UserWordDetail[]): { scopes: string[]; resolvedAffectsDag: boolean; scopeAffectsDag: Record<string, boolean | null> } {
+		const byScope: Partial<Record<Scope, UserWordDetail>> = {};
+		for (const e of entries) {
+			const name: Scope = e.scope_analysis_id != null ? 'analysis' : e.scope_input_text_id != null ? 'text' : 'global';
+			byScope[name] = e;
+		}
+		const scopes = (['global', 'text', 'analysis'] as Scope[]).filter((s) => s in byScope);
+		const scopeAffectsDag: Record<string, boolean | null> = {};
+		for (const s of scopes) scopeAffectsDag[s] = byScope[s]!.affects_dag;
+		let resolvedAffectsDag = true;
+		for (const name of ['analysis', 'text', 'global'] as Scope[]) {
+			const e = byScope[name];
+			if (e && e.affects_dag !== null) {
+				resolvedAffectsDag = e.affects_dag;
+				break;
+			}
+		}
+		return { scopes, resolvedAffectsDag, scopeAffectsDag };
+	}
+
+	// Patches the resolved userword_scopes/userword_resolved_affects_dag/
+	// userword_scope_affects_dag/is_user_word directly onto analysis.results
+	// after a local UserWord mutation (from either the row/card quick-
+	// action's own menu or the panel's "Your entries" section), so the
+	// quick-action's icon/badge fan update immediately without a full
+	// analysis refetch - same "patch locally" approach patchResolvedVisibility
+	// already uses.
+	function patchResolvedUserWord(word: string, entries: UserWordDetail[]) {
+		if (!analysis) return;
+		const { scopes, resolvedAffectsDag, scopeAffectsDag } = resolveUserWordFromEntries(entries);
+		analysis = {
+			...analysis,
+			results: analysis.results.map((r) => r.word === word
+				? {
+					...r,
+					is_user_word: scopes.length > 0,
+					userword_scopes: scopes,
+					userword_resolved_affects_dag: resolvedAffectsDag,
+					userword_scope_affects_dag: scopeAffectsDag,
+				}
+				: r
+			),
+		};
 	}
 
 	function scopeContext(scope: Scope): api.ScopeContext {
@@ -699,6 +760,116 @@
 		}
 	}
 
+	// Canonical broadest-first order for the UserWord quick-action menu and
+	// the badge fan (see userWordScopeBadges) - deliberately not reusing
+	// ALL_SCOPES' analysis-first order (that one's for the panel's "+ Add
+	// entry" selector, which wants the narrowest/most-likely-intended scope
+	// first); this menu reads more naturally broadest-first.
+	const SCOPE_ORDER: { value: Scope; label: string }[] = [
+		{ value: 'global', label: 'Global' },
+		{ value: 'text', label: 'This text' },
+		{ value: 'analysis', label: 'This analysis' },
+	];
+
+	function affectsDagSummary(affectsDag: boolean | null): string {
+		if (affectsDag === false) return 'excluded from segmentation';
+		if (affectsDag === null) return 'no segmentation preference set';
+		return 'boosts segmentation';
+	}
+
+	interface UserWordMenuItem {
+		kind: 'entry' | 'add' | 'edit';
+		scope?: Scope;
+		label: string;
+		sublabel?: string;
+		entry?: UserWordDetail;
+	}
+
+	// One item per scope (an existing entry's summary+remove, or an "+ Add
+	// entry" action), plus a final "Edit details..." link to the panel -
+	// this popover is a quick-action, not a duplicate of the panel's fuller
+	// pronunciation/meaning/notes editor.
+	function buildUserWordMenu(rows: UserWordDetail[]): UserWordMenuItem[] {
+		const items: UserWordMenuItem[] = [];
+		for (const { value: scope, label } of SCOPE_ORDER) {
+			const cols = resolveScopeColumns(scope, id, analysis?.input_text_id);
+			const entry = rows.find((r) => columnsMatch(r, cols));
+			if (entry) {
+				items.push({ kind: 'entry', scope, label, sublabel: affectsDagSummary(entry.affects_dag), entry });
+			} else {
+				items.push({ kind: 'add', scope, label: `+ Add entry (${label})` });
+			}
+		}
+		items.push({ kind: 'edit', label: 'Edit details...' });
+		return items;
+	}
+
+	// Lazily fetches + caches the up-to-3 raw UserWord rows for a word (via
+	// getWordDetail, same endpoint the panel and the visibility quick-action
+	// both use) the first time its menu opens - only one menu open at a time.
+	async function toggleUserWordMenu(word: string) {
+		if (userWordMenuOpenFor === word) {
+			userWordMenuOpenFor = null;
+			return;
+		}
+		userWordMenuOpenFor = word;
+		if (userWordRowsByWord[word]) return;
+		loadingUserWordFor = new Set([...loadingUserWordFor, word]);
+		try {
+			const detail = await api.getWordDetail(word, id, analysis?.input_text_id) as WordDetail;
+			userWordRowsByWord = { ...userWordRowsByWord, [word]: detail.user_words };
+		} catch (e: unknown) {
+			userWordRowsByWord = { ...userWordRowsByWord, [word]: [] };
+		} finally {
+			const next = new Set(loadingUserWordFor);
+			next.delete(word);
+			loadingUserWordFor = next;
+		}
+	}
+
+	// Creates a bare entry at `scope` - no pronunciation/meaning/notes
+	// prompt here (that's what "Edit details..." is for), affects_dag left
+	// at its default null ("no opinion, inherit from a broader scope" - see
+	// UserWordCreate's docstring, schemas.py). Deliberately does NOT close
+	// the menu afterward (unlike applyVisibilityAction) - unlike Visibility's
+	// single resolved value, several UserWord entries can coexist, so a user
+	// plausibly wants to add/remove more than one in a row without
+	// reopening the menu each time.
+	async function addUserWordAtScope(word: string, scope: Scope) {
+		togglingUserWordAction = word;
+		try {
+			const created = await api.createUserWord(word, undefined, scopeContext(scope)) as UserWordDetail;
+			const cols = resolveScopeColumns(scope, id, analysis?.input_text_id);
+			const nextRows = sortMostSpecificFirst([...(userWordRowsByWord[word] ?? []).filter((r) => !columnsMatch(r, cols)), created]);
+			userWordRowsByWord = { ...userWordRowsByWord, [word]: nextRows };
+			patchResolvedUserWord(word, nextRows);
+			if (selectedWord?.word === word) {
+				selectedWord = { ...selectedWord, user_words: nextRows };
+			}
+		} catch (e: unknown) {
+			error = e instanceof Error ? e.message : 'Failed to add word to your dictionary';
+		} finally {
+			togglingUserWordAction = null;
+		}
+	}
+
+	async function removeUserWordEntry(word: string, entry: UserWordDetail) {
+		togglingUserWordAction = word;
+		try {
+			await api.deleteUserWord(word, entry.scope_analysis_id, entry.scope_input_text_id);
+			const nextRows = (userWordRowsByWord[word] ?? []).filter((r) => r.id !== entry.id);
+			userWordRowsByWord = { ...userWordRowsByWord, [word]: nextRows };
+			patchResolvedUserWord(word, nextRows);
+			if (selectedWord?.word === word) {
+				selectedWord = { ...selectedWord, user_words: selectedWord.user_words.filter((e) => e.id !== entry.id) };
+			}
+		} catch (e: unknown) {
+			error = e instanceof Error ? e.message : 'Failed to remove word from your dictionary';
+		} finally {
+			togglingUserWordAction = null;
+		}
+	}
+
 	// Panel's own Visibility section - unlike UserWord's affects_dag, all
 	// three scope slots (including analysis) are shown/editable here (see
 	// the section's template comment for why).
@@ -751,33 +922,27 @@
 		return is_hidden ? `Hidden (overridden ${scopeText})` : `Shown (overridden ${scopeText})`;
 	}
 
-	// ctx omitted by row/card (global, unchanged); the panel's own quick
-	// bookmark icon passes userWordScope. Only ever updates the global-only
-	// `userWords` Set when the write actually targeted global - see its own
-	// comment in onMount for why that Set must stay global-specific.
-	// ctx omitted by row/card (global, unchanged; always defaults to
-	// affects_dag=true server-side, a sensible "just add it" default).
+	// Panel-only now (the row/card quick-action has its own
+	// addUserWordAtScope/removeUserWordEntry, driven by its own popover) -
+	// keeps userWordRowsByWord/analysis.results in sync via
+	// patchResolvedUserWord, same as that popover's actions do, so the
+	// row/card icon and badge fan reflect a panel edit immediately.
 	async function addUserWord(word: string, ctx?: api.ScopeContext) {
+		if (!selectedWord) return;
 		addingUserWord = word;
-		const effectiveScope = ctx?.scope ?? 'global';
 		try {
 			const created = await api.createUserWord(word, undefined, ctx) as UserWordDetail;
-			if (effectiveScope === 'global') {
-				userWords = new Set([...userWords, word]);
-				userWordAffectsDag = { ...userWordAffectsDag, [word]: created.affects_dag };
-			}
-			if (selectedWord?.word === word) {
-				selectedWord = { ...selectedWord, user_words: sortMostSpecificFirst([...selectedWord.user_words, created]) };
-			}
+			const nextRows = sortMostSpecificFirst([...selectedWord.user_words, created]);
+			selectedWord = { ...selectedWord, user_words: nextRows };
+			userWordRowsByWord = { ...userWordRowsByWord, [word]: nextRows };
+			patchResolvedUserWord(word, nextRows);
 		} catch (e: unknown) {
-			// If it already exists (e.g. added from another session), just
-			// reflect that in the UI instead of surfacing an error banner.
+			// If it already exists (e.g. added from another session), don't
+			// surface an error banner for it - selectedWord.user_words should
+			// already reflect that (the "add" affordance wouldn't even be
+			// showing otherwise).
 			const message = e instanceof Error ? e.message : '';
-			if (message.toLowerCase().includes('already exists')) {
-				if (effectiveScope === 'global') {
-					userWords = new Set([...userWords, word]);
-				}
-			} else {
+			if (!message.toLowerCase().includes('already exists')) {
 				error = message || 'Failed to add word to your dictionary';
 			}
 		} finally {
@@ -785,26 +950,19 @@
 		}
 	}
 
-	// Deletes the exact scoped row - row/card omit (global, unchanged); the
-	// panel's own quick bookmark icon passes the entry actually loaded at
-	// userWordScope (not userWordScope itself, which is only for where a
-	// NEW entry should go).
+	// Deletes the exact scoped row - panel-only now, passes the entry
+	// actually loaded at userWordScope (not userWordScope itself, which is
+	// only for where a NEW entry should go).
 	async function removeUserWord(word: string, scopeAnalysisId?: number | null, scopeInputTextId?: number | null) {
+		if (!selectedWord) return;
 		addingUserWord = word;
 		try {
 			await api.deleteUserWord(word, scopeAnalysisId, scopeInputTextId);
-			if (scopeAnalysisId == null && scopeInputTextId == null) {
-				const next = new Set(userWords);
-				next.delete(word);
-				userWords = next;
-				const nextAffects = { ...userWordAffectsDag };
-				delete nextAffects[word];
-				userWordAffectsDag = nextAffects;
-			}
-			if (selectedWord?.word === word) {
-				const cols = { scope_analysis_id: scopeAnalysisId ?? null, scope_input_text_id: scopeInputTextId ?? null };
-				selectedWord = { ...selectedWord, user_words: selectedWord.user_words.filter((e) => !columnsMatch(e, cols)) };
-			}
+			const cols = { scope_analysis_id: scopeAnalysisId ?? null, scope_input_text_id: scopeInputTextId ?? null };
+			const nextRows = selectedWord.user_words.filter((e) => !columnsMatch(e, cols));
+			selectedWord = { ...selectedWord, user_words: nextRows };
+			userWordRowsByWord = { ...userWordRowsByWord, [word]: nextRows };
+			patchResolvedUserWord(word, nextRows);
 		} catch (e: unknown) {
 			error = e instanceof Error ? e.message : 'Failed to remove word from your dictionary';
 		} finally {
@@ -848,11 +1006,10 @@
 			// UserWord's docstring, models.py) and no toggle is shown for it.
 			if (!isAnalysisScoped) fields.affects_dag = draft.affectsDag;
 			const updated = await api.upsertUserWordDetail(selectedWord.word, fields, scopeContextForEntry(entry)) as UserWordDetail;
-			selectedWord = { ...selectedWord, user_words: selectedWord.user_words.map((e) => e.id === entry.id ? updated : e) };
-			if (entry.scope_analysis_id == null && entry.scope_input_text_id == null) {
-				userWords = new Set([...userWords, selectedWord.word]);
-				userWordAffectsDag = { ...userWordAffectsDag, [selectedWord.word]: updated.affects_dag };
-			}
+			const nextRows = selectedWord.user_words.map((e) => e.id === entry.id ? updated : e);
+			selectedWord = { ...selectedWord, user_words: nextRows };
+			userWordRowsByWord = { ...userWordRowsByWord, [selectedWord.word]: nextRows };
+			patchResolvedUserWord(selectedWord.word, nextRows);
 			cancelEditingEntry(entry.id);
 		} catch (e: unknown) {
 			error = e instanceof Error ? e.message : 'Failed to save word details';
@@ -866,15 +1023,10 @@
 		savingEntryId = entry.id;
 		try {
 			await api.deleteUserWord(selectedWord.word, entry.scope_analysis_id, entry.scope_input_text_id);
-			selectedWord = { ...selectedWord, user_words: selectedWord.user_words.filter((e) => e.id !== entry.id) };
-			if (entry.scope_analysis_id == null && entry.scope_input_text_id == null) {
-				const next = new Set(userWords);
-				next.delete(selectedWord.word);
-				userWords = next;
-				const nextAffects = { ...userWordAffectsDag };
-				delete nextAffects[selectedWord.word];
-				userWordAffectsDag = nextAffects;
-			}
+			const nextRows = selectedWord.user_words.filter((e) => e.id !== entry.id);
+			selectedWord = { ...selectedWord, user_words: nextRows };
+			userWordRowsByWord = { ...userWordRowsByWord, [selectedWord.word]: nextRows };
+			patchResolvedUserWord(selectedWord.word, nextRows);
 			// Deleting an entry frees up its scope - re-derive so the
 			// "+ Add entry" selector reflects the now-broader set of missing
 			// scopes (e.g. deleting the global entry should offer Global
@@ -908,11 +1060,10 @@
 			const created = await api.upsertUserWordDetail(selectedWord.word, fields, {
 				analysisId: id, inputTextId: analysis?.input_text_id, scope: userWordScope,
 			}) as UserWordDetail;
-			selectedWord = { ...selectedWord, user_words: sortMostSpecificFirst([...selectedWord.user_words, created]) };
-			if (userWordScope === 'global') {
-				userWords = new Set([...userWords, selectedWord.word]);
-				userWordAffectsDag = { ...userWordAffectsDag, [selectedWord.word]: created.affects_dag };
-			}
+			const nextRows = sortMostSpecificFirst([...selectedWord.user_words, created]);
+			selectedWord = { ...selectedWord, user_words: nextRows };
+			userWordRowsByWord = { ...userWordRowsByWord, [selectedWord.word]: nextRows };
+			patchResolvedUserWord(selectedWord.word, nextRows);
 			addingNewEntry = false;
 			const leastSpecific = leastSpecificMissingScope(selectedWord.user_words);
 			if (leastSpecific) userWordScope = leastSpecific;
@@ -1050,17 +1201,6 @@
 		}
 	}
 
-	// Tooltip for the results-table/card bookmark button, which only ever
-	// reflects the word's GLOBAL UserWord entry (see userWordAffectsDag's
-	// own comment) - distinguishes all three tri-state values (see
-	// UserWord.affects_dag's docstring, models.py).
-	function userWordTooltip(word: string): string {
-		const v = userWordAffectsDag[word];
-		if (v === false) return 'In your dictionary, excluded from segmentation — click to remove';
-		if (v === null || v === undefined) return 'In your dictionary, no segmentation preference set — click to remove';
-		return 'In your dictionary — click to remove';
-	}
-
 	function currentFamiliarity(result: WordResult): number | null {
 		if (result.word in knownWords) return knownWords[result.word];
 		return result.familiarity;
@@ -1138,11 +1278,17 @@
 	}
 </script>
 
+<!-- Bare "i" glyph, no circle outline - deliberately dropped the classic
+     info-circle shape since it sits right next to the row/card's other
+     circular elements (the G/T/A scope badges), and competing circles
+     read as visually muddled at this size. Solid filled pill shapes
+     (rather than a thin stroked line) for a thicker, curvier look - a
+     rounded-capsule stem (rx = half its own width, so both ends are fully
+     round) under a solid dot. -->
 {#snippet iconInfo()}
-	<svg class="w-4 h-4" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5">
-		<circle cx="10" cy="10" r="8" />
-		<circle cx="10" cy="6.5" r="0.9" fill="currentColor" stroke="none" />
-		<path d="M10 9.5v5" stroke-linecap="round" />
+	<svg class="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
+		<circle cx="10" cy="5.3" r="1.7" />
+		<rect x="8.2" y="8.6" width="3.6" height="7.6" rx="1.8" />
 	</svg>
 {/snippet}
 
@@ -1253,6 +1399,44 @@
 			title={scope === 'global' ? 'Global' : scope === 'text' ? 'This text' : 'This analysis'}
 		>{scope === 'global' ? 'G' : scope === 'text' ? 'T' : 'A'}</span>
 	{/if}
+{/snippet}
+
+<!-- Multi-badge fan for the UserWord quick-action - same size/position
+     units as scopeBadge's single badge, generalized to 0-3 simultaneous
+     badges since UserWord entries coexist rather than cascading (unlike
+     WordVisibility's single governing scope). Canonical left-to-right
+     order Global/Text/Analysis, filtered to only present scopes; the last
+     (rightmost) present badge sits at the same corner position scopeBadge's
+     single badge always used, each earlier badge shifts left by a fixed
+     step and sits at a lower z-index, so later-in-order badges appear to
+     sit on top of/in front of earlier ones - a fanned-stack look. With one
+     scope present this is pixel-identical (position-wise) to the old
+     single-badge look.
+
+     Each badge is colored by ITS OWN scope's affects_dag (scopeAffectsDag,
+     from userword_scope_affects_dag) - light-bg/dark-text emerald when
+     that entry boosts segmentation, light-bg/dark-text slate otherwise
+     (false or null/no-preference, collapsed together the same way the
+     panel's own per-entry bookmark icon already treats them) - the same
+     filled-chip language the familiarity/HSK/source badges elsewhere on
+     this page already use (e.g. the "Mastered" familiarity chip), not the
+     white-background-plus-colored-border-and-text scopeBadge itself still
+     uses - colored text on a plain white circle has no other precedent
+     anywhere else in this app. This is deliberately NOT the icon's own
+     color (see userWordAction below, which is neutral/existence-only) -
+     the whole point is showing every present scope's actual setting
+     instead of only the one resolved winner's. -->
+
+{#snippet userWordScopeBadges(scopes: string[], scopeAffectsDag: Record<string, boolean | null>)}
+	{@const present = (['global', 'text', 'analysis'] as const).filter((s) => scopes.includes(s))}
+	{#each present as scope, i}
+		{@const distanceFromCorner = present.length - 1 - i}
+		<span
+			class="absolute w-3 h-3 rounded-full text-[8px] leading-[10px] font-bold flex items-center justify-center pointer-events-none {scopeAffectsDag[scope] ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-600'}"
+			style="bottom: -0.125rem; right: {-0.125 + distanceFromCorner * 0.5}rem; z-index: {i + 1};"
+			title="{scope === 'global' ? 'Global' : scope === 'text' ? 'This text' : 'This analysis'}: {scopeAffectsDag[scope] === false ? 'excluded from segmentation' : scopeAffectsDag[scope] === null ? 'no segmentation preference set' : 'boosts segmentation'}"
+		>{scope === 'global' ? 'G' : scope === 'text' ? 'T' : 'A'}</span>
+	{/each}
 {/snippet}
 
 <!-- Filter chip icons. Garbage/Hidden/User words/Starred reuse the exact
@@ -1407,6 +1591,83 @@
 						>
 							{action.label}
 						</button>
+					{/each}
+				{/if}
+			</div>
+		{/if}
+	</div>
+{/snippet}
+
+<!-- UserWord quick-action, reused by both the desktop table row and the
+     mobile card - structured exactly like visibilityAction above (relative
+     wrapper, backdrop-click-to-close popover), but unlike Visibility's
+     single resolved value, UserWord entries coexist across up to 3 scopes
+     at once (see UserWord's docstring, models.py), so this can't be a
+     single toggle: filled state is userword_scopes.length > 0 (the actual
+     bug this popover originally fixed - previously this only ever
+     reflected a GLOBAL-only Set, see CLAUDE.md). The icon itself is
+     existence-only (slate when present, gray when not - same neutral
+     treatment visibilityAction's own icon uses) rather than colored by the
+     resolved affects_dag - showing only the resolved winner's color there
+     would hide the other present scopes' own settings, which is exactly
+     what the per-scope badge fan (userWordScopeBadges) exists to surface
+     instead: one badge per scope present, each colored by ITS OWN
+     affects_dag. The menu lists all 3 scopes - an existing entry's summary
+     + remove, or a bare "+ Add entry" for a scope with none - plus a final
+     "Edit details..." link to the panel's fuller pronunciation/meaning/
+     notes editor, which this popover deliberately doesn't duplicate. -->
+{#snippet userWordAction(result: WordResult)}
+	<div class="relative inline-block">
+		<button
+			onclick={(e) => { e.stopPropagation(); toggleUserWordMenu(result.word); }}
+			class="p-1.5 rounded {result.userword_scopes.length > 0 ? 'text-slate-600' : 'text-gray-400'} hover:text-blue-600 hover:bg-blue-50"
+			title={result.userword_scopes.length > 0 ? 'In your dictionary — click for options' : 'Add to your custom dictionary — click for options'}
+			aria-label="User word options"
+		>
+			{@render iconBookmark(result.userword_scopes.length > 0)}
+		</button>
+		{@render userWordScopeBadges(result.userword_scopes, result.userword_scope_affects_dag)}
+		{#if userWordMenuOpenFor === result.word}
+			<div class="fixed inset-0 z-40" onclick={() => userWordMenuOpenFor = null} role="presentation"></div>
+			<div
+				class="absolute right-0 top-full mt-1 z-50 w-60 bg-white rounded-lg shadow-lg border border-gray-100 py-1"
+				onclick={(e) => e.stopPropagation()}
+				role="presentation"
+			>
+				{#if loadingUserWordFor.has(result.word)}
+					<p class="text-xs text-gray-400 px-3 py-2">Loading...</p>
+				{:else}
+					{#each buildUserWordMenu(userWordRowsByWord[result.word] ?? []) as item}
+						{#if item.kind === 'entry'}
+							<div class="px-3 py-1.5 flex items-center justify-between gap-2">
+								<div class="min-w-0">
+									<p class="text-sm text-gray-700 truncate">{item.label}</p>
+									<p class="text-xs text-gray-400 truncate">{item.sublabel}</p>
+								</div>
+								<button
+									onclick={() => removeUserWordEntry(result.word, item.entry!)}
+									disabled={togglingUserWordAction === result.word}
+									class="text-xs text-red-400 hover:text-red-600 disabled:opacity-50 shrink-0"
+								>
+									Remove
+								</button>
+							</div>
+						{:else if item.kind === 'add'}
+							<button
+								onclick={() => addUserWordAtScope(result.word, item.scope!)}
+								disabled={togglingUserWordAction === result.word}
+								class="w-full text-left px-3 py-1.5 text-sm text-blue-600 hover:bg-gray-50 disabled:opacity-50"
+							>
+								{item.label}
+							</button>
+						{:else}
+							<button
+								onclick={() => { userWordMenuOpenFor = null; openWordDetail(result.word); }}
+								class="w-full text-left px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50 border-t border-gray-100 mt-1"
+							>
+								{item.label}
+							</button>
+						{/if}
 					{/each}
 				{/if}
 			</div>
@@ -1630,27 +1891,7 @@
 												{@render iconInfo()}
 											</button>
 											{@render visibilityAction(result)}
-											{#if userWords.has(result.word)}
-												<button
-													onclick={() => removeUserWord(result.word)}
-													disabled={addingUserWord === result.word}
-													class="p-1.5 rounded {userWordAffectsDag[result.word] ? 'text-emerald-600' : 'text-slate-500'} hover:text-red-600 hover:bg-red-50 disabled:opacity-50"
-													title={userWordTooltip(result.word)}
-													aria-label="In your dictionary — click to remove"
-												>
-													{@render iconBookmark(true)}
-												</button>
-											{:else}
-												<button
-													onclick={() => addUserWord(result.word)}
-													disabled={addingUserWord === result.word}
-													class="p-1.5 rounded text-gray-400 hover:text-blue-600 hover:bg-blue-50 disabled:opacity-50"
-													title="Add to your custom dictionary — helps future segmentation recognize this word"
-													aria-label="Add to your custom dictionary"
-												>
-													{@render iconBookmark(false)}
-												</button>
-											{/if}
+											{@render userWordAction(result)}
 											{#if starredWords.has(result.word)}
 												<button
 													onclick={() => unmarkStarred(result.word)}
@@ -1799,27 +2040,7 @@
 											{@render iconInfo()}
 										</button>
 										{@render visibilityAction(result)}
-										{#if userWords.has(result.word)}
-											<button
-												onclick={() => removeUserWord(result.word)}
-												disabled={addingUserWord === result.word}
-												class="p-1.5 rounded {userWordAffectsDag[result.word] ? 'text-emerald-600' : 'text-slate-500'} hover:text-red-600 hover:bg-red-50 disabled:opacity-50"
-												title={userWordTooltip(result.word)}
-												aria-label="In your dictionary — click to remove"
-											>
-												{@render iconBookmark(true)}
-											</button>
-										{:else}
-											<button
-												onclick={() => addUserWord(result.word)}
-												disabled={addingUserWord === result.word}
-												class="p-1.5 rounded text-gray-400 hover:text-blue-600 hover:bg-blue-50 disabled:opacity-50"
-												title="Add to your custom dictionary — helps future segmentation recognize this word"
-												aria-label="Add to your custom dictionary"
-											>
-												{@render iconBookmark(false)}
-											</button>
-										{/if}
+										{@render userWordAction(result)}
 										{#if starredWords.has(result.word)}
 											<button
 												onclick={() => unmarkStarred(result.word)}

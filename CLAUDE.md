@@ -232,14 +232,94 @@ anything — flagged here since an earlier round's instructions assumed such
 a badge system already existed for `UserWord` scope and it doesn't.
 
 `WordResult.is_user_word` (resolved the same way, via
-`_resolve_user_word_presence`) is a third field in this same "resolved
-fresh on every read" family — existence-based like `is_hidden`, not
-tri-state like `affects_dag`: does this word have *any* applicable
-`UserWord` row for this viewing context, regardless of that row's own
-`affects_dag` opinion. It exists purely to power the results-page "User
-words" filter bucket (see below) — the pre-existing `userWords` frontend
-Set is a different, narrower thing (global-only, drives the "+ Add word"
-quick-action's own filled/outline state) and was left untouched.
+`_resolve_user_word_detail` — see the next section) is a third field in
+this same "resolved fresh on every read" family — existence-based like
+`is_hidden`, not tri-state like `affects_dag`: does this word have *any*
+applicable `UserWord` row for this viewing context, regardless of that
+row's own `affects_dag` opinion. It exists purely to power the
+results-page "User words" filter bucket (see below).
+
+## UserWord quick-action: scope-aware, badge fan, not a flat global-only toggle
+
+The results-table/card bookmark quick-action originally only ever
+reflected a word's *global* `UserWord` entry — a separately-fetched
+`userWords` Set/`userWordAffectsDag` record, populated from a bare
+`listUserWords()` call (which resolves to global-only with no viewing
+context — see `list_user_words`'s docstring, router.py). A word with
+*only* a text- or analysis-scoped entry showed as "not added" and clicking
+"add" would try to create a second, redundant global entry. Fixed by
+adding `WordResult.userword_scopes: list[str]` (every scope with a row —
+0-3 of "global"/"text"/"analysis", canonical order — since `UserWord`
+entries coexist rather than cascading, unlike `WordVisibility`) and
+`WordResult.userword_resolved_affects_dag: bool` (the winning entry's
+`affects_dag`, analysis > text > global, NULL-skipping, same walk
+`build_user_overlay` uses for segmentation itself — see
+`_resolve_user_word_detail`'s docstring, router.py, for the one deliberate
+difference: this field *does* consider analysis-scope, since it's read
+post-hoc for an already-persisted analysis, unlike `build_user_overlay`
+which runs before the analysis being segmented has an id to have been
+scoped to). The old `userWords`/`userWordAffectsDag` frontend state is
+gone entirely — nothing else on the page depended on it once the row/card
+icon stopped reading it (the panel's own quick bookmark icon already used
+its own scope-aware `uwEntryAtScope`, computed from `selectedWord.
+user_words`, not the flat Set).
+
+**Badge fan** (`userWordScopeBadges`): generalizes the single G/T/A corner
+badge (`scopeBadge`, still used as-is by the Visibility quick-action) to
+0-3 simultaneous badges, one per scope present. Canonical order Global →
+Text → Analysis; the last (rightmost) present badge sits at the exact
+corner position the old single badge always used, each earlier badge
+shifts left by a fixed step and sits at a lower z-index — a fanned stack
+where later-in-order badges sit visually on top of earlier ones. With one
+scope present this is pixel-identical to the pre-existing single-badge
+look, so the common case is unchanged.
+
+**Color lives on the badges, not the icon** (revised from this feature's
+first pass, which colored the bookmark icon itself emerald/slate by
+`userword_resolved_affects_dag` — the one resolved winner's value). That
+hid every other present scope's own setting whenever it disagreed with
+the winner (e.g. global excluded + text boosting showed as plain emerald,
+with no visual sign global was even excluded). Fixed by adding
+`WordResult.userword_scope_affects_dag: dict[str, bool | None]` (each
+scope's own raw, unresolved value — see `_resolve_user_word_detail`'s
+docstring, router.py) and moving the color there: the bookmark icon is
+now existence-only (slate when `userword_scopes.length > 0`, gray
+otherwise — the same neutral treatment `visibilityAction`'s own icon
+already uses), and each badge is independently colored by its own scope's
+`affects_dag` — a lighter emerald (`text-emerald-400`, vs. the icon's old
+`emerald-600`) when that entry boosts segmentation, slate/gray otherwise
+(false and null collapsed together, same truthy-check precedent the
+panel's own per-entry bookmark icon already uses). The lighter shade is
+deliberate, not arbitrary — distinguishing the badges' green from any
+icon-level color keeps the two reading as separate signals rather than
+one muddled together.
+
+**The click behavior became a popover** (`userWordAction`), structured
+exactly like the Visibility quick-action's own popover
+(`visibilityAction`) — same relative-wrapper/backdrop-click-to-close
+pattern, same lazy-fetch-and-cache-on-first-open for the raw up-to-3 rows
+(`userWordRowsByWord`, mirroring `visibilityRowsByWord`) — because a
+single click can no longer mean "toggle the one entry" once up to 3 can
+coexist. The menu lists one item per scope: an existing entry's compact
+summary ("Global: excluded from segmentation") plus a Remove action, or a
+bare "+ Add entry" for a scope with none (no pronunciation/meaning/notes
+prompt — `affects_dag` stays at its default NULL/"no opinion"), plus a
+final "Edit details..." link into the panel's already-correct multi-entry
+section rather than duplicating that editor here. **Deliberately does NOT
+auto-close after an add/remove** (unlike `applyVisibilityAction`, which
+does) — Visibility only ever has one resolved value to settle, so closing
+after any action makes sense there; several `UserWord` entries can coexist,
+so a user plausibly wants to add or remove more than one without reopening
+the menu each time.
+
+**Bidirectional local patching, no refetch either direction**: the panel's
+own `addUserWord`/`removeUserWord`/`saveEntry`/`deleteEntry`/`saveNewEntry`
+now write through to both `userWordRowsByWord` *and* `analysis.results`
+(via `patchResolvedUserWord`, which mirrors `_resolve_user_word_detail`
+client-side the same way `resolveVisibilityFromEntries` already mirrors
+`_resolve_word_visibility`) — so an edit made from the panel updates the
+row/card's icon and badge fan immediately, and vice versa, with neither
+side ever going stale until an actual page reload.
 
 ## Results-page filtering: one bucket registry, not scattered booleans
 

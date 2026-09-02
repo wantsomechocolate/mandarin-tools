@@ -45,11 +45,33 @@ class WordResult(BaseModel):
     hidden_governing_scope: str = "default"
     # Resolved (never persisted), same pattern as is_garbage/is_hidden -
     # whether this word has an applicable UserWord row (any scope relevant
-    # to this viewing context - see router.py's _resolve_user_word_presence).
+    # to this viewing context - see router.py's _resolve_user_word_detail).
     # Existence-based like WordVisibility, not tri-state like affects_dag -
     # there's no separate per-row opinion to resolve here, just "is this
     # word in the user's dictionary."
     is_user_word: bool = False
+    # Which of "global"/"text"/"analysis" currently have a UserWord row for
+    # this word, in the context of this analysis - canonical order, 0-3
+    # entries. Unlike is_hidden's single hidden_governing_scope, UserWord
+    # entries coexist rather than cascading (see UserWord's docstring,
+    # models.py), so this can't collapse to one governing scope - the
+    # results-table quick-action renders one badge per entry present here.
+    userword_scopes: list[str] = []
+    # The winning entry's affects_dag, resolved analysis > text > global
+    # (skipping NULL opinions, falling back to True if nothing resolves) -
+    # see _resolve_user_word_detail's docstring, router.py, for exactly how
+    # this differs from build_user_overlay's own (text/global-only) walk.
+    # Already collapsed to plain true/false, never null - this is
+    # specifically "what actually happens during segmentation," which is
+    # always one of those two.
+    userword_resolved_affects_dag: bool = True
+    # Each scope-in-userword_scopes' OWN raw affects_dag (tri-state,
+    # unresolved/uninherited) - {"global": true, "text": null, ...}. Unlike
+    # userword_resolved_affects_dag (the one winning value), this is what
+    # lets the results-table quick-action's badge fan show every present
+    # scope's actual setting instead of only the winner's - see
+    # _resolve_user_word_detail's docstring, router.py.
+    userword_scope_affects_dag: dict[str, bool | None] = {}
 
 
 class CompareSegmentationRequest(BaseModel):

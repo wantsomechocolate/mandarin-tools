@@ -183,22 +183,84 @@ def _resolve_word_visibility(
     return resolved
 
 
-def _resolve_user_word_presence(
+def _resolve_user_word_detail(
     user_id: int, db: Session, analysis_id: int | None, input_text_id: int | None
-) -> set[str]:
+) -> dict[str, dict]:
     """
-    Words that have at least one applicable UserWord row for this viewing
-    context (global, plus this text's/this analysis's own row if
-    applicable - same _scope_filter_conditions used by get_word_detail/
-    list_user_words). Existence-based, like WordVisibility - unlike
-    affects_dag there's no separate per-row opinion to resolve, just "is
-    this word in the user's dictionary here." Powers WordResult.is_user_word.
+    Resolves, for every word with at least one applicable UserWord row for
+    this viewing context (same _scope_filter_conditions used by
+    get_word_detail/list_user_words), a dict with:
+      - "scopes": every scope with a row ("global"/"text"/"analysis",
+        canonical order, 0-3 of them).
+      - "resolved_affects_dag": the winning entry's affects_dag (see below).
+      - "scope_affects_dag": {scope_name: that scope's own raw affects_dag},
+        i.e. each row's OWN tri-state value, unresolved/uninherited.
+    Powers WordResult.is_user_word/userword_scopes/
+    userword_resolved_affects_dag/userword_scope_affects_dag.
+
+    Unlike _resolve_word_visibility (a single governing scope, since a
+    WordVisibility row's mere presence already settles that field),
+    UserWord entries coexist rather than cascading - "scopes" lists every
+    scope with a row for this word, so the results-table quick-action can
+    render one badge per entry instead of collapsing to a single winner.
+    "scope_affects_dag" is what lets each of those badges show ITS OWN
+    scope's setting (boosts/excluded/no-preference) rather than only ever
+    showing the one resolved winner's - see the results-table quick-action's
+    badge fan, +page.svelte, for why that distinction matters: a badge fan
+    showing 3 green circles when only the winning scope actually boosts
+    segmentation would be misleading.
+
+    resolved_affects_dag mirrors build_user_overlay's null-skipping walk
+    (segmenter_loader.py) - skip a row whose affects_dag is NULL exactly as
+    if it didn't exist for this purpose, fall back to True if nothing
+    resolves - but walks analysis > text > global, unlike
+    build_user_overlay which never considers analysis-scope at all. That
+    difference is deliberate, not a divergence to reconcile: this field is
+    read post-hoc for an already-persisted analysis (POST /analyze right
+    after creating it, or GET /analyze/{id} reopening it), at which point
+    an analysis-scoped row can exist, whereas build_user_overlay runs
+    *during* segmentation, before the analysis being segmented has an id to
+    have been scoped to. In practice an analysis-scoped row's affects_dag
+    is always NULL (the UI never offers a control to set one, since it can
+    never influence segmentation either way - see UserWord's docstring,
+    models.py) and so is always skipped here too, but the walk still checks
+    it for correctness against any row that ended up with a non-NULL value
+    some other way (e.g. the historical Fragment data-port migration).
     """
-    rows = db.query(UserWord.word).filter(
+    rows = db.query(UserWord).filter(
         UserWord.user_id == user_id,
         or_(*_scope_filter_conditions(UserWord, analysis_id, input_text_id)),
-    ).distinct().all()
-    return {word for (word,) in rows}
+    ).all()
+
+    by_word: dict[str, dict[str, UserWord]] = {}
+    for row in rows:
+        if row.scope_analysis_id is not None:
+            scope_name = "analysis"
+        elif row.scope_input_text_id is not None:
+            scope_name = "text"
+        else:
+            scope_name = "global"
+        by_word.setdefault(row.word, {})[scope_name] = row
+
+    resolved: dict[str, dict] = {}
+    for word, by_scope in by_word.items():
+        scopes = [s for s in ("global", "text", "analysis") if s in by_scope]
+        scope_affects_dag = {s: by_scope[s].affects_dag for s in scopes}
+
+        affects_dag = True
+        for scope_name in ("analysis", "text", "global"):
+            row = by_scope.get(scope_name)
+            if row is not None and row.affects_dag is not None:
+                affects_dag = row.affects_dag
+                break
+
+        resolved[word] = {
+            "scopes": scopes,
+            "resolved_affects_dag": affects_dag,
+            "scope_affects_dag": scope_affects_dag,
+        }
+
+    return resolved
 
 
 @router.post("/compare-segmentation", response_model=CompareSegmentationResponse)
@@ -347,7 +409,8 @@ def analyze(
     # brand-new analysis, same reasoning as build_user_overlay never
     # resolving analysis-scoped UserWord rows.
     visibility = _resolve_word_visibility(current_user.id, db, analysis.id, input_text.id)
-    user_words_present = _resolve_user_word_presence(current_user.id, db, analysis.id, input_text.id)
+    user_words = _resolve_user_word_detail(current_user.id, db, analysis.id, input_text.id)
+    _uw_default = {"scopes": [], "resolved_affects_dag": True, "scope_affects_dag": {}}
 
     word_results = [
         WordResult(
@@ -358,7 +421,10 @@ def analyze(
             is_garbage=data.get("is_garbage", False),
             is_hidden=visibility.get(word, (False, "default"))[0],
             hidden_governing_scope=visibility.get(word, (False, "default"))[1],
-            is_user_word=word in user_words_present,
+            is_user_word=word in user_words,
+            userword_scopes=user_words.get(word, _uw_default)["scopes"],
+            userword_resolved_affects_dag=user_words.get(word, _uw_default)["resolved_affects_dag"],
+            userword_scope_affects_dag=user_words.get(word, _uw_default)["scope_affects_dag"],
         )
         for word, data in sorted(filtered.items(), key=lambda x: x[1]["count"], reverse=True)
     ]
@@ -399,7 +465,8 @@ def get_analysis(
     # -exposed analysis - an analysis-scoped WordVisibility row can and does
     # apply when reopening it, see _resolve_word_visibility.
     visibility = _resolve_word_visibility(current_user.id, db, analysis.id, analysis.input_text_id)
-    user_words_present = _resolve_user_word_presence(current_user.id, db, analysis.id, analysis.input_text_id)
+    user_words = _resolve_user_word_detail(current_user.id, db, analysis.id, analysis.input_text_id)
+    _uw_default = {"scopes": [], "resolved_affects_dag": True, "scope_affects_dag": {}}
 
     word_results = [
         WordResult(
@@ -410,7 +477,10 @@ def get_analysis(
             is_garbage=r.word in garbage_words,
             is_hidden=visibility.get(r.word, (False, "default"))[0],
             hidden_governing_scope=visibility.get(r.word, (False, "default"))[1],
-            is_user_word=r.word in user_words_present,
+            is_user_word=r.word in user_words,
+            userword_scopes=user_words.get(r.word, _uw_default)["scopes"],
+            userword_resolved_affects_dag=user_words.get(r.word, _uw_default)["resolved_affects_dag"],
+            userword_scope_affects_dag=user_words.get(r.word, _uw_default)["scope_affects_dag"],
         )
         for r in sorted(results, key=lambda x: x.count, reverse=True)
     ]
