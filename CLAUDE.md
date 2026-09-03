@@ -461,12 +461,92 @@ abstraction but leaves a visual seam to extend later.
 **`WordDetail.user_words` is a list, not a single resolved entry** — a word
 can have several simultaneous `UserWord` rows (e.g. a global one plus a
 one-off override for a specific text), and none is ever hidden just because
-a more-specific one exists; the panel's "Your entries" section shows each
-independently, editable/deletable on its own. This is purely a display
-concern — segmentation resolution stays entirely in
-`build_user_overlay`/`segmenter_loader.py`, which picks exactly one row's
-weight (and skips it if `affects_dag` is false) per its own unrelated
-scope-priority logic.
+a more-specific one exists. This is purely a display concern — segmentation
+resolution stays entirely in `build_user_overlay`/`segmenter_loader.py`,
+which picks exactly one row's weight (and skips it if `affects_dag` is
+false) per its own unrelated scope-priority logic. `user_words` (and its
+`word_visibility` sibling) exist today specifically for the results-table
+quick-action's own menu, which needs "what's relevant to this exact
+viewing context" — the panel itself moved to a different, unbounded field;
+see the next section.
+
+## `WordDetailPanel.svelte`: extracted, and shows every entry unconditionally
+
+The word-detail side panel used to be inline in `analyze/[id]/+page.svelte`
+and fetch `WordDetail` scoped to that page's own `analysis_id`/
+`input_text_id` (resolved to ≤3 rows per section, same as the results-
+table quick-actions still do). It's now `frontend/src/lib/components/
+WordDetailPanel.svelte` — a standalone component taking `word` + a
+`context` prop (`{type: 'global'}` / `{type: 'text', textId, textTitle}` /
+`{type: 'analysis', textId, textTitle, analysisId, analysisTitle}` — analysis
+context carries `textId` too, since an analysis belongs to a specific text)
+— used from `analyze/[id]` (analysis context), and from the profile
+`known-words`/`user-words`/`starred-words` list pages (global context, one
+per row's word). `input-texts/[id]` has no word-lookup UI at all currently,
+so it wasn't wired in — nothing to adapt there yet.
+
+**Only the Visibility and UserWord sections needed to change** — Dictionary/
+HSK/CC-CEDICT/rarity are pure read-only reference data (`WordDetailPanel`
+now also fetches `familiarity`/`is_starred`/`is_garbage` directly on
+`WordDetail`, added specifically so the panel is self-sufficient from a
+page with no bulk-fetched `knownWords`/`starredWords`/`garbageWords` state
+of its own — the profile list pages didn't have any before this), and
+Known/Starred stay global-only and always-editable, same as before.
+
+For these two sections, the backend now returns **every entry that exists,
+unconditionally** — `WordDetail.user_word_entries`/`.visibility_entries`
+(new, alongside the untouched `user_words`/`word_visibility` above), a flat
+list per section, not bounded at 3 — a word can pick up a text- or
+analysis-scoped customization in every text/analysis it's ever appeared in.
+Each entry carries a resolved `scope`/`text_id`/`text_title`/`analysis_id`/
+`analysis_created_at` (`_resolve_scope_context_info`, router.py — a
+generalization of the old `_resolve_input_text_titles`, now also used by
+`list_user_words`' `all_scopes` view) so the frontend can label/link a
+scoped entry without a second round trip.
+
+**Editability is a client-side hierarchy match, not a backend-resolved
+scope** (`isEntryEditable`, `frontend/src/lib/wordDetailContext.ts` — one
+small pure function, so it's testable/reusable in isolation): a global
+entry is always editable; a text-scoped entry is editable only when
+`context` carries a matching `textId` (true for both `'text'` and
+`'analysis'` context types — an analysis page is viewing a specific text
+too); an analysis-scoped entry is editable *only* from that exact
+analysis's own page — specifically **not** from its own text's text-level
+page, even though the analysis belongs to that text. A `{type: 'global'}`
+context matches neither text- nor analysis-scoped entries — this falls out
+of the same rule with no separate "global page" branch, verified live: the
+profile pages show every non-global entry read-only with a jump link
+(`/input-texts/{id}` or `/analyze/{id}`), no special-casing needed.
+
+**Layout**: global entry always shown first, in full; text-scoped entries
+collapse into a "Text-specific (N)" summary (omitted entirely when there
+are none — same convention as the optional HSK badges), expandable to a
+list where each row is independently editable or read-only+jump-link per
+`isEntryEditable`; analysis-scoped entries get the same treatment,
+"Analysis-specific (N)". A "+ Add entry for this text/analysis" affordance
+appears next to the relevant group only when `context` provides that
+textId/analysisId and nothing already occupies it — preserves the ability
+to scope a brand-new customization to exactly what's being viewed, reframed
+around the flat list instead of a fixed 3-slot one.
+
+**Live sync with the results-table quick-actions, preserved through the
+extraction**: editing an entry via the panel used to patch
+`analysis.results` directly (in-component). Now `WordDetailPanel` fires
+`onUserWordEntriesChanged`/`onVisibilityEntriesChanged` with the word's
+full fresh entries list after any change; `analyze/[id]/+page.svelte`
+handles these by filtering to `isEntryEditable(entry, panelContext)` (the
+same rule the panel itself used to decide what's editable — which, by
+construction, is exactly "what a fresh context-scoped fetch used to
+return") and feeding the result through the *existing*
+`patchResolvedVisibility`/`patchResolvedUserWord` (unchanged, still used
+by the row/card quick-action popovers too) via a small adapter back to
+their `scope_analysis_id`/`scope_input_text_id` shape. Verified live: a
+row's badge fan updates immediately when an entry is added/removed from
+the panel, no page reload. The profile list pages don't wire these
+callbacks — their own per-row tables (`user-words` specifically) can go
+briefly stale relative to a panel edit until reloaded, an accepted,
+documented trade-off rather than plumbing a second sync path for a much
+lower-stakes surface.
 
 ## Profile pages: standalone management screens for the "global" lists
 
@@ -491,9 +571,9 @@ segmentation/the results page, exactly wrong for "show me every entry I've
 ever made, wherever it's scoped." Added `all_scopes: bool = False` to that
 endpoint (`list_user_words`, router.py): when true, resolution is bypassed
 entirely and every row for the user comes back unresolved, each annotated
-with `input_text_title` (via `_resolve_input_text_titles` — a 2-query bulk
-join, not per-row) so the page can label/link a scoped row without a
-second round trip per row. `api.ts` exposes this as `listAllUserWords()`,
+with `input_text_title` (via `_resolve_scope_context_info` — a bulk join,
+not per-row) so the page can label/link a scoped row without a second
+round trip per row. `api.ts` exposes this as `listAllUserWords()`,
 kept a separate function from `listUserWords(analysisId, inputTextId)`
 rather than overloading it, since the two return shapes mean genuinely
 different things (one resolved answer per word vs. every row) and mixing
@@ -527,6 +607,40 @@ all — `GET /stopwords` only ever returned DB rows — so they're absent from
 that page entirely; flagged here since it's an intentional scoping choice
 (nothing there would be editable/deletable anyway), not a gap to fix later
 without a reason to.
+
+**Known Words now opens `WordDetailPanel` on row click** (same
+click-passthrough pattern as the results page's `handleRowClick` -
+anywhere on the row except an actual interactive element), in `{type:
+'global'}` context, plus a familiarity filter (`≤`/`=`, one value selector
+shared between the two modes since only one is ever active). Wiring this
+up surfaced a real bug: `upsert_known_word` (router.py) never deleted a
+`KnownWord` row, so the results page's "clear familiarity" (✕) button left
+a meaningless null-familiarity row behind - exactly the kind of row this
+new filter (and the list itself) should never have shown, since a
+`KnownWord` row's entire reason to exist is to hold a score (see its
+docstring, models.py). Fixed at the write boundary: `familiarity: None`
+now deletes the row instead of nulling it in place (the endpoint's
+response type became `KnownWordResponse | None` accordingly - checked
+every existing caller first; none read anything off the response besides
+`.familiarity`, which they already set locally from the value just sent,
+so this was a safe change). Six pre-existing orphaned rows from before
+this fix were deleted directly (not a migration - just bad data, not a
+schema concern). Because clearing familiarity now means the word *leaves*
+the list rather than just losing its score chip, `WordDetailPanel` gained
+an `onFamiliarityChanged` callback (mirroring `onUserWordEntriesChanged`/
+`onVisibilityEntriesChanged`) so the Known Words page's own array drops
+the word immediately when it's cleared via the panel, not just when the
+panel's own display updates.
+
+**All three profile list pages dock the panel beside the table on `lg`
+screens, matching the results page** - not a bespoke layout, the exact
+same mechanism: the panel's backdrop wrapper (`fixed inset-0 ... lg:contents`)
+collapses to `display: contents` at that breakpoint, so its child (`self-start
+lg:sticky lg:top-4`) stops being an overlay and joins the parent
+`flex flex-col lg:flex-row gap-4` row as a sticky sibling of the table
+instead - below `lg` it's still the same bottom-sheet-with-backdrop modal
+as before. The table's own wrapper needed `flex-1 min-w-0` added for this
+(previously it didn't need to share a flex row with anything).
 
 ## Known naming history (context, not action needed)
 

@@ -7,6 +7,8 @@
 	import { familiarityLabel, familiarityColor } from '$lib/wordDisplay';
 	import { goto } from '$app/navigation';
 	import type { PageProps } from './$types';
+	import WordDetailPanel from '$lib/components/WordDetailPanel.svelte';
+	import { isEntryEditable, type WordDetailContext } from '$lib/wordDetailContext';
 
 	let { params }: PageProps = $props();
 
@@ -86,25 +88,6 @@
 		userword_scope_affects_dag: Record<string, boolean | null>;
 	}
 
-	interface HskForm {
-		traditional: string | null;
-		pinyin: string | null;
-		meanings: string[];
-		classifiers: string[];
-	}
-
-	interface CedictSense {
-		traditional: string | null;
-		pinyin: string | null;
-		definitions: string[];
-	}
-
-	interface SampleSentence {
-		id: number;
-		word: string;
-		sentence: string;
-	}
-
 	interface UserWordDetail {
 		id: number;
 		pronunciation: string | null;
@@ -130,19 +113,14 @@
 		scope_input_text_id: number | null;
 	}
 
+	// Trimmed to just what the row/card quick-action popovers still need
+	// (via toggleVisibilityMenu/toggleUserWordMenu below) - the full
+	// WordDetail response has more fields (Dictionary/HSK/CC-CEDICT/sample
+	// sentences/the new flat user_word_entries/visibility_entries), but
+	// this page no longer reads any of those directly - WordDetailPanel.svelte
+	// fetches and owns all of that itself now.
 	interface WordDetail {
 		word: string;
-		frequency: number | null;
-		// Derived read-cache columns from DictionaryWord (see its docstring,
-		// models.py) - both null whenever frequency is. Populated by
-		// scripts/compute_word_rarity.py, not live.
-		freq_per_million: number | null;
-		rarity_tier: string | null;
-		hsk_v2_2012: number | null;
-		hsk_v3_2021: number | null;
-		hsk_v3_2026: number | null;
-		forms: HskForm[];
-		cedict: CedictSense[];
 		// Every UserWord entry across the relevant scope levels, most
 		// specific first - never resolved to one, see backend's WordDetail
 		// docstring (schemas.py).
@@ -150,7 +128,6 @@
 		// Same multi-entry, most-specific-first shape as user_words, for the
 		// Visibility section - see WordVisibility's docstring (models.py).
 		word_visibility: WordVisibilityEntry[];
-		sample_sentences: SampleSentence[];
 	}
 
 	interface Analysis {
@@ -177,14 +154,14 @@
 	let garbageWords = $state(new Set<string>());
 	let togglingGarbage = $state('');
 	let knownWords = $state<Record<string, number | null>>({});
-	let addingUserWord = $state('');
 	let starredWords = $state(new Set<string>());
 	let togglingStarred = $state('');
 	// Visibility ("hide from results") - visibilityRowsByWord caches the up
 	// -to-3 raw WordVisibility rows per word, fetched lazily the first time
 	// that word's quick-action menu is opened (same lazy+cache pattern as
 	// contextByWord below), used to build the menu (see buildVisibilityMenu)
-	// and kept in sync with the panel's own selectedWord.word_visibility
+	// and kept in sync with WordDetailPanel.svelte's own entries via
+	// handleVisibilityEntriesChanged
 	// when either mutates.
 	let visibilityRowsByWord: Record<string, WordVisibilityEntry[]> = $state({});
 	let loadingVisibilityFor = $state(new Set<string>());
@@ -194,30 +171,25 @@
 	// above, for the exact same reason (the results-table menu needs the raw
 	// up-to-3 scoped rows to build its per-scope summary/add/remove actions,
 	// not just the resolved userword_scopes/userword_resolved_affects_dag on
-	// WordResult). Kept in sync with the panel's own selectedWord.user_words
+	// WordResult). Kept in sync with WordDetailPanel.svelte's own entries via
+	// handleUserWordEntriesChanged
 	// when either mutates - see addUserWord/removeUserWord/saveEntry/
 	// deleteEntry/saveNewEntry.
 	let userWordRowsByWord: Record<string, UserWordDetail[]> = $state({});
 	let loadingUserWordFor = $state(new Set<string>());
 	let userWordMenuOpenFor: string | null = $state(null);
 	let togglingUserWordAction: string | null = $state(null);
-	// Panel's own Visibility section - which scope's request is in flight,
-	// and which scope's "+ Override" is currently expanded to show its
-	// Shown/Hidden choice.
-	let togglingVisibilityScope: Scope | null = $state(null);
-	let addingVisibilityOverrideFor: Scope | null = $state(null);
 	// Mobile card list only - independent per-row accordion toggles (see
 	// snippets iconPlusMinus/iconHamburger and the sm:hidden card block).
 	let expandedInfo = $state(new Set<string>());
 	let expandedActions = $state(new Set<string>());
-	let selectedWord: WordDetail | null = $state(null);
-	let loadingDetail = $state(false);
-	// Where a NEW user-word entry from the panel should land ("+ Add entry"
-	// picks among whichever scopes don't already have one) - forward-looking,
-	// reset to "global" each time a different word's panel opens. Familiarity
-	// has no scope of its own, it's always global (see KnownWord's docstring,
-	// models.py).
-	let userWordScope: Scope = $state('global');
+	// The word currently shown in WordDetailPanel.svelte, or null when
+	// closed - the component owns all of its own fetching/editing state
+	// internally now, this page just tracks which word (if any) to show it
+	// for and reacts to its change-callbacks (see handleUserWordEntriesChanged/
+	// handleVisibilityEntriesChanged below) to keep the row/card quick-
+	// action icons in sync.
+	let selectedWordForPanel: string | null = $state(null);
 	// Context (word-in-source-text) is keyed by word rather than tied to the
 	// panel, since it now lives at the row/card level and multiple rows can
 	// have their context expanded independently at once (desktop chevrons,
@@ -228,29 +200,18 @@
 	let minFamiliarityFilter = $state(storedFilters.minFamiliarityFilter ?? 4);
 	let searchQuery = $state('');
 	let searchScope: 'filtered' | 'all' = $state(storedFilters.searchScope ?? 'filtered');
-	let newSentenceDraft = $state('');
-	let savingSentence = $state(false);
-	let deletingSentenceId: number | null = $state(null);
-
-	// UserWord "Your entries" list - each entry is independently editable,
-	// keyed by its own row id (real ids are always positive). affectsDag is
-	// tri-state (true/false/null - see UserWord.affects_dag's docstring,
-	// models.py) and only ever read/sent for non-analysis-scoped entries -
-	// an analysis-scoped value can never have an observable effect.
-	let entryEditingIds: Set<number> = $state(new Set());
-	let entryDrafts: Record<number, { pronunciation: string; meaning: string; notes: string; affectsDag: boolean | null }> = $state({});
-	let savingEntryId: number | null = $state(null);
-	// "+ Add entry" (for a scope with no entry yet) is structurally
-	// different from editing an existing one - it doesn't have a row id yet.
-	// Defaults affectsDag to true (not null) - a deliberate "+ Add entry"
-	// action is a reasonable place to default to "yes, boost segmentation,"
-	// unlike a bare request that only sets other fields (see
-	// UserWordCreate/UserWordUpsert, schemas.py) - "no preference" is still
-	// pickable via the tri-state control below.
-	let addingNewEntry = $state(false);
-	let newEntryDraft = $state<{ pronunciation: string; meaning: string; notes: string; affectsDag: boolean | null }>({ pronunciation: '', meaning: '', notes: '', affectsDag: true });
 
 	const id = $derived(parseInt(params.id));
+
+	// This page's viewing context, for WordDetailPanel.svelte - analysis
+	// context (carries textId too, since an analysis belongs to a specific
+	// text - see isEntryEditable's docstring, wordDetailContext.ts) once the
+	// analysis has loaded, global beforehand (there's nothing more specific
+	// to offer yet).
+	const panelContext: WordDetailContext = $derived.by(() => {
+		if (!analysis) return { type: 'global' };
+		return { type: 'analysis', textId: analysis.input_text_id, textTitle: analysis.title, analysisId: id, analysisTitle: analysis.title };
+	});
 
 	function containsChinese(word: string): boolean {
 		return /[\u4e00-\u9fff]/.test(word);
@@ -565,38 +526,6 @@
 		return a.scope_analysis_id === b.scope_analysis_id && a.scope_input_text_id === b.scope_input_text_id;
 	}
 
-	const ALL_SCOPES: { value: Scope; label: string }[] = [
-		{ value: 'analysis', label: 'This analysis' },
-		{ value: 'text', label: 'This text' },
-		{ value: 'global', label: 'Global' },
-	];
-
-	function scopeLabel(entry: { scope_analysis_id: number | null; scope_input_text_id: number | null }): string {
-		if (entry.scope_analysis_id != null) return 'This analysis';
-		if (entry.scope_input_text_id != null) return `This text: ${analysis?.title ?? 'Untitled'}`;
-		return 'Global';
-	}
-
-	// Which of the three canonical scopes have no matching entry yet, for
-	// the "+ Add entry"/tri-state "no row here" affordances.
-	function missingScopes(entries: { scope_analysis_id: number | null; scope_input_text_id: number | null }[]): { value: Scope; label: string }[] {
-		return ALL_SCOPES.filter((s) => {
-			const cols = resolveScopeColumns(s.value, id, analysis?.input_text_id);
-			return !entries.some((e) => columnsMatch(e, cols));
-		});
-	}
-
-	// The "+ Add entry" scope selector should always default to the
-	// BROADEST still-available scope, not the narrowest - ALL_SCOPES (and
-	// therefore missingScopes, which filters it) is ordered most-specific
-	// first (analysis, text, global), so the least specific missing scope
-	// is simply the last entry in that filtered list. null when every scope
-	// already has an entry (nothing left to add).
-	function leastSpecificMissingScope(entries: { scope_analysis_id: number | null; scope_input_text_id: number | null }[]): Scope | null {
-		const missing = missingScopes(entries);
-		return missing.length > 0 ? missing[missing.length - 1].value : null;
-	}
-
 	// Mirrors the backend's _resolve_word_visibility (router.py) client-side,
 	// no HTTP - walks the same most-specific-first ordering already used
 	// elsewhere (sortMostSpecificFirst) and takes the first row's own value,
@@ -749,9 +678,6 @@
 			}
 			visibilityRowsByWord = { ...visibilityRowsByWord, [word]: nextRows };
 			patchResolvedVisibility(word, nextRows);
-			if (selectedWord?.word === word) {
-				selectedWord = { ...selectedWord, word_visibility: nextRows };
-			}
 			visibilityMenuOpenFor = null;
 		} catch (e: unknown) {
 			error = e instanceof Error ? e.message : 'Failed to update visibility';
@@ -761,10 +687,8 @@
 	}
 
 	// Canonical broadest-first order for the UserWord quick-action menu and
-	// the badge fan (see userWordScopeBadges) - deliberately not reusing
-	// ALL_SCOPES' analysis-first order (that one's for the panel's "+ Add
-	// entry" selector, which wants the narrowest/most-likely-intended scope
-	// first); this menu reads more naturally broadest-first.
+	// the badge fan (see userWordScopeBadges) - reads more naturally
+	// broadest-first for this menu specifically.
 	const SCOPE_ORDER: { value: Scope; label: string }[] = [
 		{ value: 'global', label: 'Global' },
 		{ value: 'text', label: 'This text' },
@@ -843,9 +767,6 @@
 			const nextRows = sortMostSpecificFirst([...(userWordRowsByWord[word] ?? []).filter((r) => !columnsMatch(r, cols)), created]);
 			userWordRowsByWord = { ...userWordRowsByWord, [word]: nextRows };
 			patchResolvedUserWord(word, nextRows);
-			if (selectedWord?.word === word) {
-				selectedWord = { ...selectedWord, user_words: nextRows };
-			}
 		} catch (e: unknown) {
 			error = e instanceof Error ? e.message : 'Failed to add word to your dictionary';
 		} finally {
@@ -860,217 +781,10 @@
 			const nextRows = (userWordRowsByWord[word] ?? []).filter((r) => r.id !== entry.id);
 			userWordRowsByWord = { ...userWordRowsByWord, [word]: nextRows };
 			patchResolvedUserWord(word, nextRows);
-			if (selectedWord?.word === word) {
-				selectedWord = { ...selectedWord, user_words: selectedWord.user_words.filter((e) => e.id !== entry.id) };
-			}
 		} catch (e: unknown) {
 			error = e instanceof Error ? e.message : 'Failed to remove word from your dictionary';
 		} finally {
 			togglingUserWordAction = null;
-		}
-	}
-
-	// Panel's own Visibility section - unlike UserWord's affects_dag, all
-	// three scope slots (including analysis) are shown/editable here (see
-	// the section's template comment for why).
-	function visibilityEntryAtScope(scope: Scope): WordVisibilityEntry | undefined {
-		if (!selectedWord) return undefined;
-		const cols = resolveScopeColumns(scope, id, analysis?.input_text_id);
-		return selectedWord.word_visibility.find((e) => columnsMatch(e, cols));
-	}
-
-	async function setVisibility(scope: Scope, hidden: boolean) {
-		if (!selectedWord) return;
-		togglingVisibilityScope = scope;
-		try {
-			const updated = await api.upsertWordVisibility(selectedWord.word, hidden, scopeContext(scope)) as WordVisibilityEntry;
-			const cols = resolveScopeColumns(scope, id, analysis?.input_text_id);
-			const nextRows = sortMostSpecificFirst([...selectedWord.word_visibility.filter((e) => !columnsMatch(e, cols)), updated]);
-			selectedWord = { ...selectedWord, word_visibility: nextRows };
-			visibilityRowsByWord = { ...visibilityRowsByWord, [selectedWord.word]: nextRows };
-			patchResolvedVisibility(selectedWord.word, nextRows);
-			addingVisibilityOverrideFor = null;
-		} catch (e: unknown) {
-			error = e instanceof Error ? e.message : 'Failed to update visibility';
-		} finally {
-			togglingVisibilityScope = null;
-		}
-	}
-
-	async function removeVisibilityOverride(scope: Scope) {
-		if (!selectedWord) return;
-		togglingVisibilityScope = scope;
-		try {
-			const cols = resolveScopeColumns(scope, id, analysis?.input_text_id);
-			await api.deleteWordVisibility(selectedWord.word, cols.scope_analysis_id, cols.scope_input_text_id);
-			const nextRows = selectedWord.word_visibility.filter((e) => !columnsMatch(e, cols));
-			selectedWord = { ...selectedWord, word_visibility: nextRows };
-			visibilityRowsByWord = { ...visibilityRowsByWord, [selectedWord.word]: nextRows };
-			patchResolvedVisibility(selectedWord.word, nextRows);
-		} catch (e: unknown) {
-			error = e instanceof Error ? e.message : 'Failed to remove visibility override';
-		} finally {
-			togglingVisibilityScope = null;
-		}
-	}
-
-	function visibilitySummary(entries: WordVisibilityEntry[]): string {
-		const { is_hidden, hidden_governing_scope } = resolveVisibilityFromEntries(entries);
-		if (hidden_governing_scope === 'default') return 'Shown (inherited - no override set)';
-		if (hidden_governing_scope === 'global') return is_hidden ? 'Hidden (set globally)' : 'Shown (set globally)';
-		const scopeText = hidden_governing_scope === 'text' ? 'for this text' : 'for this analysis';
-		return is_hidden ? `Hidden (overridden ${scopeText})` : `Shown (overridden ${scopeText})`;
-	}
-
-	// Panel-only now (the row/card quick-action has its own
-	// addUserWordAtScope/removeUserWordEntry, driven by its own popover) -
-	// keeps userWordRowsByWord/analysis.results in sync via
-	// patchResolvedUserWord, same as that popover's actions do, so the
-	// row/card icon and badge fan reflect a panel edit immediately.
-	async function addUserWord(word: string, ctx?: api.ScopeContext) {
-		if (!selectedWord) return;
-		addingUserWord = word;
-		try {
-			const created = await api.createUserWord(word, undefined, ctx) as UserWordDetail;
-			const nextRows = sortMostSpecificFirst([...selectedWord.user_words, created]);
-			selectedWord = { ...selectedWord, user_words: nextRows };
-			userWordRowsByWord = { ...userWordRowsByWord, [word]: nextRows };
-			patchResolvedUserWord(word, nextRows);
-		} catch (e: unknown) {
-			// If it already exists (e.g. added from another session), don't
-			// surface an error banner for it - selectedWord.user_words should
-			// already reflect that (the "add" affordance wouldn't even be
-			// showing otherwise).
-			const message = e instanceof Error ? e.message : '';
-			if (!message.toLowerCase().includes('already exists')) {
-				error = message || 'Failed to add word to your dictionary';
-			}
-		} finally {
-			addingUserWord = '';
-		}
-	}
-
-	// Deletes the exact scoped row - panel-only now, passes the entry
-	// actually loaded at userWordScope (not userWordScope itself, which is
-	// only for where a NEW entry should go).
-	async function removeUserWord(word: string, scopeAnalysisId?: number | null, scopeInputTextId?: number | null) {
-		if (!selectedWord) return;
-		addingUserWord = word;
-		try {
-			await api.deleteUserWord(word, scopeAnalysisId, scopeInputTextId);
-			const cols = { scope_analysis_id: scopeAnalysisId ?? null, scope_input_text_id: scopeInputTextId ?? null };
-			const nextRows = selectedWord.user_words.filter((e) => !columnsMatch(e, cols));
-			selectedWord = { ...selectedWord, user_words: nextRows };
-			userWordRowsByWord = { ...userWordRowsByWord, [word]: nextRows };
-			patchResolvedUserWord(word, nextRows);
-		} catch (e: unknown) {
-			error = e instanceof Error ? e.message : 'Failed to remove word from your dictionary';
-		} finally {
-			addingUserWord = '';
-		}
-	}
-
-	function startEditingEntry(entry: UserWordDetail) {
-		entryDrafts = { ...entryDrafts, [entry.id]: {
-			pronunciation: entry.pronunciation ?? '', meaning: entry.meaning ?? '', notes: entry.notes ?? '',
-			affectsDag: entry.affects_dag,
-		} };
-		entryEditingIds = new Set([...entryEditingIds, entry.id]);
-	}
-
-	function cancelEditingEntry(entryId: number) {
-		const next = new Set(entryEditingIds);
-		next.delete(entryId);
-		entryEditingIds = next;
-	}
-
-	function scopeContextForEntry(entry: UserWordDetail): api.ScopeContext {
-		if (entry.scope_analysis_id != null) return { analysisId: entry.scope_analysis_id, scope: 'analysis' };
-		if (entry.scope_input_text_id != null) return { inputTextId: entry.scope_input_text_id, scope: 'text' };
-		return { scope: 'global' };
-	}
-
-	async function saveEntry(entry: UserWordDetail) {
-		if (!selectedWord) return;
-		savingEntryId = entry.id;
-		try {
-			const draft = entryDrafts[entry.id];
-			const isAnalysisScoped = entry.scope_analysis_id != null;
-			const fields: { pronunciation: string | null; meaning: string | null; notes: string | null; affects_dag?: boolean | null } = {
-				pronunciation: draft.pronunciation || null,
-				meaning: draft.meaning || null,
-				notes: draft.notes || null,
-			};
-			// affects_dag is never sent for an analysis-scoped entry - it has
-			// no observable effect there, so there's nothing to write (see
-			// UserWord's docstring, models.py) and no toggle is shown for it.
-			if (!isAnalysisScoped) fields.affects_dag = draft.affectsDag;
-			const updated = await api.upsertUserWordDetail(selectedWord.word, fields, scopeContextForEntry(entry)) as UserWordDetail;
-			const nextRows = selectedWord.user_words.map((e) => e.id === entry.id ? updated : e);
-			selectedWord = { ...selectedWord, user_words: nextRows };
-			userWordRowsByWord = { ...userWordRowsByWord, [selectedWord.word]: nextRows };
-			patchResolvedUserWord(selectedWord.word, nextRows);
-			cancelEditingEntry(entry.id);
-		} catch (e: unknown) {
-			error = e instanceof Error ? e.message : 'Failed to save word details';
-		} finally {
-			savingEntryId = null;
-		}
-	}
-
-	async function deleteEntry(entry: UserWordDetail) {
-		if (!selectedWord) return;
-		savingEntryId = entry.id;
-		try {
-			await api.deleteUserWord(selectedWord.word, entry.scope_analysis_id, entry.scope_input_text_id);
-			const nextRows = selectedWord.user_words.filter((e) => e.id !== entry.id);
-			selectedWord = { ...selectedWord, user_words: nextRows };
-			userWordRowsByWord = { ...userWordRowsByWord, [selectedWord.word]: nextRows };
-			patchResolvedUserWord(selectedWord.word, nextRows);
-			// Deleting an entry frees up its scope - re-derive so the
-			// "+ Add entry" selector reflects the now-broader set of missing
-			// scopes (e.g. deleting the global entry should offer Global
-			// again, not stay stuck on whatever scope was last picked).
-			const leastSpecific = leastSpecificMissingScope(selectedWord.user_words);
-			if (leastSpecific) userWordScope = leastSpecific;
-			cancelEditingEntry(entry.id);
-		} catch (e: unknown) {
-			error = e instanceof Error ? e.message : 'Failed to remove word from your dictionary';
-		} finally {
-			savingEntryId = null;
-		}
-	}
-
-	function startAddingNewEntry() {
-		newEntryDraft = { pronunciation: '', meaning: '', notes: '', affectsDag: true };
-		addingNewEntry = true;
-	}
-
-	async function saveNewEntry() {
-		if (!selectedWord) return;
-		savingEntryId = -1; // sentinel: "adding", not any real row id
-		try {
-			const isAnalysisScoped = userWordScope === 'analysis';
-			const fields: { pronunciation: string | null; meaning: string | null; notes: string | null; affects_dag?: boolean | null } = {
-				pronunciation: newEntryDraft.pronunciation || null,
-				meaning: newEntryDraft.meaning || null,
-				notes: newEntryDraft.notes || null,
-			};
-			if (!isAnalysisScoped) fields.affects_dag = newEntryDraft.affectsDag;
-			const created = await api.upsertUserWordDetail(selectedWord.word, fields, {
-				analysisId: id, inputTextId: analysis?.input_text_id, scope: userWordScope,
-			}) as UserWordDetail;
-			const nextRows = sortMostSpecificFirst([...selectedWord.user_words, created]);
-			selectedWord = { ...selectedWord, user_words: nextRows };
-			userWordRowsByWord = { ...userWordRowsByWord, [selectedWord.word]: nextRows };
-			patchResolvedUserWord(selectedWord.word, nextRows);
-			addingNewEntry = false;
-			const leastSpecific = leastSpecificMissingScope(selectedWord.user_words);
-			if (leastSpecific) userWordScope = leastSpecific;
-		} catch (e: unknown) {
-			error = e instanceof Error ? e.message : 'Failed to add word to your dictionary';
-		} finally {
-			savingEntryId = null;
 		}
 	}
 
@@ -1109,33 +823,53 @@
 		}
 	}
 
-	async function openWordDetail(word: string) {
-		loadingDetail = true;
-		selectedWord = null;
-		entryEditingIds = new Set();
-		entryDrafts = {};
-		addingNewEntry = false;
-		userWordScope = 'global';
-		addingVisibilityOverrideFor = null;
-		// Desktop only in practice - the matching mobile card is hidden
-		// (display:none) at that viewport, so scrollIntoView on it is a
-		// harmless no-op there.
+	// WordDetailPanel.svelte now owns its own fetching - this just tells it
+	// which word to show and scrolls the triggering row into view (desktop
+	// only in practice - the matching mobile card is hidden (display:none)
+	// at that viewport, so scrollIntoView on it is a harmless no-op there).
+	function openWordDetail(word: string) {
+		selectedWordForPanel = word;
 		requestAnimationFrame(() => {
 			document.querySelector(`[data-word="${CSS.escape(word)}"]`)
 				?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 		});
-		try {
-			selectedWord = await api.getWordDetail(word, id, analysis?.input_text_id) as WordDetail;
-			// Default the "+ Add entry" scope selector to the broadest scope
-			// that doesn't already have an entry (global unless that's taken,
-			// then text, then analysis) - see leastSpecificMissingScope.
-			const leastSpecific = leastSpecificMissingScope(selectedWord.user_words);
-			if (leastSpecific) userWordScope = leastSpecific;
-		} catch (e: unknown) {
-			error = e instanceof Error ? e.message : 'Failed to load word detail';
-		} finally {
-			loadingDetail = false;
-		}
+	}
+
+	// WordDetailPanel.svelte's onUserWordEntriesChanged/onVisibilityEntriesChanged
+	// callbacks - fired with the word's FULL (unbounded, every-scope) entries
+	// list after any change made from the panel. Re-derives this page's own
+	// "what's relevant to THIS analysis" view via the exact same isEntryEditable
+	// hierarchy rule the panel itself uses to decide editability (an entry is
+	// "relevant here" iff it would be editable here - global always, text/
+	// analysis only when they match this page's own context), adapts to the
+	// shapes patchResolvedUserWord/patchResolvedVisibility already expect, and
+	// reuses those to keep the row/card quick-action icons in sync - the same
+	// live-update behavior this page already had before the panel was
+	// extracted, just re-derived from richer data now.
+	function handleUserWordEntriesChanged(word: string, entries: { id: number; scope: 'global' | 'text' | 'analysis'; text_id: number | null; analysis_id: number | null; pronunciation: string | null; meaning: string | null; notes: string | null; affects_dag: boolean | null }[]) {
+		const relevant = entries
+			.filter((e) => isEntryEditable(e, panelContext))
+			.map((e): UserWordDetail => ({
+				id: e.id,
+				pronunciation: e.pronunciation, meaning: e.meaning, notes: e.notes, affects_dag: e.affects_dag,
+				scope_analysis_id: e.scope === 'analysis' ? e.analysis_id : null,
+				scope_input_text_id: e.scope === 'text' ? e.text_id : null,
+			}));
+		userWordRowsByWord = { ...userWordRowsByWord, [word]: relevant };
+		patchResolvedUserWord(word, relevant);
+	}
+
+	function handleVisibilityEntriesChanged(word: string, entries: { id: number; scope: 'global' | 'text' | 'analysis'; text_id: number | null; analysis_id: number | null; hidden: boolean }[]) {
+		const relevant = entries
+			.filter((e) => isEntryEditable(e, panelContext))
+			.map((e): WordVisibilityEntry => ({
+				id: e.id, word,
+				hidden: e.hidden,
+				scope_analysis_id: e.scope === 'analysis' ? e.analysis_id : null,
+				scope_input_text_id: e.scope === 'text' ? e.text_id : null,
+			}));
+		visibilityRowsByWord = { ...visibilityRowsByWord, [word]: relevant };
+		patchResolvedVisibility(word, relevant);
 	}
 
 	// Fetches + caches a word's context on first request; a no-op on repeat
@@ -1167,40 +901,6 @@
 		expandedContext = next;
 	}
 
-	// Independent of user_words - a word doesn't need to be in the user's
-	// dictionary to have sample sentences (see SampleSentence's docstring,
-	// models.py). Copy the relevant part of a context occurrence manually
-	// and paste it in here.
-	async function addSampleSentence() {
-		if (!selectedWord || !newSentenceDraft.trim()) return;
-		savingSentence = true;
-		try {
-			const created = await api.addSampleSentence(selectedWord.word, newSentenceDraft.trim()) as SampleSentence;
-			selectedWord = { ...selectedWord, sample_sentences: [...selectedWord.sample_sentences, created] };
-			newSentenceDraft = '';
-		} catch (e: unknown) {
-			error = e instanceof Error ? e.message : 'Failed to add sample sentence';
-		} finally {
-			savingSentence = false;
-		}
-	}
-
-	async function removeSampleSentence(sentenceId: number) {
-		if (!selectedWord) return;
-		deletingSentenceId = sentenceId;
-		try {
-			await api.deleteSampleSentence(sentenceId);
-			selectedWord = {
-				...selectedWord,
-				sample_sentences: selectedWord.sample_sentences.filter((s) => s.id !== sentenceId),
-			};
-		} catch (e: unknown) {
-			error = e instanceof Error ? e.message : 'Failed to remove sample sentence';
-		} finally {
-			deletingSentenceId = null;
-		}
-	}
-
 	function currentFamiliarity(result: WordResult): number | null {
 		if (result.word in knownWords) return knownWords[result.word];
 		return result.familiarity;
@@ -1228,33 +928,6 @@
 			longest_match_only: 'bg-amber-100 text-amber-700',
 		};
 		return colors[source] ?? 'bg-gray-100 text-gray-600';
-	}
-
-	// Word-detail panel's rarity badge (DictionaryWord.rarity_tier - see its
-	// docstring, models.py). Deliberately its own gray-to-warm color scale,
-	// distinct from the HSK badges' blue/purple/green in the same panel
-	// section, so the two badge families don't get confused with each other
-	// at a glance.
-	function rarityLabel(tier: string): string {
-		const labels: Record<string, string> = {
-			extremely_rare: 'Extremely rare',
-			rare: 'Rare',
-			uncommon: 'Moderate',
-			common: 'Common',
-			extremely_common: 'Extremely common',
-		};
-		return labels[tier] ?? tier;
-	}
-
-	function rarityColor(tier: string): string {
-		const colors: Record<string, string> = {
-			extremely_rare: 'bg-gray-100 text-gray-500',
-			rare: 'bg-stone-200 text-stone-600',
-			uncommon: 'bg-yellow-100 text-yellow-700',
-			common: 'bg-orange-100 text-orange-700',
-			extremely_common: 'bg-red-100 text-red-700',
-		};
-		return colors[tier] ?? 'bg-gray-100 text-gray-500';
 	}
 
 	function toggleInfo(word: string) {
@@ -1388,10 +1061,9 @@
 {/snippet}
 
 <!-- Small letter badge for hidden_governing_scope (G/T/A) - there is no
-     existing icon-badge system for scope in this app (scope elsewhere is
-     shown via a text-label <select>, e.g. scopeLabel()/ALL_SCOPES below) -
-     this is a new, minimal visual purpose-built for the visibility
-     quick-action, not a reuse of anything pre-existing. -->
+     existing icon-badge system for scope elsewhere in this app - this is a
+     new, minimal visual purpose-built for the visibility quick-action, not
+     a reuse of anything pre-existing. -->
 {#snippet scopeBadge(scope: string)}
 	{#if scope !== 'default'}
 		<span
@@ -1816,7 +1488,7 @@
 								<tr
 									data-word={result.word}
 									onclick={(e) => handleRowClick(e, result.word)}
-									class="cursor-pointer hover:bg-gray-50 {result.source === 'longest_match_only' ? 'bg-amber-50/40' : ''} {garbageWords.has(result.word) ? 'bg-red-50/40' : ''} {selectedWord?.word === result.word ? '!bg-blue-50 ring-1 ring-inset ring-blue-200' : ''}"
+									class="cursor-pointer hover:bg-gray-50 {result.source === 'longest_match_only' ? 'bg-amber-50/40' : ''} {garbageWords.has(result.word) ? 'bg-red-50/40' : ''} {selectedWordForPanel === result.word ? '!bg-blue-50 ring-1 ring-inset ring-blue-200' : ''}"
 								>
 									<td class="px-4 py-3 text-lg font-medium">
 										<div class="flex items-center gap-1.5">
@@ -2107,626 +1779,24 @@
 			     1024px) for both side by side. lg:contents removes the
 			     backdrop wrapper's own box once that's true, so it doesn't
 			     affect the side-by-side layout there. -->
-			{#if selectedWord || loadingDetail}
+			{#if selectedWordForPanel}
 				<div
 					class="fixed inset-0 z-40 flex items-end justify-center bg-black/30 lg:contents"
-					onclick={() => selectedWord = null}
+					onclick={() => selectedWordForPanel = null}
 					role="presentation"
 				>
 				<div
-					class="w-full lg:w-72 max-h-[85vh] overflow-y-auto bg-white rounded-t-2xl lg:rounded-lg shadow-sm p-4 self-start lg:sticky lg:top-4"
+					class="self-start lg:sticky lg:top-4"
 					onclick={(e) => e.stopPropagation()}
 					role="presentation"
 				>
-					{#if loadingDetail}
-						<p class="text-gray-500 text-sm">Loading...</p>
-					{:else if selectedWord}
-						{@const word = selectedWord.word}
-					{@const uwCols = resolveScopeColumns(userWordScope, id, analysis?.input_text_id)}
-					{@const uwEntryAtScope = selectedWord.user_words.find((e) => columnsMatch(e, uwCols))}
-						<div class="flex justify-between items-start mb-3">
-							<h2 class="text-3xl font-medium">{selectedWord.word}</h2>
-							<button
-								onclick={() => selectedWord = null}
-								class="text-gray-400 hover:text-gray-600"
-							>✕</button>
-						</div>
-
-						<!-- Familiarity + actions - everything available from the row
-						     is also available here, so the panel is a complete
-						     substitute rather than needing a trip back to the row.
-						     Familiarity is always global (no scope selector here -
-						     see KnownWord's docstring, models.py); the Bookmark quick
-						     action below uses userWordScope, set independently in its
-						     own section further down. -->
-						<div class="border-b border-gray-100 mb-4 pb-4">
-							<div class="flex flex-wrap gap-1 mb-2">
-								{#each [1, 2, 3, 4, 5] as score}
-									<button
-										onclick={() => setFamiliarity(word, score)}
-										disabled={updatingWord === word}
-										class="w-8 h-8 rounded text-xs font-medium disabled:opacity-50
-										{(knownWords[word] ?? null) === score
-											? 'bg-blue-600 text-white'
-											: 'bg-gray-100 text-gray-600 hover:bg-gray-200'}"
-									>
-										{score}
-									</button>
-								{/each}
-								{#if (knownWords[word] ?? null) !== null}
-									<button
-										onclick={() => setFamiliarity(word, null)}
-										disabled={updatingWord === word}
-										class="w-8 h-8 rounded text-xs font-medium bg-gray-100 text-gray-400 hover:bg-gray-200 disabled:opacity-50"
-									>
-										✕
-									</button>
-								{/if}
-							</div>
-							<div class="flex flex-wrap items-center gap-0.5">
-								{#if uwEntryAtScope}
-									<button
-										onclick={() => removeUserWord(word, uwEntryAtScope.scope_analysis_id, uwEntryAtScope.scope_input_text_id)}
-										disabled={addingUserWord === word}
-										class="p-1.5 rounded {uwEntryAtScope.affects_dag ? 'text-emerald-600' : 'text-slate-500'} hover:text-red-600 hover:bg-red-50 disabled:opacity-50"
-										title={uwEntryAtScope.affects_dag === false ? 'In your dictionary at this scope, excluded from segmentation — click to remove' : uwEntryAtScope.affects_dag === null ? 'In your dictionary at this scope, no segmentation preference set — click to remove' : 'In your dictionary at this scope — click to remove'}
-										aria-label="In your dictionary at this scope — click to remove"
-									>
-										{@render iconBookmark(true)}
-									</button>
-								{:else}
-									<button
-										onclick={() => addUserWord(word, { analysisId: id, inputTextId: analysis?.input_text_id, scope: userWordScope })}
-										disabled={addingUserWord === word}
-										class="p-1.5 rounded text-gray-400 hover:text-blue-600 hover:bg-blue-50 disabled:opacity-50"
-										title="Add to your custom dictionary at this scope — helps future segmentation recognize this word"
-										aria-label="Add to your custom dictionary"
-									>
-										{@render iconBookmark(false)}
-									</button>
-								{/if}
-								{#if starredWords.has(word)}
-									<button
-										onclick={() => unmarkStarred(word)}
-										disabled={togglingStarred === word}
-										class="p-1.5 rounded text-amber-500 hover:text-red-600 hover:bg-red-50 disabled:opacity-50"
-										title="Starred — click to unstar"
-										aria-label="Starred — click to unstar"
-									>
-										{@render iconStar(true)}
-									</button>
-								{:else}
-									<button
-										onclick={() => markAsStarred(word)}
-										disabled={togglingStarred === word}
-										class="p-1.5 rounded text-gray-400 hover:text-amber-500 hover:bg-amber-50 disabled:opacity-50"
-										title="Star as interesting"
-										aria-label="Star as interesting"
-									>
-										{@render iconStar(false)}
-									</button>
-								{/if}
-								{#if garbageWords.has(word)}
-									<button
-										onclick={() => unmarkGarbage(word)}
-										disabled={togglingGarbage === word}
-										class="p-1.5 rounded text-red-600 hover:text-red-800 hover:bg-red-50 disabled:opacity-50"
-										title="Marked as garbage — click to unmark"
-										aria-label="Marked as garbage — click to unmark"
-									>
-										{@render iconTrash()}
-									</button>
-								{:else}
-									<button
-										onclick={() => markAsGarbage(word)}
-										disabled={togglingGarbage === word}
-										class="p-1.5 rounded text-gray-400 hover:text-red-600 hover:bg-red-50 disabled:opacity-50"
-										title="Mark as garbage — hidden by default, but kept in the results"
-										aria-label="Mark as garbage"
-									>
-										{@render iconTrash()}
-									</button>
-								{/if}
-							</div>
-						</div>
-
-						<!-- Corpus frequency - shown as just the rarity chip, not a
-						     separate raw number next to it; the raw count and the
-						     per-million figure both live in the chip's hover tooltip
-						     instead, so this stays one compact chip rather than a
-						     number-plus-badge pair. -->
-						<p class="text-xs font-medium text-gray-400 uppercase tracking-wide mb-2">Corpus frequency</p>
-						{#if selectedWord.rarity_tier}
-							<span
-								class="text-xs px-2 py-1 rounded-full {rarityColor(selectedWord.rarity_tier)}"
-								title={selectedWord.frequency != null && selectedWord.freq_per_million != null
-									? `${selectedWord.frequency.toLocaleString()} occurrences (${selectedWord.freq_per_million.toFixed(selectedWord.freq_per_million < 1 ? 4 : 2)} per million)`
-									: ''}
-							>
-								{rarityLabel(selectedWord.rarity_tier)}
-							</span>
-						{:else}
-							<p class="text-sm text-gray-400">No frequency data for this word.</p>
-						{/if}
-
-						<!-- HSK -->
-						<div class="border-t border-gray-100 mt-4 pt-3">
-							<p class="text-xs font-medium text-gray-400 uppercase tracking-wide mb-2">HSK</p>
-
-							{#if selectedWord.hsk_v2_2012 || selectedWord.hsk_v3_2021 || selectedWord.hsk_v3_2026 || selectedWord.forms.length > 0}
-								<div class="flex flex-wrap gap-1 mb-3">
-									{#if selectedWord.hsk_v2_2012}
-										<span class="text-xs px-2 py-1 bg-blue-100 text-blue-700 rounded-full">
-											HSK 2012: {selectedWord.hsk_v2_2012}
-										</span>
-									{/if}
-									{#if selectedWord.hsk_v3_2021}
-										<span class="text-xs px-2 py-1 bg-purple-100 text-purple-700 rounded-full">
-											HSK 2021: {selectedWord.hsk_v3_2021}
-										</span>
-									{/if}
-									{#if selectedWord.hsk_v3_2026}
-										<span class="text-xs px-2 py-1 bg-green-100 text-green-700 rounded-full">
-											HSK 2026: {selectedWord.hsk_v3_2026}
-										</span>
-									{/if}
-								</div>
-
-								{#if selectedWord.forms.length > 0}
-									<div class="space-y-3">
-										{#each selectedWord.forms as form, i}
-											<div class="{i > 0 ? 'border-t border-gray-100 pt-3' : ''}">
-												{#if selectedWord.forms.length > 1}
-													<p class="text-xs text-gray-400 mb-1">Form {i + 1}</p>
-												{/if}
-												{#if form.traditional && form.traditional !== selectedWord.word}
-													<p class="text-sm text-gray-600 mb-1">
-														Traditional: <span class="font-medium">{form.traditional}</span>
-													</p>
-												{/if}
-												{#if form.pinyin}
-													<p class="text-sm text-blue-600 mb-1">{form.pinyin}</p>
-												{/if}
-												{#if form.meanings.length > 0}
-													<ul class="text-sm text-gray-700 space-y-0.5">
-														{#each form.meanings as meaning}
-															<li>• {meaning}</li>
-														{/each}
-													</ul>
-												{/if}
-												{#if form.classifiers.length > 0}
-													<p class="text-xs text-gray-500 mt-1">
-														Classifiers: {form.classifiers.join(', ')}
-													</p>
-												{/if}
-											</div>
-										{/each}
-									</div>
-								{/if}
-							{:else}
-								<p class="text-sm text-gray-400">No HSK entry for this word.</p>
-							{/if}
-						</div>
-
-						<!-- CC-CEDICT -->
-						<div class="border-t border-gray-100 mt-4 pt-3">
-							<p class="text-xs font-medium text-gray-400 uppercase tracking-wide mb-2">CC-CEDICT</p>
-
-							{#if selectedWord.cedict.length > 0}
-								<div class="space-y-3">
-									{#each selectedWord.cedict as sense, i}
-										<div class="{i > 0 ? 'border-t border-gray-100 pt-3' : ''}">
-											{#if selectedWord.cedict.length > 1}
-												<p class="text-xs text-gray-400 mb-1">Sense {i + 1}</p>
-											{/if}
-											{#if sense.traditional && sense.traditional !== selectedWord.word}
-												<p class="text-sm text-gray-600 mb-1">
-													Traditional: <span class="font-medium">{sense.traditional}</span>
-												</p>
-											{/if}
-											{#if sense.pinyin}
-												<p class="text-sm text-blue-600 mb-1">{sense.pinyin}</p>
-											{/if}
-											{#if sense.definitions.length > 0}
-												<ul class="text-sm text-gray-700 space-y-0.5">
-													{#each sense.definitions as definition}
-														<li>• {definition}</li>
-													{/each}
-												</ul>
-											{/if}
-										</div>
-									{/each}
-								</div>
-							{:else}
-								<p class="text-sm text-gray-400">No CC-CEDICT entry for this word.</p>
-							{/if}
-						</div>
-
-						<!-- Your entries - one per scope this word actually has an entry
-						     at (up to 3: global/this text/this analysis), most specific
-						     first, never resolved to one - see WordDetail.user_words'
-						     docstring (schemas.py). Each is independently editable/
-						     deletable; no entry ever implies or hides another. -->
-						<div class="border-t border-gray-100 mt-4 pt-3">
-							<p class="text-xs font-medium text-gray-400 uppercase tracking-wide mb-2">Your entries</p>
-
-							{#each selectedWord.user_words as entry (entry.id)}
-								{@const editing = entryEditingIds.has(entry.id)}
-								<div class="mb-2 pb-2 border-b border-gray-50 last:border-0">
-									<div class="flex justify-between items-center mb-1">
-										<span class="text-xs font-medium text-gray-500">{scopeLabel(entry)}</span>
-										<div class="flex gap-2">
-											{#if !editing}
-												<button
-													onclick={() => startEditingEntry(entry)}
-													class="text-xs text-blue-600 hover:text-blue-800"
-												>
-													Edit
-												</button>
-											{/if}
-											<button
-												onclick={() => deleteEntry(entry)}
-												disabled={savingEntryId === entry.id}
-												class="text-xs text-red-400 hover:text-red-600 disabled:opacity-50"
-											>
-												Delete
-											</button>
-										</div>
-									</div>
-
-									{#if editing}
-										<div class="space-y-2">
-											<div>
-												<label for="uw-pronunciation-{entry.id}" class="text-xs text-gray-500">Pronunciation</label>
-												<input
-													id="uw-pronunciation-{entry.id}"
-													type="text"
-													bind:value={entryDrafts[entry.id].pronunciation}
-													placeholder="e.g. dà yě láng"
-													class="w-full border border-gray-300 rounded px-2 py-1 text-sm mt-0.5"
-												/>
-											</div>
-											<div>
-												<label for="uw-meaning-{entry.id}" class="text-xs text-gray-500">
-													Meaning / definition
-													<span class="text-gray-400 font-normal">- separate senses with "/", CC-CEDICT style</span>
-												</label>
-												<textarea
-													id="uw-meaning-{entry.id}"
-													bind:value={entryDrafts[entry.id].meaning}
-													placeholder="to run/to flee/(of a horse) to gallop"
-													rows="2"
-													class="w-full border border-gray-300 rounded px-2 py-1 text-sm mt-0.5"
-												></textarea>
-											</div>
-											<div>
-												<label for="uw-notes-{entry.id}" class="text-xs text-gray-500">Notes</label>
-												<textarea
-													id="uw-notes-{entry.id}"
-													bind:value={entryDrafts[entry.id].notes}
-													placeholder="Any other notes — context, mnemonics, etc."
-													rows="2"
-													class="w-full border border-gray-300 rounded px-2 py-1 text-sm mt-0.5"
-												></textarea>
-											</div>
-											{#if entry.scope_analysis_id == null}
-												<!-- Hidden at analysis scope - an analysis-scoped
-												     affects_dag can never have an observable effect
-												     (build_user_overlay never resolves analysis-scoped
-												     rows, since the analysis it's scoped to has already
-												     finished segmenting by the time such a row could
-												     exist) - see UserWord's docstring (models.py).
-												     Tri-state, not a checkbox - NULL ("no preference")
-												     is a real, distinct value from false ("excluded"),
-												     not just "unchecked" - see affects_dag's docstring. -->
-												<div class="text-xs text-gray-500">
-													<span class="block mb-1">Segmentation weight</span>
-													<label class="flex items-center gap-1.5 mb-0.5">
-														<input
-															type="radio"
-															name="affects-dag-{entry.id}"
-															checked={entryDrafts[entry.id].affectsDag === true}
-															onchange={() => entryDrafts[entry.id].affectsDag = true}
-														/>
-														Affects segmentation
-													</label>
-													<label class="flex items-center gap-1.5 mb-0.5">
-														<input
-															type="radio"
-															name="affects-dag-{entry.id}"
-															checked={entryDrafts[entry.id].affectsDag === false}
-															onchange={() => entryDrafts[entry.id].affectsDag = false}
-														/>
-														Excluded from segmentation
-													</label>
-													<label class="flex items-center gap-1.5">
-														<input
-															type="radio"
-															name="affects-dag-{entry.id}"
-															checked={entryDrafts[entry.id].affectsDag === null}
-															onchange={() => entryDrafts[entry.id].affectsDag = null}
-														/>
-														No preference (inherit from broader scope)
-													</label>
-												</div>
-											{/if}
-											<div class="flex gap-2 pt-1">
-												<button
-													onclick={() => saveEntry(entry)}
-													disabled={savingEntryId === entry.id}
-													class="text-xs px-3 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50"
-												>
-													{savingEntryId === entry.id ? 'Saving...' : 'Save'}
-												</button>
-												<button
-													onclick={() => cancelEditingEntry(entry.id)}
-													disabled={savingEntryId === entry.id}
-													class="text-xs px-3 py-1.5 text-gray-500 hover:text-gray-700"
-												>
-													Cancel
-												</button>
-											</div>
-										</div>
-									{:else}
-										<div class="space-y-1">
-											{#if entry.pronunciation}
-												<p class="text-sm text-blue-600">{entry.pronunciation}</p>
-											{/if}
-											{#if entry.meaning}
-												<p class="text-sm text-gray-700">{entry.meaning}</p>
-											{/if}
-											{#if entry.notes}
-												<p class="text-xs text-gray-500 italic">{entry.notes}</p>
-											{/if}
-											{#if !entry.pronunciation && !entry.meaning && !entry.notes}
-												<p class="text-sm text-gray-400">No details added yet.</p>
-											{/if}
-											{#if entry.scope_analysis_id == null && entry.affects_dag === false}
-												<span class="inline-block text-xs px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">Excluded from segmentation</span>
-											{:else if entry.scope_analysis_id == null && entry.affects_dag === null}
-												<span class="inline-block text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-400">No segmentation preference (inherits)</span>
-											{/if}
-										</div>
-									{/if}
-								</div>
-							{/each}
-
-							{#if selectedWord.user_words.length === 0}
-								<p class="text-sm text-gray-400 mb-2">Not in your dictionary at any scope.</p>
-							{/if}
-
-							{#if missingScopes(selectedWord.user_words).length > 0}
-								{#if addingNewEntry}
-									<div class="space-y-2 mt-1">
-										<div>
-											<label for="uw-new-pronunciation" class="text-xs text-gray-500">Pronunciation</label>
-											<input
-												id="uw-new-pronunciation"
-												type="text"
-												bind:value={newEntryDraft.pronunciation}
-												placeholder="e.g. dà yě láng"
-												class="w-full border border-gray-300 rounded px-2 py-1 text-sm mt-0.5"
-											/>
-										</div>
-										<div>
-											<label for="uw-new-meaning" class="text-xs text-gray-500">
-												Meaning / definition
-												<span class="text-gray-400 font-normal">- separate senses with "/", CC-CEDICT style</span>
-											</label>
-											<textarea
-												id="uw-new-meaning"
-												bind:value={newEntryDraft.meaning}
-												placeholder="to run/to flee/(of a horse) to gallop"
-												rows="2"
-												class="w-full border border-gray-300 rounded px-2 py-1 text-sm mt-0.5"
-											></textarea>
-										</div>
-										<div>
-											<label for="uw-new-notes" class="text-xs text-gray-500">Notes</label>
-											<textarea
-												id="uw-new-notes"
-												bind:value={newEntryDraft.notes}
-												placeholder="Any other notes — context, mnemonics, etc."
-												rows="2"
-												class="w-full border border-gray-300 rounded px-2 py-1 text-sm mt-0.5"
-											></textarea>
-										</div>
-										{#if userWordScope !== 'analysis'}
-											<!-- Hidden at analysis scope, tri-state not a checkbox -
-											     see the matching note on the per-entry edit form above. -->
-											<div class="text-xs text-gray-500">
-												<span class="block mb-1">Segmentation weight</span>
-												<label class="flex items-center gap-1.5 mb-0.5">
-													<input
-														type="radio"
-														name="affects-dag-new"
-														checked={newEntryDraft.affectsDag === true}
-														onchange={() => newEntryDraft.affectsDag = true}
-													/>
-													Affects segmentation
-												</label>
-												<label class="flex items-center gap-1.5 mb-0.5">
-													<input
-														type="radio"
-														name="affects-dag-new"
-														checked={newEntryDraft.affectsDag === false}
-														onchange={() => newEntryDraft.affectsDag = false}
-													/>
-													Excluded from segmentation
-												</label>
-												<label class="flex items-center gap-1.5">
-													<input
-														type="radio"
-														name="affects-dag-new"
-														checked={newEntryDraft.affectsDag === null}
-														onchange={() => newEntryDraft.affectsDag = null}
-													/>
-													No preference (inherit from broader scope)
-												</label>
-											</div>
-										{/if}
-										<div class="flex gap-2 pt-1">
-											<button
-												onclick={saveNewEntry}
-												disabled={savingEntryId === -1}
-												class="text-xs px-3 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50"
-											>
-												{savingEntryId === -1 ? 'Saving...' : 'Save'}
-											</button>
-											<button
-												onclick={() => addingNewEntry = false}
-												disabled={savingEntryId === -1}
-												class="text-xs px-3 py-1.5 text-gray-500 hover:text-gray-700"
-											>
-												Cancel
-											</button>
-										</div>
-									</div>
-								{:else}
-									<label class="flex items-center gap-1.5 text-xs text-gray-500 mt-1">
-										Add entry at
-										<select
-											bind:value={userWordScope}
-											class="border border-gray-300 rounded px-1.5 py-0.5 text-xs"
-											title="Which scope a new dictionary entry for this word is saved at"
-										>
-											{#each missingScopes(selectedWord.user_words) as s}
-												<option value={s.value}>{s.label}</option>
-											{/each}
-										</select>
-									</label>
-									<button
-										onclick={startAddingNewEntry}
-										class="text-xs text-blue-600 hover:text-blue-800 mt-1"
-									>
-										+ Add entry
-									</button>
-								{/if}
-							{/if}
-						</div>
-
-						<!-- Sample sentences - a word can have many, independent of
-						     whether it's in "Your entry" above (see SampleSentence's
-						     docstring, models.py) - copy the relevant part from a
-						     context occurrence (row/card chevron or "+" accordion)
-						     and paste it in here. -->
-						<div class="border-t border-gray-100 mt-4 pt-3">
-							<p class="text-xs font-medium text-gray-400 uppercase tracking-wide mb-2">Sample sentences</p>
-
-							{#if selectedWord.sample_sentences.length}
-								<ul class="space-y-1.5 mb-2">
-									{#each selectedWord.sample_sentences as s (s.id)}
-										<li class="flex items-start justify-between gap-2">
-											<p class="text-sm text-gray-700">{s.sentence}</p>
-											<button
-												onclick={() => removeSampleSentence(s.id)}
-												disabled={deletingSentenceId === s.id}
-												class="text-gray-300 hover:text-red-600 disabled:opacity-50 shrink-0"
-												title="Remove sample sentence"
-												aria-label="Remove sample sentence"
-											>✕</button>
-										</li>
-									{/each}
-								</ul>
-							{:else}
-								<p class="text-sm text-gray-400 mb-2">No sample sentences yet.</p>
-							{/if}
-
-							<div class="flex gap-1">
-								<input
-									type="text"
-									bind:value={newSentenceDraft}
-									placeholder="Paste an example sentence..."
-									class="flex-1 border border-gray-300 rounded px-2 py-1 text-sm"
-									onkeydown={(e) => { if (e.key === 'Enter') addSampleSentence(); }}
-								/>
-								<button
-									onclick={addSampleSentence}
-									disabled={!newSentenceDraft.trim() || savingSentence}
-									class="text-xs px-3 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 shrink-0"
-								>
-									{savingSentence ? '...' : 'Add'}
-								</button>
-							</div>
-						</div>
-
-						<!-- Visibility ("hide from results") - reuses the same
-						     multi-entry-per-scope display pattern as "Your entries"
-						     above (see that section's comment), but unlike
-						     affects_dag, ALL THREE scope slots are shown/editable
-						     here, including analysis: an analysis-scoped affects_dag
-						     can never have an observable effect (the analysis has
-						     already finished segmenting by the time such a row
-						     could exist), but an analysis-scoped hidden override
-						     DOES have a real, observable effect every time that
-						     exact analysis is reopened and re-rendered - see
-						     WordVisibility's docstring (models.py). Placed last in
-						     the panel (below Sample sentences) - deliberate, not
-						     grouped with the other dictionary-ish sections above. -->
-						<div class="border-t border-gray-100 mt-4 pt-3">
-							<p class="text-xs font-medium text-gray-400 uppercase tracking-wide mb-2">Visibility</p>
-							<p class="text-sm text-gray-700 mb-2">{visibilitySummary(selectedWord.word_visibility)}</p>
-
-							{#each ALL_SCOPES as s}
-								{@const entry = visibilityEntryAtScope(s.value)}
-								<div class="flex items-center justify-between gap-2 py-1">
-									<span class="text-xs text-gray-500">{s.label}</span>
-									{#if entry}
-										<div class="flex items-center gap-2">
-											<button
-												onclick={() => setVisibility(s.value, !entry.hidden)}
-												disabled={togglingVisibilityScope === s.value}
-												class="text-xs px-2 py-1 rounded-full disabled:opacity-50 {entry.hidden ? 'bg-slate-200 text-slate-700' : 'bg-emerald-100 text-emerald-700'}"
-											>
-												{entry.hidden ? 'Hidden' : 'Shown'}
-											</button>
-											<button
-												onclick={() => removeVisibilityOverride(s.value)}
-												disabled={togglingVisibilityScope === s.value}
-												class="text-xs text-red-400 hover:text-red-600 disabled:opacity-50"
-											>
-												Remove override
-											</button>
-										</div>
-									{:else if addingVisibilityOverrideFor === s.value}
-										<div class="flex items-center gap-1">
-											<button
-												onclick={() => setVisibility(s.value, false)}
-												disabled={togglingVisibilityScope === s.value}
-												class="text-xs px-2 py-1 rounded-full bg-emerald-100 text-emerald-700 hover:bg-emerald-200 disabled:opacity-50"
-											>
-												Shown
-											</button>
-											<button
-												onclick={() => setVisibility(s.value, true)}
-												disabled={togglingVisibilityScope === s.value}
-												class="text-xs px-2 py-1 rounded-full bg-slate-200 text-slate-700 hover:bg-slate-300 disabled:opacity-50"
-											>
-												Hidden
-											</button>
-											<button
-												onclick={() => addingVisibilityOverrideFor = null}
-												class="text-xs text-gray-400 hover:text-gray-600"
-											>
-												Cancel
-											</button>
-										</div>
-									{:else}
-										<div class="flex items-center gap-2">
-											<span class="text-xs text-gray-400">Not set - inherits from broader scope</span>
-											<button
-												onclick={() => addingVisibilityOverrideFor = s.value}
-												class="text-xs text-blue-600 hover:text-blue-800"
-											>
-												+ Override
-											</button>
-										</div>
-									{/if}
-								</div>
-							{/each}
-						</div>
-
-					{/if}
+					<WordDetailPanel
+						word={selectedWordForPanel}
+						context={panelContext}
+						onClose={() => selectedWordForPanel = null}
+						onUserWordEntriesChanged={(entries) => handleUserWordEntriesChanged(selectedWordForPanel!, entries)}
+						onVisibilityEntriesChanged={(entries) => handleVisibilityEntriesChanged(selectedWordForPanel!, entries)}
+					/>
 				</div>
 				</div>
 			{/if}

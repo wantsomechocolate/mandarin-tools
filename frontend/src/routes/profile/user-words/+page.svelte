@@ -4,6 +4,18 @@
 	import * as api from '$lib/api';
 	import type { ScopeContext } from '$lib/api';
 	import { goto } from '$app/navigation';
+	import WordDetailPanel from '$lib/components/WordDetailPanel.svelte';
+	import type { WordDetailContext } from '$lib/wordDetailContext';
+
+	// Global list page - see the matching comment in known-words/+page.svelte.
+	// This page's own flat per-scope-row table (below) stays as the quick
+	// per-entry editor it already was; the panel adds access to Dictionary/
+	// HSK/rarity/Visibility context and the same UserWord section every
+	// other entry point uses, alongside it rather than replacing it - the
+	// two views suit different tasks (fast global edits here vs. full
+	// cross-section detail in the panel).
+	const panelContext: WordDetailContext = { type: 'global' };
+	let selectedWordForPanel: string | null = $state(null);
 
 	interface UserWordRow {
 		id: number;
@@ -216,7 +228,12 @@
 	<span class="text-sm text-gray-400">{filtered().length} of {rows.length} entries</span>
 </div>
 
-<div class="bg-white rounded-lg shadow-sm overflow-hidden">
+<!-- Shared flex row with the panel below (lg and up) - same mechanism as
+     the analysis results page: the panel's own backdrop wrapper collapses
+     to `display: contents` at `lg`, so its child joins this row as a
+     sticky-positioned sibling instead of floating as a modal. -->
+<div class="flex flex-col lg:flex-row gap-4">
+<div class="flex-1 min-w-0 bg-white rounded-lg shadow-sm overflow-hidden">
 	{#if loading}
 		<p class="text-gray-500 p-4">Loading...</p>
 	{:else if rows.length === 0}
@@ -231,7 +248,9 @@
 				<div class="p-4">
 					<div class="flex items-start justify-between gap-3 mb-1">
 						<div class="flex items-center gap-2 flex-wrap">
-							<span class="text-lg font-medium">{row.word}</span>
+							<button onclick={() => selectedWordForPanel = row.word} class="text-lg font-medium hover:text-blue-600" title="View details">
+							{row.word}
+						</button>
 							{#if link}
 								<a href={link} class="text-xs px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-700 hover:bg-indigo-200">
 									{scopeLabel(row)}
@@ -354,4 +373,21 @@
 			{/each}
 		</div>
 	{/if}
+</div>
+
+{#if selectedWordForPanel}
+	<div
+		class="fixed inset-0 z-40 flex items-end justify-center bg-black/30 lg:contents"
+		onclick={() => selectedWordForPanel = null}
+		role="presentation"
+	>
+		<div class="self-start lg:sticky lg:top-4" onclick={(e) => e.stopPropagation()} role="presentation">
+			<WordDetailPanel
+				word={selectedWordForPanel}
+				context={panelContext}
+				onClose={() => selectedWordForPanel = null}
+			/>
+		</div>
+	</div>
+{/if}
 </div>

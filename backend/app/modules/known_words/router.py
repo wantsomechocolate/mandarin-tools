@@ -54,6 +54,8 @@ from app.modules.known_words.schemas import (
     HskFormDetail,
     CedictSense,
     WordDetail,
+    UserWordEntryDetail,
+    VisibilityEntryDetail,
     CompareSegmentationRequest,
     CompareSegmentationResponse,
     SegmentedWord,
@@ -548,7 +550,7 @@ def get_word_context(
     return WordContextResponse(word=word, occurrences=occurrences)
 
 
-@router.post("/known-words", response_model=KnownWordResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/known-words", response_model=KnownWordResponse | None, status_code=status.HTTP_201_CREATED)
 def upsert_known_word(
     update: KnownWordUpdate,
     db: Session = Depends(get_db),
@@ -557,6 +559,19 @@ def upsert_known_word(
     known_word = db.query(KnownWord).filter_by(
         user_id=current_user.id, word=update.word,
     ).first()
+
+    # No familiarity means "not known" - a KnownWord row's entire reason to
+    # exist is to hold a familiarity score (see its docstring, models.py),
+    # so clearing it deletes the row rather than leaving a meaningless
+    # null-familiarity orphan behind. This was a real bug: the results
+    # page's "clear familiarity" (✕) button used to leave exactly such a
+    # row, which then showed up in the profile Known Words list as a
+    # "known" word with no score - see CLAUDE.md.
+    if update.familiarity is None:
+        if known_word:
+            db.delete(known_word)
+            db.commit()
+        return None
 
     if known_word:
         known_word.familiarity = update.familiarity
@@ -628,13 +643,22 @@ def create_user_word(
     return user_word
 
 
-def _resolve_input_text_titles(rows: list[UserWord], db: Session) -> dict[int, str | None]:
+def _resolve_scope_context_info(rows: list, db: Session) -> dict[int, dict]:
     """
-    Maps each of `rows`' own id to the title of whatever InputText it's
-    ultimately scoped under - directly for a text-scoped row, via its
-    Analysis for an analysis-scoped row, None for a global row. Bulk
-    (2 queries total, not N+1) - only used by list_user_words' all_scopes
-    view.
+    Maps each of `rows`' own id (a UserWord or WordVisibility row - anything
+    with .id/.scope_input_text_id/.scope_analysis_id) to a dict of
+    {scope, text_id, text_title, analysis_id, analysis_created_at} - the
+    scope-type string, the text/analysis it's scoped under (with enough
+    info to label and link to it), or all-None-except-scope for a global
+    row. Bulk (at most 3 queries total, not N+1) - used by list_user_words'
+    all_scopes view and get_word_detail's flat entry lists.
+
+    For an analysis-scoped row, text_id/text_title describe the text THAT
+    analysis belongs to (not a second, unrelated text) - both an
+    analysis-scoped and a text-scoped row need a text_id for the frontend's
+    editability hierarchy (see WordDetailPanel.svelte's isEntryEditable),
+    and an analysis-scoped row's own analysis_id/analysis_created_at
+    identify which of that text's (possibly many) analyses it's under.
     """
     text_ids = {r.scope_input_text_id for r in rows if r.scope_input_text_id is not None}
     analysis_ids = {r.scope_analysis_id for r in rows if r.scope_analysis_id is not None}
@@ -644,24 +668,38 @@ def _resolve_input_text_titles(rows: list[UserWord], db: Session) -> dict[int, s
         for t_id, title in db.query(InputText.id, InputText.title).filter(InputText.id.in_(text_ids)).all():
             titles_by_text_id[t_id] = title
 
-    text_id_by_analysis_id: dict[int, int] = {}
+    analysis_info: dict[int, tuple[int, object]] = {}  # analysis_id -> (text_id, created_at)
     if analysis_ids:
-        for a_id, t_id in db.query(Analysis.id, Analysis.input_text_id).filter(Analysis.id.in_(analysis_ids)).all():
-            text_id_by_analysis_id[a_id] = t_id
-        more_text_ids = set(text_id_by_analysis_id.values()) - set(titles_by_text_id.keys())
+        for a_id, t_id, created_at in db.query(Analysis.id, Analysis.input_text_id, Analysis.created_at).filter(Analysis.id.in_(analysis_ids)).all():
+            analysis_info[a_id] = (t_id, created_at)
+        more_text_ids = {t_id for t_id, _ in analysis_info.values()} - set(titles_by_text_id.keys())
         if more_text_ids:
             for t_id, title in db.query(InputText.id, InputText.title).filter(InputText.id.in_(more_text_ids)).all():
                 titles_by_text_id[t_id] = title
 
-    result: dict[int, str | None] = {}
+    result: dict[int, dict] = {}
     for r in rows:
-        if r.scope_input_text_id is not None:
-            result[r.id] = titles_by_text_id.get(r.scope_input_text_id)
-        elif r.scope_analysis_id is not None:
-            t_id = text_id_by_analysis_id.get(r.scope_analysis_id)
-            result[r.id] = titles_by_text_id.get(t_id) if t_id is not None else None
+        if r.scope_analysis_id is not None:
+            a_id = r.scope_analysis_id
+            t_id, created_at = analysis_info.get(a_id, (None, None))
+            result[r.id] = {
+                "scope": "analysis",
+                "text_id": t_id,
+                "text_title": titles_by_text_id.get(t_id) if t_id is not None else None,
+                "analysis_id": a_id,
+                "analysis_created_at": created_at,
+            }
+        elif r.scope_input_text_id is not None:
+            t_id = r.scope_input_text_id
+            result[r.id] = {
+                "scope": "text",
+                "text_id": t_id,
+                "text_title": titles_by_text_id.get(t_id),
+                "analysis_id": None,
+                "analysis_created_at": None,
+            }
         else:
-            result[r.id] = None
+            result[r.id] = {"scope": "global", "text_id": None, "text_title": None, "analysis_id": None, "analysis_created_at": None}
     return result
 
 
@@ -688,9 +726,9 @@ def list_user_words(
     """
     if all_scopes:
         rows = db.query(UserWord).filter(UserWord.user_id == current_user.id).all()
-        titles = _resolve_input_text_titles(rows, db)
+        context = _resolve_scope_context_info(rows, db)
         return [
-            UserWordResponse.model_validate(r).model_copy(update={"input_text_title": titles.get(r.id)})
+            UserWordResponse.model_validate(r).model_copy(update={"input_text_title": context[r.id]["text_title"]})
             for r in rows
         ]
 
@@ -1216,15 +1254,23 @@ def get_word_detail(
 ):
     """
     analysis_id/input_text_id (the caller's current viewing context) decide
-    which scoped user_word rows are relevant - global always, plus this
-    analysis's/this text's own row if applicable (see
+    which scoped rows go into user_words/word_visibility - global always,
+    plus this analysis's/this text's own row if applicable (see
     _scope_filter_conditions). Omitting both shows only global entries.
+    These two fields exist for the results-table quick-action's own menu
+    (toggleUserWordMenu/toggleVisibilityMenu, +page.svelte) - see their
+    docstrings (schemas.py) for why.
 
-    user_words returns every applicable row, most-specific first - never
-    resolved to one, so the panel can show/edit/delete each independently
-    without implying a relationship between scopes (see UserWord's
-    docstring).
+    user_word_entries/visibility_entries are unconditional - every row that
+    exists for this word, across every scope, regardless of analysis_id/
+    input_text_id - for the word-detail panel (WordDetailPanel.svelte),
+    which shows every entry and decides per-entry editability client-side
+    against whatever context it was opened with.
     """
+
+    known_word = db.query(KnownWord).filter_by(user_id=current_user.id, word=word).first()
+    starred = db.query(StarredWord).filter_by(user_id=current_user.id, word=word).first()
+    is_garbage = word in service.get_user_garbage_words(current_user.id, db)
 
     dict_word = db.query(DictionaryWord).filter_by(word=word).first()
 
@@ -1242,13 +1288,37 @@ def get_word_detail(
     user_words = _sort_most_specific_first(user_word_rows)
 
     # Same shape/reasoning as user_words above - every applicable scope's
-    # row, most-specific first, never resolved to one, so the panel's
-    # Visibility section can show/edit/remove each scope independently.
+    # row, most-specific first, never resolved to one, so the results-table
+    # quick-action's own menu can show/edit/remove each scope independently.
     word_visibility_rows = db.query(WordVisibility).filter(
         WordVisibility.user_id == current_user.id, WordVisibility.word == word,
         or_(*_scope_filter_conditions(WordVisibility, analysis_id, input_text_id)),
     ).all()
     word_visibility = _sort_most_specific_first(word_visibility_rows)
+
+    # Unconditional - every row that exists for this word, regardless of
+    # analysis_id/input_text_id, for WordDetailPanel.svelte (see
+    # UserWordEntryDetail/VisibilityEntryDetail's docstrings, schemas.py).
+    all_user_word_rows = db.query(UserWord).filter(
+        UserWord.user_id == current_user.id, UserWord.word == word,
+    ).all()
+    all_visibility_rows = db.query(WordVisibility).filter(
+        WordVisibility.user_id == current_user.id, WordVisibility.word == word,
+    ).all()
+    uw_context = _resolve_scope_context_info(all_user_word_rows, db)
+    vis_context = _resolve_scope_context_info(all_visibility_rows, db)
+    user_word_entries = [
+        UserWordEntryDetail(
+            id=r.id,
+            pronunciation=r.pronunciation, meaning=r.meaning, notes=r.notes, affects_dag=r.affects_dag,
+            **uw_context[r.id],
+        )
+        for r in _sort_most_specific_first(all_user_word_rows)
+    ]
+    visibility_entries = [
+        VisibilityEntryDetail(id=r.id, hidden=r.hidden, **vis_context[r.id])
+        for r in _sort_most_specific_first(all_visibility_rows)
+    ]
 
     sample_sentences = (
         db.query(SampleSentence)
@@ -1259,6 +1329,9 @@ def get_word_detail(
 
     return WordDetail(
         word=word,
+        familiarity=known_word.familiarity if known_word else None,
+        is_starred=starred is not None,
+        is_garbage=is_garbage,
         frequency=dict_word.frequency if dict_word else None,
         freq_per_million=dict_word.freq_per_million if dict_word else None,
         rarity_tier=dict_word.rarity_tier if dict_word else None,
@@ -1285,4 +1358,6 @@ def get_word_detail(
         user_words=user_words,
         word_visibility=word_visibility,
         sample_sentences=sample_sentences,
+        user_word_entries=user_word_entries,
+        visibility_entries=visibility_entries,
     )

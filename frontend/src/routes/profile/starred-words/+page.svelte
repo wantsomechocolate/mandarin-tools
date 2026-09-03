@@ -3,6 +3,12 @@
 	import { isLoggedIn } from '$lib/auth';
 	import * as api from '$lib/api';
 	import { goto } from '$app/navigation';
+	import WordDetailPanel from '$lib/components/WordDetailPanel.svelte';
+	import type { WordDetailContext } from '$lib/wordDetailContext';
+
+	// Global list page - see the matching comment in known-words/+page.svelte.
+	const panelContext: WordDetailContext = { type: 'global' };
+	let selectedWordForPanel: string | null = $state(null);
 
 	interface StarredWordRow {
 		id: number;
@@ -137,7 +143,12 @@
 	<span class="text-sm text-gray-400">{filtered().length} of {rows.length} words</span>
 </div>
 
-<div class="bg-white rounded-lg shadow-sm overflow-hidden">
+<!-- Shared flex row with the panel below (lg and up) - same mechanism as
+     the analysis results page: the panel's own backdrop wrapper collapses
+     to `display: contents` at `lg`, so its child joins this row as a
+     sticky-positioned sibling instead of floating as a modal. -->
+<div class="flex flex-col lg:flex-row gap-4">
+<div class="flex-1 min-w-0 bg-white rounded-lg shadow-sm overflow-hidden">
 	{#if loading}
 		<p class="text-gray-500 p-4">Loading...</p>
 	{:else if rows.length === 0}
@@ -149,7 +160,9 @@
 			{#each filtered() as row (row.id)}
 				<div class="flex items-start justify-between gap-3 px-4 py-3">
 					<div class="flex-1 min-w-0">
-						<span class="text-lg font-medium">{row.word}</span>
+						<button onclick={() => selectedWordForPanel = row.word} class="text-lg font-medium hover:text-blue-600" title="View details">
+						{row.word}
+					</button>
 						{#if editingWord === row.word}
 							<div class="flex items-center gap-2 mt-1">
 								<input
@@ -195,4 +208,21 @@
 			{/each}
 		</div>
 	{/if}
+</div>
+
+{#if selectedWordForPanel}
+	<div
+		class="fixed inset-0 z-40 flex items-end justify-center bg-black/30 lg:contents"
+		onclick={() => selectedWordForPanel = null}
+		role="presentation"
+	>
+		<div class="self-start lg:sticky lg:top-4" onclick={(e) => e.stopPropagation()} role="presentation">
+			<WordDetailPanel
+				word={selectedWordForPanel}
+				context={panelContext}
+				onClose={() => selectedWordForPanel = null}
+			/>
+		</div>
+	</div>
+{/if}
 </div>

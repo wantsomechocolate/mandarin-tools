@@ -347,8 +347,66 @@ class CedictSense(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class UserWordEntryDetail(BaseModel):
+    """
+    One UserWord row, unconditionally - every entry that exists for this
+    word across every scope this user has ever customized it in, not
+    resolved/filtered against any particular viewing context. This is a
+    different concern from UserWordResponse/the resolved fields on
+    WordResult (userword_scopes/userword_resolved_affects_dag) - those
+    stay exactly as they are, single-context-resolved, for the results-
+    table quick-action. This shape is for the word-detail panel
+    (WordDetailPanel.svelte), which shows every entry and decides
+    per-entry editability client-side against whatever page it's opened
+    from (see that component's isEntryEditable).
+    """
+    id: int
+    scope: ScopeChoice
+    # None for a global entry. text_id/text_title are always populated
+    # together for a text-scoped entry; for an analysis-scoped entry,
+    # they describe the text that analysis belongs to (an analysis-scoped
+    # entry needs both to render "Analysis of <text_title>" and to know
+    # which text it's under for the editability hierarchy - see
+    # isEntryEditable's docstring, WordDetailPanel.svelte).
+    text_id: int | None = None
+    text_title: str | None = None
+    analysis_id: int | None = None
+    analysis_created_at: datetime | None = None
+    pronunciation: str | None = None
+    meaning: str | None = None
+    notes: str | None = None
+    affects_dag: bool | None = None
+
+    model_config = {"from_attributes": True}
+
+
+class VisibilityEntryDetail(BaseModel):
+    """Same shape/reasoning as UserWordEntryDetail, for WordVisibility."""
+    id: int
+    scope: ScopeChoice
+    text_id: int | None = None
+    text_title: str | None = None
+    analysis_id: int | None = None
+    analysis_created_at: datetime | None = None
+    hidden: bool
+
+    model_config = {"from_attributes": True}
+
+
 class WordDetail(BaseModel):
     word: str
+    # Resolved per-word status for the quick-action bar at the top of the
+    # panel (Familiarity/Star/Garbage) - always global (see KnownWord/
+    # StarredWord's docstrings, models.py) and always fully editable
+    # regardless of viewing context, so no hierarchy logic applies to these
+    # three, unlike user_word_entries/visibility_entries below. Included
+    # here (rather than requiring the caller to have already bulk-fetched
+    # listKnownWords/listStarredWords/listGarbageWords) so the panel is
+    # self-sufficient from any page, including one with no such bulk state
+    # of its own (e.g. the profile list pages).
+    familiarity: int | None = None
+    is_starred: bool = False
+    is_garbage: bool = False
     frequency: int | None = None
     # Derived read-cache columns from DictionaryWord (see its docstring,
     # models.py) - both null whenever frequency is (nothing to compute a
@@ -363,22 +421,31 @@ class WordDetail(BaseModel):
     # section, same reasoning as user_word/fragment below.
     cedict: list[CedictSense] = []
     # Every UserWord entry across the three scope levels relevant to the
-    # current viewing context (global, plus this text's/this analysis's own
-    # row if applicable), most-specific first. Deliberately NOT resolved to
-    # one - a word can have several simultaneous entries (e.g. a global one
-    # plus a one-off override for a specific text) and none should ever be
-    # hidden just because a more-specific one exists. This is a display-only
-    # list: segmentation resolution stays entirely in
-    # build_user_overlay/segmenter_loader.py, which picks exactly one
-    # entry's weight per its own unrelated priority logic - this field must
-    # never be read as if it were that resolution.
+    # viewing context passed as analysis_id/input_text_id (global, plus this
+    # text's/this analysis's own row if applicable), most-specific first.
+    # Kept for the results-table quick-action's own menu (toggleUserWordMenu/
+    # buildUserWordMenu, +page.svelte), which needs exactly "what's relevant
+    # here", not "everything that exists" - segmentation resolution itself
+    # stays entirely in build_user_overlay/segmenter_loader.py, unrelated to
+    # either list. The word-detail panel no longer uses this field - see
+    # user_word_entries below for what it uses instead.
     user_words: list[UserWordResponse] = []
-    # Same multi-entry, most-specific-first, never-resolved-to-one shape as
-    # user_words above, for the exact same reason - the panel's Visibility
-    # section shows every applicable scope's row independently (see
-    # WordVisibility's docstring, models.py). Independent of user_words -
-    # a word can be hidden with no UserWord row at all, and vice versa.
+    # Same reasoning/consumer as user_words above, for WordVisibility - kept
+    # for the results-table's own Visibility quick-action menu
+    # (toggleVisibilityMenu/buildVisibilityMenu, +page.svelte).
     word_visibility: list[WordVisibilityResponse] = []
     # Independent of user_words (a word doesn't need to be in the user's
     # dictionary to have sample sentences) - see SampleSentence's docstring.
     sample_sentences: list[SampleSentenceResponse] = []
+    # Every UserWord row that exists for this word, across every scope this
+    # user has ever customized it in - unconditional, NOT filtered/resolved
+    # against analysis_id/input_text_id the way user_words above is. This is
+    # what WordDetailPanel.svelte's UserWord section renders: a word can have
+    # many text- or analysis-scoped entries over time (one per text/analysis
+    # it's ever been customized in), not bounded at 3 - editability per entry
+    # is a client-side decision (see isEntryEditable) based on whatever
+    # context the panel was opened from, not something this field encodes.
+    user_word_entries: list[UserWordEntryDetail] = []
+    # Same reasoning/shape as user_word_entries above, for WordVisibility -
+    # what WordDetailPanel.svelte's Visibility section renders.
+    visibility_entries: list[VisibilityEntryDetail] = []

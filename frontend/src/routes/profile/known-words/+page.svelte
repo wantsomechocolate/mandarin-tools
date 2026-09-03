@@ -4,6 +4,16 @@
 	import * as api from '$lib/api';
 	import { goto } from '$app/navigation';
 	import { familiarityLabel, familiarityColor } from '$lib/wordDisplay';
+	import WordDetailPanel from '$lib/components/WordDetailPanel.svelte';
+	import type { WordDetailContext } from '$lib/wordDetailContext';
+
+	// Global list page - every word here is viewed with no text/analysis in
+	// scope, so WordDetailPanel.svelte's UserWord/Visibility sections show
+	// every entry read-only except the global one (see isEntryEditable,
+	// wordDetailContext.ts - this falls out of the hierarchy rule with no
+	// special case for "global page").
+	const panelContext: WordDetailContext = { type: 'global' };
+	let selectedWordForPanel: string | null = $state(null);
 
 	interface KnownWord {
 		id: number;
@@ -20,6 +30,14 @@
 	let newWord = $state('');
 	let newFamiliarity: number = $state(5);
 	let adding = $state(false);
+
+	// 'lte' is the primary use case (narrow down to less-familiar words);
+	// 'eq' is a secondary, exact-match option - both share one value
+	// selector rather than two independent controls, since only one mode
+	// is ever active at a time.
+	type FamiliarityFilterMode = 'all' | 'lte' | 'eq';
+	let familiarityMode: FamiliarityFilterMode = $state('all');
+	let familiarityValue = $state(5);
 
 	type SortColumn = 'word' | 'familiarity' | null;
 	let sortColumn: SortColumn = $state(null);
@@ -53,6 +71,11 @@
 	const filtered = $derived(() => {
 		const q = search.trim();
 		let list = q ? words.filter((w) => w.word.includes(q)) : words;
+		if (familiarityMode === 'lte') {
+			list = list.filter((w) => w.familiarity !== null && w.familiarity <= familiarityValue);
+		} else if (familiarityMode === 'eq') {
+			list = list.filter((w) => w.familiarity === familiarityValue);
+		}
 		if (sortColumn) {
 			list = [...list].sort((a, b) => {
 				// Plain codepoint comparison for word - not localeCompare with a
@@ -67,16 +90,37 @@
 		return list;
 	});
 
+	// Clearing familiarity (familiarity === null) now deletes the row
+	// server-side rather than leaving an orphaned null-familiarity one (see
+	// upsert_known_word's docstring, router.py) - a KnownWord row's entire
+	// reason to exist is to hold a score, so a cleared word is no longer
+	// "known" and drops out of this list entirely, not just its score
+	// column. (The response is null in that case, so this reads
+	// `familiarity` - the value just sent - rather than the response.)
 	async function setFamiliarity(word: string, familiarity: number | null) {
 		updatingWord = word;
 		try {
-			const updated = await api.upsertKnownWord(word, familiarity) as KnownWord;
-			words = words.map((w) => w.word === word ? { ...w, familiarity: updated.familiarity } : w);
+			await api.upsertKnownWord(word, familiarity);
+			if (familiarity === null) {
+				words = words.filter((w) => w.word !== word);
+			} else {
+				words = words.map((w) => w.word === word ? { ...w, familiarity } : w);
+			}
 		} catch (e: unknown) {
 			error = e instanceof Error ? e.message : 'Failed to update familiarity';
 		} finally {
 			updatingWord = null;
 		}
+	}
+
+	// Same click-passthrough pattern as the analysis results page
+	// (handleRowClick, analyze/[id]/+page.svelte) - clicking anywhere on
+	// the row opens the panel, unless the click landed on an actual
+	// interactive element within it, which handles itself.
+	function handleRowClick(event: MouseEvent, word: string) {
+		const target = event.target as HTMLElement;
+		if (target.closest('button, a, input, select, textarea')) return;
+		selectedWordForPanel = word;
 	}
 
 	async function remove(word: string) {
@@ -143,16 +187,38 @@
 </div>
 
 <div class="flex items-center justify-between mb-3 gap-3 flex-wrap">
-	<input
-		type="search"
-		bind:value={search}
-		placeholder="Search words..."
-		class="border border-gray-300 rounded px-2 py-1 text-sm w-48"
-	/>
+	<div class="flex items-center gap-2 flex-wrap">
+		<input
+			type="search"
+			bind:value={search}
+			placeholder="Search words..."
+			class="border border-gray-300 rounded px-2 py-1 text-sm w-48"
+		/>
+		<span class="flex items-center gap-1.5 text-sm text-gray-700">
+			Familiarity
+			<select bind:value={familiarityMode} class="border border-gray-300 rounded px-2 py-1 text-sm">
+				<option value="all">All</option>
+				<option value="lte">≤</option>
+				<option value="eq">=</option>
+			</select>
+			{#if familiarityMode !== 'all'}
+				<select bind:value={familiarityValue} class="border border-gray-300 rounded px-2 py-1 text-sm">
+					{#each [1, 2, 3, 4, 5] as score}
+						<option value={score}>{score}</option>
+					{/each}
+				</select>
+			{/if}
+		</span>
+	</div>
 	<span class="text-sm text-gray-400">{filtered().length} of {words.length} words</span>
 </div>
 
-<div class="bg-white rounded-lg shadow-sm overflow-hidden">
+<!-- Shared flex row with the panel below (lg and up) - same mechanism as
+     the analysis results page: the panel's own backdrop wrapper collapses
+     to `display: contents` at `lg`, so its child joins this row as a
+     sticky-positioned sibling instead of floating as a modal. -->
+<div class="flex flex-col lg:flex-row gap-4">
+<div class="flex-1 min-w-0 bg-white rounded-lg shadow-sm overflow-hidden">
 	{#if loading}
 		<p class="text-gray-500 p-4">Loading...</p>
 	{:else if words.length === 0}
@@ -176,7 +242,7 @@
 			</thead>
 			<tbody class="divide-y divide-gray-100">
 				{#each filtered() as w (w.id)}
-					<tr class="hover:bg-gray-50">
+					<tr class="cursor-pointer hover:bg-gray-50" onclick={(e) => handleRowClick(e, w.word)}>
 						<td class="px-4 py-3 text-lg font-medium">{w.word}</td>
 						<td class="px-4 py-3">
 							<div class="flex gap-1">
@@ -210,4 +276,29 @@
 			</tbody>
 		</table>
 	{/if}
+</div>
+
+{#if selectedWordForPanel}
+	<div
+		class="fixed inset-0 z-40 flex items-end justify-center bg-black/30 lg:contents"
+		onclick={() => selectedWordForPanel = null}
+		role="presentation"
+	>
+		<div class="self-start lg:sticky lg:top-4" onclick={(e) => e.stopPropagation()} role="presentation">
+			<WordDetailPanel
+				word={selectedWordForPanel}
+				context={panelContext}
+				onClose={() => selectedWordForPanel = null}
+				onFamiliarityChanged={(familiarity) => {
+					if (!selectedWordForPanel) return;
+					if (familiarity === null) {
+						words = words.filter((w) => w.word !== selectedWordForPanel);
+					} else {
+						words = words.map((w) => w.word === selectedWordForPanel ? { ...w, familiarity } : w);
+					}
+				}}
+			/>
+		</div>
+	</div>
+{/if}
 </div>
