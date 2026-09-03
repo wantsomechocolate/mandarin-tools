@@ -2,48 +2,63 @@
 	import { onMount } from 'svelte';
 	import { isLoggedIn } from '$lib/auth';
 	import * as api from '$lib/api';
-	import type { ScopeContext } from '$lib/api';
 	import { goto } from '$app/navigation';
+	import { familiarityLabel, familiarityColor } from '$lib/wordDisplay';
 	import WordDetailPanel from '$lib/components/WordDetailPanel.svelte';
 	import type { WordDetailContext } from '$lib/wordDetailContext';
 
 	// Global list page - see the matching comment in known-words/+page.svelte.
-	// This page's own flat per-scope-row table (below) stays as the quick
-	// per-entry editor it already was; the panel adds access to Dictionary/
-	// HSK/rarity/Visibility context and the same UserWord section every
-	// other entry point uses, alongside it rather than replacing it - the
-	// two views suit different tasks (fast global edits here vs. full
-	// cross-section detail in the panel).
 	const panelContext: WordDetailContext = { type: 'global' };
 	let selectedWordForPanel: string | null = $state(null);
 
-	interface UserWordRow {
-		id: number;
+	// Raw per-scope-entry rows from the API (a word can have up to 3: global/
+	// text/analysis - see WordDetail.user_word_entries' docstring, schemas.py).
+	// This page only ever reads `word` and the two scope columns off these -
+	// the rest of each entry's detail (pronunciation/meaning/notes/
+	// affects_dag) lives exclusively in the panel now, not duplicated here.
+	interface UserWordRawRow {
 		word: string;
-		pronunciation: string | null;
-		meaning: string | null;
-		notes: string | null;
-		affects_dag: boolean | null;
 		scope_analysis_id: number | null;
 		scope_input_text_id: number | null;
-		input_text_title: string | null;
 	}
 
-	let rows: UserWordRow[] = $state([]);
+	type Scope = 'global' | 'text' | 'analysis';
+
+	// One row per distinct word, not per scope-entry - same 3-column shape
+	// (word/familiarity/actions) as Known Words, for a consistent look
+	// across the profile tabs. `scopes` is display-only (not sortable) -
+	// full per-scope detail lives in the panel, opened via the info icon or
+	// a row click.
+	interface WordRow {
+		word: string;
+		familiarity: number | null;
+		scopes: Set<Scope>;
+	}
+
+	let rawRows: UserWordRawRow[] = $state([]);
+	let knownWords: Record<string, number | null> = $state({});
 	let loading = $state(true);
 	let error = $state('');
 	let search = $state('');
-	let scopeFilter: 'all' | 'global' | 'text' | 'analysis' = $state('all');
-
-	// Per-row inline editing - same pattern as the analysis-results panel's
-	// "Your entries" list, just without a single "currently selected word"
-	// context (every row here can be a different word).
-	let editingIds: Set<number> = $state(new Set());
-	let drafts: Record<number, { pronunciation: string; meaning: string; notes: string; affectsDag: boolean | null }> = $state({});
-	let savingId: number | null = $state(null);
+	let scopeFilter: 'all' | Scope = $state('all');
 
 	let newWord = $state('');
 	let adding = $state(false);
+
+	type SortColumn = 'word' | 'familiarity' | null;
+	let sortColumn: SortColumn = $state(null);
+	let sortDirection: 'asc' | 'desc' = $state('asc');
+
+	function toggleSort(column: Exclude<SortColumn, null>) {
+		if (sortColumn !== column) {
+			sortColumn = column;
+			sortDirection = 'asc';
+		} else if (sortDirection === 'asc') {
+			sortDirection = 'desc';
+		} else {
+			sortColumn = null;
+		}
+	}
 
 	onMount(async () => {
 		if (!isLoggedIn()) {
@@ -51,7 +66,12 @@
 			return;
 		}
 		try {
-			rows = await api.listAllUserWords() as UserWordRow[];
+			const [uwData, kwData] = await Promise.all([
+				api.listAllUserWords() as Promise<UserWordRawRow[]>,
+				api.listKnownWords() as Promise<{ word: string; familiarity: number | null }[]>,
+			]);
+			rawRows = uwData;
+			knownWords = Object.fromEntries(kwData.map((k) => [k.word, k.familiarity]));
 		} catch (e: unknown) {
 			error = e instanceof Error ? e.message : 'Failed to load user words';
 		} finally {
@@ -59,100 +79,55 @@
 		}
 	});
 
-	function scopeOf(row: UserWordRow): 'global' | 'text' | 'analysis' {
+	function scopeOfRow(row: UserWordRawRow): Scope {
 		if (row.scope_analysis_id != null) return 'analysis';
 		if (row.scope_input_text_id != null) return 'text';
 		return 'global';
 	}
 
-	function scopeLabel(row: UserWordRow): string {
-		if (row.scope_analysis_id != null) {
-			return row.input_text_title ? `Analysis of "${row.input_text_title}"` : `Analysis #${row.scope_analysis_id}`;
+	// Collapses the raw per-entry rows down to one WordRow per distinct word
+	// - the whole point of this redesign (this list used to show one row per
+	// word/scope combination).
+	const words = $derived(() => {
+		const byWord = new Map<string, WordRow>();
+		for (const row of rawRows) {
+			let w = byWord.get(row.word);
+			if (!w) {
+				w = { word: row.word, familiarity: knownWords[row.word] ?? null, scopes: new Set() };
+				byWord.set(row.word, w);
+			}
+			w.scopes.add(scopeOfRow(row));
 		}
-		if (row.scope_input_text_id != null) {
-			return `Text: ${row.input_text_title ?? 'Untitled'}`;
-		}
-		return 'Global';
-	}
-
-	function scopeLink(row: UserWordRow): string | null {
-		if (row.scope_analysis_id != null) return `/analyze/${row.scope_analysis_id}`;
-		if (row.scope_input_text_id != null) return `/input-texts/${row.scope_input_text_id}`;
-		return null;
-	}
-
-	// Only what _resolve_scope_columns (router.py) actually reads for each
-	// scope - analysis_id for 'analysis', input_text_id for 'text', neither
-	// for 'global' (see that function's docstring for confirmation this is
-	// exhaustive).
-	function scopeContextForRow(row: UserWordRow): ScopeContext {
-		if (row.scope_analysis_id != null) return { scope: 'analysis', analysisId: row.scope_analysis_id };
-		if (row.scope_input_text_id != null) return { scope: 'text', inputTextId: row.scope_input_text_id };
-		return { scope: 'global' };
-	}
-
-	const filtered = $derived(() => {
-		const q = search.trim().toLowerCase();
-		return rows.filter((r) => {
-			if (scopeFilter !== 'all' && scopeOf(r) !== scopeFilter) return false;
-			if (!q) return true;
-			return r.word.includes(search.trim())
-				|| (r.pronunciation?.toLowerCase().includes(q) ?? false)
-				|| (r.meaning?.toLowerCase().includes(q) ?? false)
-				|| (r.notes?.toLowerCase().includes(q) ?? false);
-		});
+		return [...byWord.values()];
 	});
 
-	function startEditing(row: UserWordRow) {
-		drafts = { ...drafts, [row.id]: {
-			pronunciation: row.pronunciation ?? '',
-			meaning: row.meaning ?? '',
-			notes: row.notes ?? '',
-			affectsDag: row.affects_dag,
-		}};
-		editingIds = new Set([...editingIds, row.id]);
-	}
-
-	function cancelEditing(id: number) {
-		const next = new Set(editingIds);
-		next.delete(id);
-		editingIds = next;
-	}
-
-	async function saveRow(row: UserWordRow) {
-		savingId = row.id;
-		try {
-			const draft = drafts[row.id];
-			const isAnalysisScoped = row.scope_analysis_id != null;
-			const fields: { pronunciation: string | null; meaning: string | null; notes: string | null; affects_dag?: boolean | null } = {
-				pronunciation: draft.pronunciation || null,
-				meaning: draft.meaning || null,
-				notes: draft.notes || null,
-			};
-			// affects_dag is never sent for an analysis-scoped row - it has no
-			// observable effect there (see UserWord's docstring, models.py),
-			// and the toggle isn't shown for one.
-			if (!isAnalysisScoped) fields.affects_dag = draft.affectsDag;
-			const updated = await api.upsertUserWordDetail(row.word, fields, scopeContextForRow(row)) as UserWordRow;
-			rows = rows.map((r) => r.id === row.id ? { ...updated, input_text_title: row.input_text_title } : r);
-			cancelEditing(row.id);
-		} catch (e: unknown) {
-			error = e instanceof Error ? e.message : 'Failed to save';
-		} finally {
-			savingId = null;
+	const filtered = $derived(() => {
+		const q = search.trim();
+		let list = words();
+		if (q) list = list.filter((w) => w.word.includes(q));
+		const scope = scopeFilter;
+		if (scope !== 'all') list = list.filter((w) => w.scopes.has(scope));
+		if (sortColumn) {
+			list = [...list].sort((a, b) => {
+				// Plain codepoint comparison for word - not localeCompare with a
+				// 'zh' locale, which sorts by pinyin (see the results page's
+				// identical reasoning, CLAUDE.md).
+				const cmp = sortColumn === 'word'
+					? (a.word < b.word ? -1 : a.word > b.word ? 1 : 0)
+					: (a.familiarity ?? -1) - (b.familiarity ?? -1);
+				return sortDirection === 'desc' ? -cmp : cmp;
+			});
 		}
-	}
+		return list;
+	});
 
-	async function remove(row: UserWordRow) {
-		savingId = row.id;
-		try {
-			await api.deleteUserWord(row.word, row.scope_analysis_id, row.scope_input_text_id);
-			rows = rows.filter((r) => r.id !== row.id);
-		} catch (e: unknown) {
-			error = e instanceof Error ? e.message : 'Failed to delete';
-		} finally {
-			savingId = null;
-		}
+	// Same click-passthrough pattern as Known Words/the analysis results
+	// page (handleRowClick) - clicking anywhere on the row opens the panel,
+	// unless the click landed on an actual interactive element.
+	function handleRowClick(event: MouseEvent, word: string) {
+		const target = event.target as HTMLElement;
+		if (target.closest('button, a, input, select, textarea')) return;
+		selectedWordForPanel = word;
 	}
 
 	// Always global - a new entry from this page has no "current text/
@@ -160,17 +135,33 @@
 	// within that specific analysis's word-detail panel instead.
 	async function addWord() {
 		const word = newWord.trim();
-		if (!word) return;
+		if (!word || words().some((w) => w.word === word)) return;
 		adding = true;
 		try {
-			const created = await api.upsertUserWordDetail(word, { affects_dag: true }, { scope: 'global' }) as UserWordRow;
-			rows = [{ ...created, input_text_title: null }, ...rows];
+			const created = await api.upsertUserWordDetail(word, { affects_dag: true }, { scope: 'global' }) as UserWordRawRow;
+			rawRows = [created, ...rawRows];
 			newWord = '';
 		} catch (e: unknown) {
 			error = e instanceof Error ? e.message : 'Failed to add word';
 		} finally {
 			adding = false;
 		}
+	}
+
+	// Fired by the panel after any UserWord mutation, with that word's
+	// fresh full entries list - replace this word's raw rows wholesale
+	// (rather than trying to patch individual scope rows) so an add/edit/
+	// delete inside the panel is reflected here immediately, including the
+	// word disappearing entirely once its last entry is removed.
+	function handleUserWordEntriesChanged(entries: { scope: Scope; analysis_id: number | null; text_id: number | null }[]) {
+		if (!selectedWordForPanel) return;
+		const word = selectedWordForPanel;
+		const nextForWord: UserWordRawRow[] = entries.map((e) => ({
+			word,
+			scope_analysis_id: e.scope === 'analysis' ? e.analysis_id : null,
+			scope_input_text_id: e.scope === 'text' ? e.text_id : null,
+		}));
+		rawRows = [...rawRows.filter((r) => r.word !== word), ...nextForWord];
 	}
 </script>
 
@@ -184,9 +175,9 @@
 
 <!-- Unlike Known Words, a word can have several simultaneous entries here
      (global plus a one-off override for a specific text/analysis) - see
-     WordDetail.user_words' docstring (schemas.py). This page shows every
-     row across every scope, unresolved - not the one-per-word resolution
-     build_user_overlay uses for segmentation. -->
+     WordDetail.user_word_entries' docstring (schemas.py). This list shows
+     one row per word regardless (matching Known Words' shape) - open the
+     panel for the full per-scope breakdown. -->
 <div class="bg-white rounded-lg shadow-sm p-4 mb-4">
 	<p class="text-sm font-medium text-gray-600 mb-1">Add a word (global)</p>
 	<p class="text-xs text-gray-400 mb-2">
@@ -211,21 +202,21 @@
 </div>
 
 <div class="flex items-center justify-between mb-3 gap-3 flex-wrap">
-	<div class="flex items-center gap-2">
+	<div class="flex items-center gap-2 flex-wrap">
 		<input
 			type="search"
 			bind:value={search}
-			placeholder="Search word, pronunciation, meaning, notes..."
-			class="border border-gray-300 rounded px-2 py-1 text-sm w-64"
+			placeholder="Search words..."
+			class="border border-gray-300 rounded px-2 py-1 text-sm w-48"
 		/>
 		<select bind:value={scopeFilter} class="border border-gray-300 rounded px-2 py-1 text-sm">
 			<option value="all">All scopes</option>
-			<option value="global">Global</option>
-			<option value="text">Text-scoped</option>
-			<option value="analysis">Analysis-scoped</option>
+			<option value="global">Has global entry</option>
+			<option value="text">Has text-scoped entry</option>
+			<option value="analysis">Has analysis-scoped entry</option>
 		</select>
 	</div>
-	<span class="text-sm text-gray-400">{filtered().length} of {rows.length} entries</span>
+	<span class="text-sm text-gray-400">{filtered().length} of {words().length} words</span>
 </div>
 
 <!-- Shared flex row with the panel below (lg and up) - same mechanism as
@@ -236,142 +227,53 @@
 <div class="flex-1 min-w-0 bg-white rounded-lg shadow-sm overflow-hidden">
 	{#if loading}
 		<p class="text-gray-500 p-4">Loading...</p>
-	{:else if rows.length === 0}
+	{:else if words().length === 0}
 		<p class="text-gray-500 p-4">No user words yet - add one above, or from any analysis's word panel.</p>
 	{:else if filtered().length === 0}
-		<p class="text-gray-500 p-4">No entries match.</p>
+		<p class="text-gray-500 p-4">No words match.</p>
 	{:else}
-		<div class="divide-y divide-gray-100">
-			{#each filtered() as row (row.id)}
-				{@const editing = editingIds.has(row.id)}
-				{@const link = scopeLink(row)}
-				<div class="p-4">
-					<div class="flex items-start justify-between gap-3 mb-1">
-						<div class="flex items-center gap-2 flex-wrap">
-							<button onclick={() => selectedWordForPanel = row.word} class="text-lg font-medium hover:text-blue-600" title="View details">
-							{row.word}
+		<table class="w-full">
+			<thead class="bg-gray-50 border-b border-gray-200">
+				<tr>
+					<th class="text-left px-4 py-3 text-sm font-medium text-gray-700">
+						<button onclick={() => toggleSort('word')} class="hover:text-blue-600 {sortColumn === 'word' ? 'text-blue-600' : ''}">
+							Word {#if sortColumn === 'word'}({sortDirection}){/if}
 						</button>
-							{#if link}
-								<a href={link} class="text-xs px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-700 hover:bg-indigo-200">
-									{scopeLabel(row)}
-								</a>
-							{:else}
-								<span class="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-600">Global</span>
-							{/if}
-							{#if scopeOf(row) !== 'analysis' && row.affects_dag === false}
-								<span class="text-xs px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">Excluded from segmentation</span>
-							{/if}
-						</div>
-						<div class="flex gap-2 shrink-0">
-							{#if !editing}
-								<button onclick={() => startEditing(row)} class="text-xs text-blue-600 hover:text-blue-800">Edit</button>
-							{/if}
+					</th>
+					<th class="text-left px-4 py-3 text-sm font-medium text-gray-700">
+						<button onclick={() => toggleSort('familiarity')} class="hover:text-blue-600 {sortColumn === 'familiarity' ? 'text-blue-600' : ''}">
+							Familiarity {#if sortColumn === 'familiarity'}({sortDirection}){/if}
+						</button>
+					</th>
+					<th class="text-left px-4 py-3 text-sm font-medium text-gray-700">Actions</th>
+				</tr>
+			</thead>
+			<tbody class="divide-y divide-gray-100">
+				{#each filtered() as w (w.word)}
+					<tr class="cursor-pointer hover:bg-gray-50" onclick={(e) => handleRowClick(e, w.word)}>
+						<td class="px-4 py-3 text-lg font-medium">{w.word}</td>
+						<td class="px-4 py-3">
+							<span class="text-xs px-2 py-1 rounded-full {familiarityColor(w.familiarity)}">
+								{familiarityLabel(w.familiarity)}
+							</span>
+						</td>
+						<td class="px-4 py-3">
 							<button
-								onclick={() => remove(row)}
-								disabled={savingId === row.id}
-								class="text-xs text-red-400 hover:text-red-600 disabled:opacity-50"
+								onclick={() => selectedWordForPanel = w.word}
+								class="p-1 rounded text-gray-400 hover:text-blue-600 hover:bg-blue-50"
+								title="View details"
+								aria-label="View details"
 							>
-								Delete
+								<svg class="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
+									<circle cx="10" cy="5.3" r="1.7" />
+									<rect x="8.2" y="8.6" width="3.6" height="7.6" rx="1.8" />
+								</svg>
 							</button>
-						</div>
-					</div>
-
-					{#if editing}
-						<div class="space-y-2 mt-2">
-							<div class="grid sm:grid-cols-2 gap-2">
-								<div>
-									<label for="pron-{row.id}" class="text-xs text-gray-500">Pronunciation</label>
-									<input
-										id="pron-{row.id}"
-										type="text"
-										bind:value={drafts[row.id].pronunciation}
-										class="w-full border border-gray-300 rounded px-2 py-1 text-sm mt-0.5"
-									/>
-								</div>
-								<div>
-									<label for="meaning-{row.id}" class="text-xs text-gray-500">Meaning</label>
-									<input
-										id="meaning-{row.id}"
-										type="text"
-										bind:value={drafts[row.id].meaning}
-										class="w-full border border-gray-300 rounded px-2 py-1 text-sm mt-0.5"
-									/>
-								</div>
-							</div>
-							<div>
-								<label for="notes-{row.id}" class="text-xs text-gray-500">Notes</label>
-								<textarea
-									id="notes-{row.id}"
-									bind:value={drafts[row.id].notes}
-									rows="2"
-									class="w-full border border-gray-300 rounded px-2 py-1 text-sm mt-0.5"
-								></textarea>
-							</div>
-							{#if scopeOf(row) !== 'analysis'}
-								<!-- Tri-state, not a checkbox - NULL ("no preference") is a
-								     real, distinct value from false ("excluded"), not just
-								     "unchecked". A plain checkbox can't represent that third
-								     state, and would silently coerce an untouched NULL to
-								     false on save - see affects_dag's docstring (models.py). -->
-								<div class="text-xs text-gray-500">
-									<span class="block mb-1">Segmentation weight</span>
-									<label class="flex items-center gap-1.5 mb-0.5">
-										<input
-											type="radio"
-											name="affects-dag-{row.id}"
-											checked={drafts[row.id].affectsDag === true}
-											onchange={() => drafts[row.id].affectsDag = true}
-										/>
-										Affects segmentation
-									</label>
-									<label class="flex items-center gap-1.5 mb-0.5">
-										<input
-											type="radio"
-											name="affects-dag-{row.id}"
-											checked={drafts[row.id].affectsDag === false}
-											onchange={() => drafts[row.id].affectsDag = false}
-										/>
-										Excluded from segmentation
-									</label>
-									<label class="flex items-center gap-1.5">
-										<input
-											type="radio"
-											name="affects-dag-{row.id}"
-											checked={drafts[row.id].affectsDag === null}
-											onchange={() => drafts[row.id].affectsDag = null}
-										/>
-										No preference (inherit from broader scope)
-									</label>
-								</div>
-							{/if}
-							<div class="flex gap-2 pt-1">
-								<button
-									onclick={() => saveRow(row)}
-									disabled={savingId === row.id}
-									class="text-xs px-3 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50"
-								>
-									{savingId === row.id ? 'Saving...' : 'Save'}
-								</button>
-								<button
-									onclick={() => cancelEditing(row.id)}
-									disabled={savingId === row.id}
-									class="text-xs px-3 py-1.5 text-gray-500 hover:text-gray-700"
-								>
-									Cancel
-								</button>
-							</div>
-						</div>
-					{:else}
-						<div class="space-y-0.5">
-							{#if row.pronunciation}<p class="text-sm text-blue-600">{row.pronunciation}</p>{/if}
-							{#if row.meaning}<p class="text-sm text-gray-700">{row.meaning}</p>{/if}
-							{#if row.notes}<p class="text-xs text-gray-500 italic">{row.notes}</p>{/if}
-							{#if !row.pronunciation && !row.meaning && !row.notes}<p class="text-sm text-gray-400">No details added.</p>{/if}
-						</div>
-					{/if}
-				</div>
-			{/each}
-		</div>
+						</td>
+					</tr>
+				{/each}
+			</tbody>
+		</table>
 	{/if}
 </div>
 
@@ -386,6 +288,11 @@
 				word={selectedWordForPanel}
 				context={panelContext}
 				onClose={() => selectedWordForPanel = null}
+				onUserWordEntriesChanged={handleUserWordEntriesChanged}
+				onFamiliarityChanged={(familiarity) => {
+					if (!selectedWordForPanel) return;
+					knownWords = { ...knownWords, [selectedWordForPanel]: familiarity };
+				}}
 			/>
 		</div>
 	</div>
