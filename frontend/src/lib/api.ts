@@ -1,6 +1,15 @@
 import { getToken } from './auth';
 
-const BASE_URL = 'http://localhost:8000';
+// Derived from whatever host the page was actually loaded from (not
+// hardcoded to localhost) so this keeps working when the frontend is
+// reached over the LAN (e.g. `npm run dev -- --host 0.0.0.0`, opened from a
+// phone as http://<lan-ip>:5173) - the API calls then correctly target that
+// same host on port 8000 instead of the phone's own "localhost". Falls back
+// to localhost when `window` isn't available (e.g. during SSR, though this
+// app currently runs with SSR disabled).
+const BASE_URL = typeof window !== 'undefined'
+    ? `${window.location.protocol}//${window.location.hostname}:8000`
+    : 'http://localhost:8000';
 
 // Scoping (user words): "global" (default, unchanged from before scoping
 // existed) applies everywhere; "text" scopes to every analysis of one input
@@ -110,6 +119,13 @@ export async function reanalyzeInputText(inputTextId: number) {
 
 export async function getAnalysis(id: number) {
     return request('GET', `/known-words/analyze/${id}`);
+}
+
+// Reading-view payload (ReadingView.svelte) - a separate, opt-in-cost
+// endpoint from getAnalysis above, which the results table doesn't need
+// to pay for. See AnalysisSpan's docstring (schemas.py) for the shape.
+export async function getAnalysisSpans(id: number) {
+    return request('GET', `/known-words/analyze/${id}/spans`);
 }
 
 export async function getWordContext(analysisId: number, word: string) {

@@ -4,10 +4,11 @@
 	import { isLoggedIn } from '$lib/auth';
 	import * as api from '$lib/api';
 	import type { Scope } from '$lib/api';
-	import { familiarityLabel, familiarityColor } from '$lib/wordDisplay';
+	import { familiarityLabel, familiarityColor, sourceLabel, sourceColor } from '$lib/wordDisplay';
 	import { goto } from '$app/navigation';
 	import type { PageProps } from './$types';
 	import WordDetailPanel from '$lib/components/WordDetailPanel.svelte';
+	import ReadingView from '$lib/components/ReadingView.svelte';
 	import { isEntryEditable, type WordDetailContext } from '$lib/wordDetailContext';
 
 	let { params }: PageProps = $props();
@@ -212,6 +213,14 @@
 		if (!analysis) return { type: 'global' };
 		return { type: 'analysis', textId: analysis.input_text_id, textTitle: analysis.title, analysisId: id, analysisTitle: analysis.title };
 	});
+
+	// Read-only reading view (ReadingView.svelte) - a completely separate
+	// mode from the filter bar/results table/mobile card list below, not
+	// shown alongside them (both would otherwise want their own
+	// WordDetailPanel instance for the same word at once). Defaults off -
+	// fetching GET /analyze/{id}/spans is opt-in cost, and the reading view
+	// itself shouldn't clutter the page for a user who never asks for it.
+	let readingViewOn = $state(false);
 
 	function containsChinese(word: string): boolean {
 		return /[\u4e00-\u9fff]/.test(word);
@@ -906,30 +915,6 @@
 		return result.familiarity;
 	}
 
-	function sourceLabel(source: string): string {
-		const labels: Record<string, string> = {
-			dag: 'segmenter',
-			overlay: 'your word',
-			token: 'unknown seq.',
-			unknown: 'unknown',
-			longest_match_only: 'extra match',
-			trie: 'segmenter', // legacy label from before the DAG segmenter
-		};
-		return labels[source] ?? source;
-	}
-
-	function sourceColor(source: string): string {
-		const colors: Record<string, string> = {
-			dag: 'bg-blue-100 text-blue-700',
-			trie: 'bg-blue-100 text-blue-700',
-			overlay: 'bg-indigo-100 text-indigo-700',
-			token: 'bg-purple-100 text-purple-700',
-			unknown: 'bg-gray-100 text-gray-600',
-			longest_match_only: 'bg-amber-100 text-amber-700',
-		};
-		return colors[source] ?? 'bg-gray-100 text-gray-600';
-	}
-
 	function toggleInfo(word: string) {
 		const next = new Set(expandedInfo);
 		if (next.has(word)) {
@@ -1364,9 +1349,15 @@
 			{/if}
 		</div>
 		{#if analysis}
-			<div class="text-sm text-gray-500 flex gap-4">
-				<span>{analysis.unique_words} unique words</span>
-				<span>{analysis.total_words} total occurrences</span>
+			<div class="flex items-center gap-4">
+				<label class="flex items-center gap-1.5 text-sm text-gray-700 cursor-pointer">
+					<input type="checkbox" bind:checked={readingViewOn} class="rounded" />
+					Reading view
+				</label>
+				<div class="text-sm text-gray-500 flex gap-4">
+					<span>{analysis.unique_words} unique words</span>
+					<span>{analysis.total_words} total occurrences</span>
+				</div>
 			</div>
 		{/if}
 	</nav>
@@ -1378,6 +1369,9 @@
 			</div>
 		{/if}
 
+		{#if readingViewOn && analysis}
+			<ReadingView analysisId={id} textTitle={analysis.title} analysisTitle={analysis.title} />
+		{:else}
 		<!-- Filters -->
 		<div class="bg-white rounded-lg shadow-sm p-4 mb-4 flex flex-wrap gap-4 items-center">
 			<div class="flex items-center gap-2">
@@ -1801,5 +1795,6 @@
 				</div>
 			{/if}
 		</div>
+		{/if}
 	</main>
 </div>

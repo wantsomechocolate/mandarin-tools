@@ -12,6 +12,13 @@ app = FastAPI(title=settings.app_name, debug=settings.debug)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173"],
+    # Only in debug (dev) mode - also allow the frontend dev server when
+    # reached over the LAN (e.g. `npm run dev -- --host 0.0.0.0`, opened
+    # from a phone as http://<lan-ip>:5173), matching api.ts's own
+    # same-host-any-port-8000 origin derivation. Any IPv4:5173 is fine to
+    # allow here since this only ever applies when settings.debug is set,
+    # never in production.
+    allow_origin_regex=r"http://(\d{1,3}\.){3}\d{1,3}:5173" if settings.debug else None,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

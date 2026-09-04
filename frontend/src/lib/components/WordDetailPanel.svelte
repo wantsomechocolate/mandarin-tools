@@ -1,6 +1,6 @@
 <script lang="ts">
 	import * as api from '$lib/api';
-	import { familiarityLabel, familiarityColor } from '$lib/wordDisplay';
+	import { familiarityLabel, familiarityColor, rarityLabel, rarityColor } from '$lib/wordDisplay';
 	import { isEntryEditable, type WordDetailContext } from '$lib/wordDetailContext';
 
 	interface HskForm {
@@ -445,27 +445,6 @@
 		}
 	}
 
-	function rarityLabel(tier: string): string {
-		const labels: Record<string, string> = {
-			extremely_rare: 'Extremely rare',
-			rare: 'Rare',
-			uncommon: 'Moderate',
-			common: 'Common',
-			extremely_common: 'Extremely common',
-		};
-		return labels[tier] ?? tier;
-	}
-
-	function rarityColor(tier: string): string {
-		const colors: Record<string, string> = {
-			extremely_rare: 'bg-gray-100 text-gray-500',
-			rare: 'bg-stone-200 text-stone-600',
-			uncommon: 'bg-yellow-100 text-yellow-700',
-			common: 'bg-orange-100 text-orange-700',
-			extremely_common: 'bg-red-100 text-red-700',
-		};
-		return colors[tier] ?? 'bg-gray-100 text-gray-500';
-	}
 </script>
 
 <!--

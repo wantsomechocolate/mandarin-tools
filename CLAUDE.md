@@ -393,6 +393,84 @@ Source sorts by the *displayed* label (`sourceLabel`), not the raw
 adjacently; Familiarity treats unset (`null`) as lower than any scored
 value 1-5.
 
+## Reading view: read-only foundation, drag-to-correct deferred
+
+`GET /analyze/{id}/spans` is a deliberately separate endpoint from
+`GET /analyze/{id}` - the results table doesn't need this payload, and this
+one does real extra work (a `DictionaryWord` rarity lookup, the gap-fill
+walk below) that shouldn't tax that common path. Confirmed live: the
+existing endpoint's response shape is byte-for-byte unchanged by this
+work.
+
+**The gap-fill walk turned out to be a defensive mechanism more than a
+commonly-hit path.** `AnalysisResult.positions` (see its docstring,
+models.py) is populated per-word, not per-occurrence, and only for rows
+the DAG's own disjoint segmentation walk produced - flattening every row's
+`[[start,end],...]` into individual occurrences and sorting by `start`
+recovers the actual reading order. The endpoint fills any stretch between
+occurrences as a plain-text "gap" span (unstyled in the reading view) -
+but live testing found the DAG walk's own disjoint segmentation already
+covers 100% of the source text on its own (every character, including
+whitespace/punctuation/digits, gets *some* positioned row - `token`/
+`longest_match_only` rows are supplementary annotations layered on
+already-covered ranges, never the only thing covering a range), so a real
+analysis never actually produces a "gap" span today. The gap-fill logic
+was still verified correct (synthetically cleared one word's `positions`
+in the DB and confirmed a span with the exact right text/offsets appeared
+in its place) - kept as a correctness safety net matching the column's
+documented contract, not dead code to remove.
+
+**JSONB gotcha caught during that same verification**: `AnalysisResult.
+positions.isnot(None)` (a SQL `IS NOT NULL` filter) does **not** exclude
+rows where `positions` is unset - SQLAlchemy's JSONB columns default to
+`none_as_null=False`, so an unset Python `None` is stored as the *JSON*
+literal `null`, which Postgres does not consider SQL NULL (`jsonb_typeof`
+reports `'null'`, and `IS NOT NULL` is true for it). The endpoint filters
+in Python (`if not r.positions: continue`) instead, which correctly
+treats both cases the same way. This is a pre-existing characteristic of
+the column, not something introduced here - not "fixed" at the storage
+layer, just correctly worked around at the one new read site that needed
+to distinguish "no positions" from "has positions."
+
+**`ReadingView.svelte` is analysis-centric, not analyze/[id]-specific** -
+its only required prop is `analysisId` (`textTitle`/`analysisTitle` are
+passed through for `WordDetailContext`, not re-fetched) - so it could be
+embedded from `input-texts/[id]` later (e.g. showing a text's latest
+analysis) without a rewrite; picking *which* analysisId to show there is
+its own separate, not-yet-built piece of work. It's a fully separate mode
+from the filter bar/results table/mobile card list (toggled via a
+"Reading view" checkbox in the nav bar, default off) rather than shown
+alongside them - both would otherwise want their own `WordDetailPanel`
+instance for the same word at once. It maintains its own
+`selectedWordForPanel` state and reuses the exact same panel-docking
+mechanism (backdrop `lg:contents`, child `lg:sticky lg:top-4`) every other
+list page uses.
+
+**Color-by reuses the app's existing badge color scales, background only**
+- `sourceColor`/`rarityColor`/`familiarityColor` (now consolidated into
+`$lib/wordDisplay.ts`, see below) each return a combined `"bg-X-100
+text-X-700"` pair for use as a small colored badge elsewhere; the reading
+view takes only the `bg-*` half (`classes.split(' ')[0]`) so inline word
+spans get a background tint without also recoloring the Chinese text
+itself, which would be far too visually noisy across a whole passage. The
+default "Color by: None" state isn't literally uncolored - it's a faint
+alternating `bg-slate-100`/`bg-white` tint between consecutive word spans
+only (gaps excluded from the alternation), just enough to show word
+boundaries without any semantic meaning attached.
+
+**`sourceLabel`/`sourceColor` (from the results page) and `rarityLabel`/
+`rarityColor` (from `WordDetailPanel.svelte`) moved into `$lib/
+wordDisplay.ts`**, joining `familiarityLabel`/`familiarityColor` which
+were already there - the reading view is a third consumer of both scales,
+and duplicating either a third time was the point at which extracting
+made more sense than another copy. Both files now import from
+`wordDisplay.ts` instead of defining their own copies; behavior is
+unchanged (`sourceLabel`/`sourceColor`/`rarityLabel`/`rarityColor` all
+gained a null/undefined-safe fallback purely so the reading view's
+"gap"-typed spans, which carry no `source`/`rarity_tier`, can't crash a
+caller that forgets to guard - none of the existing call sites relied on
+the old non-nullable signatures rejecting null).
+
 ## Rarity tier: a persisted read-cache derived from corpus frequency
 
 `DictionaryWord.freq_per_million`/`.rarity_tier` are derived, persisted

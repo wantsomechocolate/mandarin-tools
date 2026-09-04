@@ -106,6 +106,43 @@ class AnalysisResponse(BaseModel):
     results: list[WordResult]
 
 
+class AnalysisSpan(BaseModel):
+    """
+    One span in the reading view's ordered walk of InputText.body - either
+    a "word" span (a dag/overlay-sourced occurrence, from AnalysisResult.
+    positions - see its docstring, models.py) or a "gap" span (everything
+    else: token/unknown/longest_match_only content, whitespace,
+    punctuation - rendered as plain unstyled text). Together, in order,
+    spans cover the entire body with no gaps or overlaps.
+
+    "word"-only fields mirror a subset of WordResult's own resolved
+    fields (same resolution functions, not reimplemented - see
+    get_analysis_spans, router.py) plus rarity_tier (not on WordResult -
+    pulled from DictionaryWord the same way WordDetail does). Left null/
+    default on a "gap" span.
+    """
+    type: Literal["word", "gap"]
+    start: int
+    end: int
+    # "gap" only.
+    text: str | None = None
+    # "word" only.
+    word: str | None = None
+    source: str | None = None
+    familiarity: int | None = None
+    is_hidden: bool = False
+    hidden_governing_scope: str = "default"
+    rarity_tier: str | None = None
+    userword_scopes: list[str] = []
+    userword_resolved_affects_dag: bool = True
+
+
+class AnalysisSpansResponse(BaseModel):
+    analysis_id: int
+    input_text_id: int
+    spans: list[AnalysisSpan]
+
+
 class AnalysisSummary(BaseModel):
     """One entry in an input text's list of past analysis runs."""
     id: int

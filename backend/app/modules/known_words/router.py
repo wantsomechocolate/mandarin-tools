@@ -29,6 +29,8 @@ from app.modules.known_words.models import (
 from app.modules.known_words.schemas import (
     AnalyzeTextRequest,
     AnalysisResponse,
+    AnalysisSpan,
+    AnalysisSpansResponse,
     AnalysisSummary,
     InputTextDetailResponse,
     WordOccurrence,
@@ -494,6 +496,103 @@ def get_analysis(
         total_words=sum(r.count for r in results),
         unique_words=len(results),
         results=word_results,
+    )
+
+
+@router.get("/analyze/{analysis_id}/spans", response_model=AnalysisSpansResponse)
+def get_analysis_spans(
+    analysis_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Reading-view payload: InputText.body walked in order, split into
+    dag/overlay-sourced "word" spans (from AnalysisResult.positions - see
+    its docstring, models.py) interleaved with plain-text "gap" spans for
+    everything a word span doesn't cover (token/unknown/longest_match_only
+    content, whitespace, punctuation). See AnalysisSpan's docstring
+    (schemas.py) for the exact shape.
+
+    Deliberately a separate endpoint from GET /analyze/{id} - the results
+    table doesn't need this payload, and this one does extra work (a
+    DictionaryWord rarity lookup, the gap-fill walk) that shouldn't tax
+    that common path. Reuses the exact same resolution functions
+    (_resolve_word_visibility/_resolve_user_word_detail) get_analysis
+    already uses for WordResult - not reimplemented here.
+    """
+    analysis = (
+        db.query(Analysis)
+        .join(InputText, Analysis.input_text_id == InputText.id)
+        .filter(Analysis.id == analysis_id, InputText.user_id == current_user.id)
+        .first()
+    )
+    if not analysis:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Analysis not found")
+
+    body = analysis.input_text.body
+
+    results = db.query(AnalysisResult).filter(AnalysisResult.analysis_id == analysis_id).all()
+
+    # Flatten every row's [[start, end], ...] into individual
+    # (word, start, end, source) occurrences, then sort into the same
+    # left-to-right order the original disjoint DAG walk produced them in -
+    # AnalysisResult rows are per-word (one row can have many occurrences),
+    # not per-occurrence, so this is the step that recovers the actual
+    # reading order. Filtering on `r.positions` truthiness (Python-side,
+    # not a SQL `IS NOT NULL`) is deliberate - SQLAlchemy's JSONB columns
+    # store an unset value as the JSON literal `null` by default
+    # (none_as_null=False), which Postgres itself does NOT consider SQL
+    # NULL (`positions IS NOT NULL` is true for it) - only a Python-side
+    # truthiness check correctly treats both "no row" and "row with a JSON
+    # null" as "no positions".
+    occurrences: list[tuple[str, int, int, str]] = []
+    for r in results:
+        if not r.positions:
+            continue
+        for start, end in r.positions:
+            occurrences.append((r.word, start, end, r.source))
+    occurrences.sort(key=lambda o: o[1])
+
+    known_words = service.get_known_words_for_user(current_user.id, db)
+    visibility = _resolve_word_visibility(current_user.id, db, analysis.id, analysis.input_text_id)
+    user_words = _resolve_user_word_detail(current_user.id, db, analysis.id, analysis.input_text_id)
+    _uw_default = {"scopes": [], "resolved_affects_dag": True, "scope_affects_dag": {}}
+
+    distinct_words = {o[0] for o in occurrences}
+    rarity_by_word: dict[str, str | None] = {}
+    if distinct_words:
+        for w, tier in db.query(DictionaryWord.word, DictionaryWord.rarity_tier).filter(DictionaryWord.word.in_(distinct_words)).all():
+            rarity_by_word[w] = tier
+
+    spans: list[AnalysisSpan] = []
+    cursor = 0
+    for word, start, end, source in occurrences:
+        # Defensive against any unexpected overlap in stored positions
+        # (shouldn't happen - the DAG walk is disjoint by construction) -
+        # skip a word span that's already fully covered by the cursor
+        # rather than emitting an overlapping span the frontend can't
+        # render sensibly.
+        if start < cursor:
+            continue
+        if start > cursor:
+            spans.append(AnalysisSpan(type="gap", text=body[cursor:start], start=cursor, end=start))
+        spans.append(AnalysisSpan(
+            type="word", word=word, start=start, end=end, source=source,
+            familiarity=known_words.get(word),
+            is_hidden=visibility.get(word, (False, "default"))[0],
+            hidden_governing_scope=visibility.get(word, (False, "default"))[1],
+            rarity_tier=rarity_by_word.get(word),
+            userword_scopes=user_words.get(word, _uw_default)["scopes"],
+            userword_resolved_affects_dag=user_words.get(word, _uw_default)["resolved_affects_dag"],
+        ))
+        cursor = end
+    if cursor < len(body):
+        spans.append(AnalysisSpan(type="gap", text=body[cursor:], start=cursor, end=len(body)))
+
+    return AnalysisSpansResponse(
+        analysis_id=analysis.id,
+        input_text_id=analysis.input_text_id,
+        spans=spans,
     )
 
 
