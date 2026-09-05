@@ -1619,20 +1619,18 @@
 													aria-label={familiarityLabel(score)}
 													aria-pressed={currentFamiliarity(result) === score}
 												>
-													<span class="block w-2 h-2 rounded-full {currentFamiliarity(result) !== null && score <= currentFamiliarity(result)! ? familiarityDotColor(score) : 'bg-gray-200'}"></span>
+													<span class="block w-2 h-2 rounded-full {currentFamiliarity(result) !== null && score <= currentFamiliarity(result)! ? familiarityDotColor(currentFamiliarity(result)!) : 'bg-gray-200'}"></span>
 												</button>
 											{/each}
-											{#if currentFamiliarity(result) !== null}
-												<button
-													onclick={() => setFamiliarity(result.word, null)}
-													disabled={updatingWord === result.word}
-													class="p-1 rounded hover:bg-gray-100 disabled:opacity-50 text-gray-400 hover:text-gray-600 ml-0.5"
-													title="Clear familiarity"
-													aria-label="Clear familiarity"
-												>
-													<span class="text-[10px] leading-none">✕</span>
-												</button>
-											{/if}
+											<button
+												onclick={() => setFamiliarity(result.word, null)}
+												disabled={updatingWord === result.word || currentFamiliarity(result) === null}
+												class="p-1 rounded hover:bg-gray-100 disabled:opacity-50 text-gray-400 hover:text-gray-600 ml-0.5 {currentFamiliarity(result) === null ? 'invisible' : ''}"
+												title="Clear familiarity"
+												aria-label="Clear familiarity"
+											>
+												<span class="inline-flex items-center justify-center w-2 h-2 text-[10px] leading-none">✕</span>
+											</button>
 										</div>
 									</td>
 									<td class="px-4 py-3">
