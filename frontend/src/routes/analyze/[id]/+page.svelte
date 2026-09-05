@@ -20,11 +20,14 @@
 	// would just be confusing on a new one.
 	const FILTER_STORAGE_KEY = 'mandarin_tools_analysis_filters';
 
-	// Per-bucket hide/iso state, keyed by bucket id (see BUCKETS below).
-	interface BucketFilterState {
-		hide: boolean;
-		iso: boolean;
-	}
+	// Per-bucket state, keyed by bucket id (see BUCKETS below) - a chip is in
+	// exactly one of these three at a time, cycling show -> iso -> hide ->
+	// show on click. Replaces the old independent {hide, iso} booleans, which
+	// allowed a chip to be both hidden AND isolated at once - isolate
+	// restricts the table to matching rows, then hide removes those same
+	// rows, so that combination silently blanked the whole table. A single
+	// tri-state value makes it unreachable by construction.
+	type BucketFilterState = 'show' | 'iso' | 'hide';
 
 	interface StoredFilters {
 		buckets: Record<string, BucketFilterState>;
@@ -35,6 +38,7 @@
 		// rules runtime `let`/`const` bindings are.
 		sortColumn: SortColumn;
 		sortDirection: 'asc' | 'desc';
+		filtersOpen: boolean;
 	}
 
 	function loadStoredFilters(): Partial<StoredFilters> {
@@ -48,6 +52,20 @@
 	}
 
 	const storedFilters = loadStoredFilters();
+
+	// Reads one bucket's stored value, tolerating the pre-tri-state
+	// {hide, iso} object shape from a returning user's localStorage. Falls
+	// back to the bucket's own default when nothing usable is stored.
+	function resolveStoredBucketState(raw: unknown, defaultHide: boolean): BucketFilterState {
+		if (raw === 'show' || raw === 'iso' || raw === 'hide') return raw;
+		if (raw && typeof raw === 'object') {
+			const legacy = raw as { hide?: boolean; iso?: boolean };
+			if (legacy.iso) return 'iso';
+			if (legacy.hide) return 'hide';
+			return 'show';
+		}
+		return defaultHide ? 'hide' : 'show';
+	}
 
 	interface WordResult {
 		word: string;
@@ -247,7 +265,7 @@
 	interface Bucket {
 		id: string;
 		label: string;
-		iconKey: string;
+		swatchColor: string;
 		test: (r: WordResult) => boolean;
 		defaultHide: boolean;
 		group: 'bucket' | 'tier' | 'other';
@@ -258,50 +276,49 @@
 		// exactly one of these three - see bucketLabel/bucketColor
 		// (wordDisplay.ts) for the legacy-value folding (trie/longest_match_only/
 		// token from before the segmentation-engine rework).
-		{ id: 'mainSegmentation', label: 'Main segmentation', iconKey: 'mainSegmentation', group: 'bucket', test: (r) => r.source === 'dag' || r.source === 'overlay' || r.source === 'unknown' || r.source === 'trie', defaultHide: false },
-		{ id: 'extraMatch', label: 'Extra matches', iconKey: 'extraMatch', group: 'bucket', test: (r) => r.source === 'extra_match' || r.source === 'longest_match_only', defaultHide: false },
-		{ id: 'repeatedSequence', label: 'Repeated sequences', iconKey: 'repeatedSequence', group: 'bucket', test: (r) => r.source === 'repeated_sequence' || r.source === 'token', defaultHide: false },
+		{ id: 'mainSegmentation', label: 'Main segmentation', swatchColor: 'bg-blue-500', group: 'bucket', test: (r) => r.source === 'dag' || r.source === 'overlay' || r.source === 'unknown' || r.source === 'trie', defaultHide: false },
+		{ id: 'extraMatch', label: 'Extra matches', swatchColor: 'bg-amber-500', group: 'bucket', test: (r) => r.source === 'extra_match' || r.source === 'longest_match_only', defaultHide: false },
+		{ id: 'repeatedSequence', label: 'Repeated sequences', swatchColor: 'bg-purple-500', group: 'bucket', test: (r) => r.source === 'repeated_sequence' || r.source === 'token', defaultHide: false },
 		// --- Source axis (evidence_tier): why to trust the word - User >
-		// Dictionary > Corpus > None. Garbage moved to the Other row below - it's
-		// its own is_garbage boolean, not an evidence_tier value, and the row/
-		// card's own red tint plus the "not allowed" quick-action icon already
-		// flag it without a chip duplicating that here.
-		{ id: 'userTier', label: 'User', iconKey: 'userTier', group: 'tier', test: (r) => r.is_user_word, defaultHide: false },
-		{ id: 'dictionaryTier', label: 'Dictionary', iconKey: 'dictionaryTier', group: 'tier', test: (r) => r.evidence_tier === 'dictionary', defaultHide: false },
-		{ id: 'corpusTier', label: 'Corpus', iconKey: 'corpusTier', group: 'tier', test: (r) => r.evidence_tier === 'corpus', defaultHide: false },
-		{ id: 'noneTier', label: 'None', iconKey: 'noneTier', group: 'tier', test: (r) => r.evidence_tier === 'unknown', defaultHide: false },
+		// Dictionary > Corpus > None. Garbage lives in the Other row below -
+		// it's its own is_garbage boolean, not an evidence_tier value, and the
+		// row/card's own red tint plus the "not allowed" quick-action icon
+		// already flag it without a chip duplicating that here.
+		{ id: 'userTier', label: 'User', swatchColor: 'bg-indigo-500', group: 'tier', test: (r) => r.is_user_word, defaultHide: false },
+		{ id: 'dictionaryTier', label: 'Dictionary', swatchColor: 'bg-blue-500', group: 'tier', test: (r) => r.evidence_tier === 'dictionary', defaultHide: false },
+		{ id: 'corpusTier', label: 'Corpus', swatchColor: 'bg-teal-500', group: 'tier', test: (r) => r.evidence_tier === 'corpus', defaultHide: false },
+		{ id: 'noneTier', label: 'None', swatchColor: 'bg-gray-400', group: 'tier', test: (r) => r.evidence_tier === 'unknown', defaultHide: false },
 		// --- Other: orthogonal display states, not part of either axis.
 		// Starred has no resolved WordResult field (unlike garbage/hidden/
 		// user-word) - it's the same separately-fetched `starredWords` Set
 		// the row/card quick-actions already use, so this stays live via
 		// closure rather than needing a backend round trip of its own.
-		{ id: 'starred', label: 'Starred', iconKey: 'starred', group: 'other', test: (r) => starredWords.has(r.word), defaultHide: false },
-		{ id: 'hidden', label: 'Hidden', iconKey: 'hidden', group: 'other', test: (r) => r.is_hidden, defaultHide: true },
-		{ id: 'garbage', label: 'Garbage', iconKey: 'garbage', group: 'other', test: (r) => r.is_garbage, defaultHide: true },
-		{ id: 'nonChinese', label: 'Non-Chinese', iconKey: 'nonChinese', group: 'other', test: (r) => !containsChinese(r.word), defaultHide: true },
+		{ id: 'starred', label: 'Starred', swatchColor: 'bg-yellow-500', group: 'other', test: (r) => starredWords.has(r.word), defaultHide: false },
+		{ id: 'hidden', label: 'Hidden', swatchColor: 'bg-gray-400', group: 'other', test: (r) => r.is_hidden, defaultHide: true },
+		{ id: 'garbage', label: 'Garbage', swatchColor: 'bg-red-500', group: 'other', test: (r) => r.is_garbage, defaultHide: true },
+		{ id: 'nonChinese', label: 'Non-Chinese', swatchColor: 'bg-gray-400', group: 'other', test: (r) => !containsChinese(r.word), defaultHide: true },
 	];
 
 	let bucketState: Record<string, BucketFilterState> = $state(
-		Object.fromEntries(BUCKETS.map((b) => [b.id, {
-			hide: storedFilters.buckets?.[b.id]?.hide ?? b.defaultHide,
-			iso: storedFilters.buckets?.[b.id]?.iso ?? false,
-		}]))
+		Object.fromEntries(BUCKETS.map((b) => [b.id, resolveStoredBucketState(storedFilters.buckets?.[b.id], b.defaultHide)]))
 	);
 
-	// Chip bar - only one bucket's popover open at a time. hide/iso changes
-	// apply live (no separate apply button), same as the old checkboxes did.
-	let openBucketPopoverFor: string | null = $state(null);
+	// Whether the Filters panel (the three bucket-group rows) is expanded.
+	// Persisted like every other filter preference below; a first-ever
+	// visit (no stored preference at all) collapses it on narrow viewports
+	// in onMount, so the page opens uncluttered there - same sm breakpoint
+	// this file already switches on elsewhere (the mobile card list vs.
+	// desktop table).
+	let filtersOpen = $state(storedFilters.filtersOpen ?? true);
 
-	function toggleBucketPopover(id: string) {
-		openBucketPopoverFor = openBucketPopoverFor === id ? null : id;
-	}
+	const BUCKET_STATE_CYCLE: BucketFilterState[] = ['show', 'iso', 'hide'];
 
-	function setBucketHide(id: string, hide: boolean) {
-		bucketState = { ...bucketState, [id]: { ...bucketState[id], hide } };
-	}
-
-	function setBucketIso(id: string, iso: boolean) {
-		bucketState = { ...bucketState, [id]: { ...bucketState[id], iso } };
+	// Single click cycles a chip through all three states - no popover, no
+	// separate hide/isolate controls to reconcile.
+	function cycleBucket(id: string) {
+		const current = bucketState[id] ?? 'show';
+		const next = BUCKET_STATE_CYCLE[(BUCKET_STATE_CYCLE.indexOf(current) + 1) % BUCKET_STATE_CYCLE.length];
+		bucketState = { ...bucketState, [id]: next };
 	}
 
 	// The one shared visibility predicate every bucket goes through - no
@@ -310,12 +327,18 @@
 	// isolate: "show me anything in ANY of these buckets at once", not an
 	// intersection), never AND.
 	function isVisible(r: WordResult): boolean {
-		const hideActive = BUCKETS.filter((b) => bucketState[b.id]?.hide);
-		const isoActive = BUCKETS.filter((b) => bucketState[b.id]?.iso);
+		const hideActive = BUCKETS.filter((b) => bucketState[b.id] === 'hide');
+		const isoActive = BUCKETS.filter((b) => bucketState[b.id] === 'iso');
 		if (hideActive.some((b) => b.test(r))) return false;
 		if (isoActive.length > 0 && !isoActive.some((b) => b.test(r))) return false;
 		return true;
 	}
+
+	// Chips currently off their own default state - powers the Filters
+	// panel's disclosure badge.
+	const activeBucketCount = $derived(
+		BUCKETS.filter((b) => bucketState[b.id] !== (b.defaultHide ? 'hide' : 'show')).length
+	);
 
 	function bucketCount(bucket: Bucket): number {
 		// Always against the FULL unfiltered result set, not filteredResults
@@ -421,7 +444,7 @@
 	$effect(() => {
 		if (!browser) return;
 		try {
-			const toStore: StoredFilters = { buckets: bucketState, minFamiliarityFilter, searchScope, sortColumn, sortDirection };
+			const toStore: StoredFilters = { buckets: bucketState, minFamiliarityFilter, searchScope, sortColumn, sortDirection, filtersOpen };
 			localStorage.setItem(FILTER_STORAGE_KEY, JSON.stringify(toStore));
 		} catch {
 			// e.g. storage disabled/full - filters just won't persist, no need to surface an error
@@ -432,6 +455,9 @@
 		if (!isLoggedIn()) {
 			goto('/login');
 			return;
+		}
+		if (storedFilters.filtersOpen === undefined && browser && window.innerWidth < 640) {
+			filtersOpen = false;
 		}
 		try {
 			// getAnalysis first (not parallel with the rest) - the scoped
@@ -1127,139 +1153,35 @@
 	{/each}
 {/snippet}
 
-<!-- Filter chip icons. Garbage/Hidden/User (tier)/Starred reuse the exact
-     icons their own row/card quick-actions already use (iconTrash/iconEye/
-     iconBookmark/iconStar) - the remaining bucket/tier keys (extra match/
-     repeated sequence/none/main segmentation/dictionary/corpus/non-Chinese)
-     have no pre-existing icon anywhere in this app, so these are new,
-     minimal, purpose-built shapes, kept in the same stroke-width/viewBox
-     style as the rest of the icon set. iconLatin reuses the small-letter-
-     badge visual language from scopeBadge above (a plain glyph in a
-     circle) as a deliberate callback. -->
-{#snippet iconPlus()}
-	<svg class="w-4 h-4" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
-		<circle cx="10" cy="10" r="8" />
-		<path d="M10 6.5v7M6.5 10h7" />
-	</svg>
-{/snippet}
-
-{#snippet iconSequence()}
-	<svg class="w-4 h-4" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
-		<circle cx="4" cy="10" r="1.3" fill="currentColor" stroke="none" />
-		<circle cx="10" cy="10" r="1.3" fill="currentColor" stroke="none" />
-		<circle cx="16" cy="10" r="1.3" fill="currentColor" stroke="none" />
-	</svg>
-{/snippet}
-
-{#snippet iconQuestion()}
-	<svg class="w-4 h-4" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-		<circle cx="10" cy="10" r="8" />
-		<path d="M7.5 8a2.5 2.5 0 1 1 3.5 2.3c-.7.3-1 .8-1 1.4" />
-		<circle cx="10" cy="14" r="0.4" fill="currentColor" stroke="none" />
-	</svg>
-{/snippet}
-
-{#snippet iconSegments()}
-	<svg class="w-4 h-4" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-		<rect x="2.5" y="6" width="4" height="8" rx="0.5" />
-		<rect x="8" y="6" width="4" height="8" rx="0.5" />
-		<rect x="13.5" y="6" width="4" height="8" rx="0.5" />
-	</svg>
-{/snippet}
-
-{#snippet iconLatin()}
-	<svg class="w-4 h-4" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4">
-		<circle cx="10" cy="10" r="8" />
-		<text x="10" y="13.5" font-size="8" text-anchor="middle" fill="currentColor" stroke="none" font-family="sans-serif">A</text>
-	</svg>
-{/snippet}
-
-{#snippet iconBook()}
-	<svg class="w-4 h-4" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-		<path d="M10 5.5c-1.2-1-3-1.5-5.5-1.5v10c2.5 0 4.3.5 5.5 1.5c1.2-1 3-1.5 5.5-1.5V4c-2.5 0-4.3.5-5.5 1.5Z" />
-		<path d="M10 5.5v10" />
-	</svg>
-{/snippet}
-
-{#snippet iconStack()}
-	<svg class="w-4 h-4" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-		<rect x="3" y="3.5" width="14" height="3.5" rx="0.5" />
-		<rect x="3" y="8.25" width="14" height="3.5" rx="0.5" />
-		<rect x="3" y="13" width="14" height="3.5" rx="0.5" />
-	</svg>
-{/snippet}
-
-{#snippet bucketIcon(key: string)}
-	{#if key === 'garbage'}{@render iconTrash()}
-	{:else if key === 'hidden'}{@render iconEye(false)}
-	{:else if key === 'userTier'}{@render iconBookmark(true)}
-	{:else if key === 'starred'}{@render iconStar(true)}
-	{:else if key === 'extraMatch'}{@render iconPlus()}
-	{:else if key === 'repeatedSequence'}{@render iconSequence()}
-	{:else if key === 'noneTier'}{@render iconQuestion()}
-	{:else if key === 'mainSegmentation'}{@render iconSegments()}
-	{:else if key === 'dictionaryTier'}{@render iconBook()}
-	{:else if key === 'corpusTier'}{@render iconStack()}
-	{:else if key === 'nonChinese'}{@render iconLatin()}
-	{/if}
-{/snippet}
-
-<!-- One chip per filter bucket - icon + label + count (always against the
-     FULL unfiltered result set, see bucketCount) + at-a-glance hide/iso
-     state marks. Iso-active uses a filled/highlighted treatment (blue,
-     matching this app's general "selected/active" language elsewhere -
-     selected familiarity score buttons, the selected-row highlight - rather
-     than the star icon's amber, which is that icon's own identity color,
-     not a reusable state-styling pattern). Hide-active uses a strikethrough
-     label + a small dot, both visible without opening the popover. Clicking
-     the chip opens a popover with two independent Hide/Isolate toggles;
-     changes apply live, same as the old checkboxes did. -->
+<!-- One chip per filter bucket - swatch + label + count (always against
+     the FULL unfiltered result set, see bucketCount) - a single click
+     cycles it through all three states: show -> isolate -> hide -> show.
+     Isolate uses the app's general "selected/active" blue (matching
+     selected familiarity-score buttons, the selected-row highlight)
+     plus an "only" mark; hide uses a strikethrough label + a small red
+     dot, both visible without opening anything - no popover, unlike the
+     old two-checkbox version. -->
 {#snippet filterChip(bucket: Bucket)}
-	{@const state = bucketState[bucket.id]}
+	{@const state = bucketState[bucket.id] ?? 'show'}
 	{@const count = bucketCount(bucket)}
-	<div class="relative inline-block">
-		<button
-			onclick={() => toggleBucketPopover(bucket.id)}
-			class="flex items-center gap-1.5 pl-2 pr-2.5 py-1.5 rounded-full text-sm border transition-colors
-			{state.iso ? 'bg-blue-100 border-blue-300 text-blue-700' : 'bg-gray-50 border-gray-200 text-gray-600 hover:bg-gray-100'}
-			{state.hide ? 'opacity-60' : ''}"
-			title="{bucket.label}: {state.hide ? 'hidden' : 'shown'}{state.iso ? ', isolated' : ''} — click for options"
-		>
-			{@render bucketIcon(bucket.iconKey)}
-			<span class={state.hide ? 'line-through' : ''}>{bucket.label}</span>
-			<span class="text-xs {state.iso ? 'text-blue-500' : 'text-gray-400'}">({count})</span>
-			{#if state.hide}
-				<span class="w-1.5 h-1.5 rounded-full bg-red-400" aria-hidden="true"></span>
-			{/if}
-		</button>
-		{#if openBucketPopoverFor === bucket.id}
-			<div class="fixed inset-0 z-40" onclick={() => openBucketPopoverFor = null} role="presentation"></div>
-			<div
-				class="absolute left-0 top-full mt-1 z-50 w-44 bg-white rounded-lg shadow-lg border border-gray-100 p-3 space-y-2.5"
-				onclick={(e) => e.stopPropagation()}
-				role="presentation"
-			>
-				<label class="flex items-center justify-between text-sm text-gray-700 cursor-pointer">
-					Hide
-					<input
-						type="checkbox"
-						checked={state.hide}
-						onchange={() => setBucketHide(bucket.id, !state.hide)}
-						class="rounded"
-					/>
-				</label>
-				<label class="flex items-center justify-between text-sm text-gray-700 cursor-pointer">
-					Isolate
-					<input
-						type="checkbox"
-						checked={state.iso}
-						onchange={() => setBucketIso(bucket.id, !state.iso)}
-						class="rounded"
-					/>
-				</label>
-			</div>
+	<button
+		type="button"
+		onclick={() => cycleBucket(bucket.id)}
+		aria-pressed={state === 'iso'}
+		class="flex items-center gap-1.5 pl-2 pr-2.5 py-1.5 rounded-full text-sm border transition-colors
+		{state === 'iso' ? 'bg-blue-100 border-blue-300 text-blue-700' : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-100'}
+		{state === 'hide' ? 'opacity-60' : ''}"
+		title="{bucket.label}: {state === 'iso' ? 'isolated - showing only this' : state === 'hide' ? 'hidden' : 'shown'} — click to cycle Show → Isolate → Hide"
+	>
+		<span class="w-1.5 h-1.5 rounded-full {bucket.swatchColor}" aria-hidden="true"></span>
+		<span class={state === 'hide' ? 'line-through' : ''}>{bucket.label}</span>
+		<span class="text-xs {state === 'iso' ? 'text-blue-500' : 'text-gray-400'}">({count})</span>
+		{#if state === 'iso'}
+			<span class="text-[9px] font-bold uppercase tracking-wide text-blue-500">only</span>
+		{:else if state === 'hide'}
+			<span class="w-1.5 h-1.5 rounded-full bg-red-400" aria-hidden="true"></span>
 		{/if}
-	</div>
+	</button>
 {/snippet}
 
 <!-- Visibility quick-action, reused by both the desktop table row and the
@@ -1430,100 +1352,124 @@
 		{#if readingViewOn && analysis}
 			<ReadingView analysisId={id} textTitle={analysis.title} analysisTitle={analysis.title} />
 		{:else}
-		<!-- Filters -->
-		<div class="bg-white rounded-lg shadow-sm p-4 mb-4 flex flex-wrap gap-4 items-center">
-			<div class="flex items-center gap-2">
-				<input
-					type="search"
-					bind:value={searchQuery}
-					placeholder="Search words..."
-					class="border border-gray-300 rounded px-2 py-1 text-sm w-40"
-				/>
-				{#if searchQuery.trim()}
+		<!-- Toolbar: search, familiarity threshold, sort, and the result count
+		     in one row that wraps naturally on narrow screens instead of nine
+		     separately-floating controls. The three bucket-group rows below
+		     (Bucket/Source/Other, see BUCKETS above) collapse behind the
+		     Filters disclosure so this toolbar is the only thing always
+		     visible. -->
+		<div class="bg-white rounded-lg shadow-sm p-4 mb-4">
+			<div class="flex flex-wrap items-center gap-3">
+				<div class="flex items-center gap-2 flex-1 min-w-[160px] max-w-xs">
+					<input
+						type="search"
+						bind:value={searchQuery}
+						placeholder="Search words..."
+						class="border border-gray-300 rounded px-2 py-1 text-sm w-full"
+					/>
+					{#if searchQuery.trim()}
+						<select
+							bind:value={searchScope}
+							class="border border-gray-300 rounded px-2 py-1 text-sm"
+							title="Search within the filters below, or across every result regardless of them"
+						>
+							<option value="filtered">In filtered results</option>
+							<option value="all">In all results</option>
+						</select>
+					{/if}
+				</div>
+
+				<div class="flex items-center gap-2 text-sm text-gray-700">
+					<span>Hide familiarity ≥</span>
 					<select
-						bind:value={searchScope}
+						bind:value={minFamiliarityFilter}
 						class="border border-gray-300 rounded px-2 py-1 text-sm"
-						title="Search within the filters below, or across every result regardless of them"
 					>
-						<option value="filtered">In filtered results</option>
-						<option value="all">In all results</option>
+						<option value={1}>1</option>
+						<option value={2}>2</option>
+						<option value={3}>3</option>
+						<option value={4}>4</option>
+						<option value={5}>5</option>
+						<option value={6}>Show all</option>
 					</select>
-				{/if}
-			</div>
+				</div>
 
-			<!-- Filter bucket chip bar - three stacked rows, one per group (see
-			     BUCKETS above): Bucket (which pass produced this row - every
-			     word in exactly one), Source (why to trust it - User >
-			     Dictionary > Corpus > None), Other (Starred/Hidden/Garbage/
-			     Non-Chinese - orthogonal display states, not part of either
-			     axis). -->
-			<div class="flex flex-col gap-1.5">
-				{#each bucketGroups as { group, label, buckets } (group)}
-					<div class="flex flex-wrap gap-1.5 items-center">
-						<span class="text-xs font-medium text-gray-400 uppercase tracking-wide">{label}</span>
-						{#each buckets as bucket}
-							{@render filterChip(bucket)}
-						{/each}
-					</div>
-				{/each}
-			</div>
-
-			<div class="flex items-center gap-2 text-sm text-gray-700">
-				<span>Hide familiarity ≥</span>
-				<select
-					bind:value={minFamiliarityFilter}
-					class="border border-gray-300 rounded px-2 py-1 text-sm"
-				>
-					<option value={1}>1</option>
-					<option value={2}>2</option>
-					<option value={3}>3</option>
-					<option value={4}>4</option>
-					<option value={5}>5</option>
-					<option value={6}>Show all</option>
-				</select>
-			</div>
-
-			<!-- Sort control - the desktop table's column headers (sortHeader
-			     snippet) set this same sortColumn/sortDirection state, but the
-			     mobile card list has no headers to click, so this dropdown is
-			     the only way to sort there. Word sorts by raw codepoint, not
-			     pinyin - see compareResults' comment. -->
-			<div class="flex items-center gap-2 text-sm text-gray-700">
-				<span>Sort by</span>
-				<select
-					value={sortColumn ?? ''}
-					onchange={(e) => {
-						const v = e.currentTarget.value as SortColumn | '';
-						if (!v) {
-							sortColumn = null;
-						} else {
-							sortColumn = v;
-							sortDirection = 'asc';
-						}
-					}}
-					class="border border-gray-300 rounded px-2 py-1 text-sm"
-				>
-					<option value="">Default</option>
-					<option value="word">Word</option>
-					<option value="count">Count</option>
-					<option value="source">Source</option>
-					<option value="familiarity">Familiarity</option>
-				</select>
-				{#if sortColumn}
-					<button
-						onclick={() => sortDirection = sortDirection === 'asc' ? 'desc' : 'asc'}
-						class="p-1 rounded text-gray-500 hover:text-blue-600 hover:bg-blue-50"
-						title="Toggle sort direction"
-						aria-label="Toggle sort direction"
+				<!-- Sort control - the desktop table's column headers (sortHeader
+				     snippet) set this same sortColumn/sortDirection state, but the
+				     mobile card list has no headers to click, so this dropdown is
+				     the only way to sort there. Word sorts by raw codepoint, not
+				     pinyin - see compareResults' comment. -->
+				<div class="flex items-center gap-2 text-sm text-gray-700">
+					<span>Sort by</span>
+					<select
+						value={sortColumn ?? ''}
+						onchange={(e) => {
+							const v = e.currentTarget.value as SortColumn | '';
+							if (!v) {
+								sortColumn = null;
+							} else {
+								sortColumn = v;
+								sortDirection = 'asc';
+							}
+						}}
+						class="border border-gray-300 rounded px-2 py-1 text-sm"
 					>
-						{@render iconChevron(sortDirection === 'asc')}
-					</button>
-				{/if}
+						<option value="">Default</option>
+						<option value="word">Word</option>
+						<option value="count">Count</option>
+						<option value="source">Source</option>
+						<option value="familiarity">Familiarity</option>
+					</select>
+					{#if sortColumn}
+						<button
+							onclick={() => sortDirection = sortDirection === 'asc' ? 'desc' : 'asc'}
+							class="p-1 rounded text-gray-500 hover:text-blue-600 hover:bg-blue-50"
+							title="Toggle sort direction"
+							aria-label="Toggle sort direction"
+						>
+							{@render iconChevron(sortDirection === 'asc')}
+						</button>
+					{/if}
+				</div>
+
+				<span class="text-sm text-gray-400 sm:ml-auto">
+					Showing {filteredResults().length} of {analysis?.results.length ?? 0} words
+				</span>
 			</div>
 
-			<span class="text-sm text-gray-400">
-				Showing {filteredResults().length} of {analysis?.results.length ?? 0} words
-			</span>
+			<!-- Filters disclosure - collapsed by default on a first-ever
+			     narrow-viewport visit (see onMount), remembers whatever the
+			     user leaves it at otherwise. The badge counts chips off their
+			     default state and always occupies the same box (styled muted
+			     at zero rather than unmounting), so toggling it never shifts
+			     the toolbar's height. -->
+			<button
+				type="button"
+				onclick={() => filtersOpen = !filtersOpen}
+				aria-expanded={filtersOpen}
+				aria-controls="filter-groups"
+				class="mt-3 pt-3 border-t border-gray-100 w-full flex items-center gap-2 text-left"
+			>
+				<svg class="w-3.5 h-3.5 text-gray-400 shrink-0" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M3 4h14l-5.5 6.5v5L8.5 17v-6.5L3 4z"/></svg>
+				<span class="text-sm font-semibold text-gray-700">Filters</span>
+				<span class="text-xs font-bold rounded-full px-2 py-0.5 border {activeBucketCount > 0 ? 'text-blue-700 bg-blue-50 border-blue-200' : 'text-gray-400 bg-transparent border-gray-200'}">
+					{activeBucketCount > 0 ? `${activeBucketCount} active` : 'None active'}
+				</span>
+				<svg class="w-3.5 h-3.5 text-gray-400 ml-auto transition-transform {filtersOpen ? '' : '-rotate-90'}" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8l4 4 4-4"/></svg>
+			</button>
+
+			{#if filtersOpen}
+				<div id="filter-groups" class="flex flex-col gap-1.5 mt-3">
+					{#each bucketGroups as { group, label, buckets } (group)}
+						<div class="flex flex-wrap items-center gap-1.5 bg-gray-50 border border-gray-200 rounded-lg px-2.5 py-2">
+							<span class="text-[10px] font-bold text-gray-400 uppercase tracking-wide pr-1">{label}</span>
+							{#each buckets as bucket}
+								{@render filterChip(bucket)}
+							{/each}
+						</div>
+					{/each}
+				</div>
+			{/if}
 		</div>
 
 		<div class="flex flex-col sm:flex-row gap-4">
