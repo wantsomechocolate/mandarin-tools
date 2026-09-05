@@ -4,7 +4,7 @@
 	import { isLoggedIn } from '$lib/auth';
 	import * as api from '$lib/api';
 	import type { Scope } from '$lib/api';
-	import { familiarityLabel, familiarityColor, evidenceTierLabel, evidenceTierColor } from '$lib/wordDisplay';
+	import { familiarityLabel, familiarityColor, evidenceTierLabel, evidenceTierColor, bucketLabel, bucketColor } from '$lib/wordDisplay';
 	import { goto } from '$app/navigation';
 	import type { PageProps } from './$types';
 	import WordDetailPanel from '$lib/components/WordDetailPanel.svelte';
@@ -234,6 +234,13 @@
 		return /[\u4e00-\u9fff]/.test(word);
 	}
 
+	// Shown alongside the evidence-tier chip only when the row's bucket isn't
+	// the default "Main segmentation" case - keeps most rows exactly as dense
+	// as they are today; only Extra Match/Repeated Sequence rows gain a chip.
+	function showsBucketChip(source: string): boolean {
+		return bucketLabel(source) !== 'Main segmentation';
+	}
+
 	// --- Filter bucket registry -------------------------------------------
 	// One array of bucket definitions, not scattered booleans - this is what
 	// the chip bar renders from and what future buckets get added to. Each
@@ -250,24 +257,37 @@
 		iconKey: string;
 		test: (r: WordResult) => boolean;
 		defaultHide: boolean;
+		group: 'bucket' | 'tier' | 'other';
 	}
 
 	const BUCKETS: Bucket[] = [
-		{ id: 'garbage', label: 'Garbage', iconKey: 'garbage', test: (r) => r.is_garbage, defaultHide: true },
-		{ id: 'hidden', label: 'Hidden', iconKey: 'hidden', test: (r) => r.is_hidden, defaultHide: true },
-		{ id: 'userWord', label: 'User words', iconKey: 'userWord', test: (r) => r.is_user_word, defaultHide: false },
-		{ id: 'extraMatch', label: 'Extra matches', iconKey: 'extraMatch', test: (r) => r.source === 'longest_match_only', defaultHide: false },
-		{ id: 'unrecognized', label: 'Unrecognized sequences', iconKey: 'unrecognized', test: (r) => r.source === 'token', defaultHide: false },
-		{ id: 'unknown', label: 'Unknown', iconKey: 'unknown', test: (r) => r.source === 'unknown', defaultHide: false },
-		// 'trie' kept for legacy rows - see AnalysisResult.source's CHECK
-		// constraint comment (models.py).
-		{ id: 'dag', label: 'DAG words', iconKey: 'dag', test: (r) => r.source === 'dag' || r.source === 'trie', defaultHide: false },
+		// --- Bucket axis: which pass produced this row. Every word falls into
+		// exactly one of these three - see bucketLabel/bucketColor
+		// (wordDisplay.ts) for the legacy-value folding (trie/longest_match_only/
+		// token from before the segmentation-engine rework).
+		{ id: 'mainSegmentation', label: 'Main segmentation', iconKey: 'mainSegmentation', group: 'bucket', test: (r) => r.source === 'dag' || r.source === 'overlay' || r.source === 'unknown' || r.source === 'trie', defaultHide: false },
+		{ id: 'extraMatch', label: 'Extra matches', iconKey: 'extraMatch', group: 'bucket', test: (r) => r.source === 'extra_match' || r.source === 'longest_match_only', defaultHide: false },
+		{ id: 'repeatedSequence', label: 'Repeated sequences', iconKey: 'repeatedSequence', group: 'bucket', test: (r) => r.source === 'repeated_sequence' || r.source === 'token', defaultHide: false },
+		// --- Tier axis: why to trust the word. Garbage takes precedence over
+		// the other four regardless of evidence_tier (see GarbageWord's
+		// docstring, models.py) - the other four test evidence_tier directly,
+		// which is resolved the same way across all three buckets above (unlike
+		// the old 'unknown' bucket below, which only ever matched a best-guess
+		// row - a repeated-sequence or extra-match find with no dictionary/
+		// corpus/user backing at all now correctly shows as None too).
+		{ id: 'garbage', label: 'Garbage', iconKey: 'garbage', group: 'tier', test: (r) => r.is_garbage, defaultHide: true },
+		{ id: 'userTier', label: 'User', iconKey: 'userTier', group: 'tier', test: (r) => r.is_user_word, defaultHide: false },
+		{ id: 'dictionaryTier', label: 'Dictionary', iconKey: 'dictionaryTier', group: 'tier', test: (r) => r.evidence_tier === 'dictionary', defaultHide: false },
+		{ id: 'corpusTier', label: 'Corpus', iconKey: 'corpusTier', group: 'tier', test: (r) => r.evidence_tier === 'corpus', defaultHide: false },
+		{ id: 'noneTier', label: 'None', iconKey: 'noneTier', group: 'tier', test: (r) => r.evidence_tier === 'unknown', defaultHide: false },
+		// --- Other: orthogonal display states, not part of either axis.
+		{ id: 'hidden', label: 'Hidden', iconKey: 'hidden', group: 'other', test: (r) => r.is_hidden, defaultHide: true },
 		// Starred has no resolved WordResult field (unlike garbage/hidden/
 		// user-word) - it's the same separately-fetched `starredWords` Set
 		// the row/card quick-actions already use, so this stays live via
 		// closure rather than needing a backend round trip of its own.
-		{ id: 'starred', label: 'Starred', iconKey: 'starred', test: (r) => starredWords.has(r.word), defaultHide: false },
-		{ id: 'nonChinese', label: 'Non-Chinese', iconKey: 'nonChinese', test: (r) => !containsChinese(r.word), defaultHide: true },
+		{ id: 'starred', label: 'Starred', iconKey: 'starred', group: 'other', test: (r) => starredWords.has(r.word), defaultHide: false },
+		{ id: 'nonChinese', label: 'Non-Chinese', iconKey: 'nonChinese', group: 'other', test: (r) => !containsChinese(r.word), defaultHide: true },
 	];
 
 	let bucketState: Record<string, BucketFilterState> = $state(
@@ -370,6 +390,15 @@
 		}
 		return sortDirection === 'desc' ? -cmp : cmp;
 	}
+
+	const GROUP_LABELS: Record<string, string> = { bucket: 'Bucket', tier: 'Tier', other: 'Other' };
+	const bucketGroups = $derived(
+		(['bucket', 'tier', 'other'] as const).map((group) => ({
+			group,
+			label: GROUP_LABELS[group],
+			buckets: BUCKETS.filter((b) => b.group === group),
+		}))
+	);
 
 	const filteredResults = $derived(() => {
 		if (!analysis) return [];
@@ -1107,14 +1136,15 @@
 	{/each}
 {/snippet}
 
-<!-- Filter chip icons. Garbage/Hidden/User words/Starred reuse the exact
+<!-- Filter chip icons. Garbage/Hidden/User (tier)/Starred reuse the exact
      icons their own row/card quick-actions already use (iconTrash/iconEye/
-     iconBookmark/iconStar) - the remaining buckets (extra match/
-     unrecognized/unknown/dag/non-Chinese) have no pre-existing icon
-     anywhere in this app, so these are new, minimal, purpose-built shapes,
-     kept in the same stroke-width/viewBox style as the rest of the icon
-     set. iconLatin reuses the small-letter-badge visual language from
-     scopeBadge above (a plain glyph in a circle) as a deliberate callback. -->
+     iconBookmark/iconStar) - the remaining bucket/tier keys (extra match/
+     repeated sequence/none/main segmentation/dictionary/corpus/non-Chinese)
+     have no pre-existing icon anywhere in this app, so these are new,
+     minimal, purpose-built shapes, kept in the same stroke-width/viewBox
+     style as the rest of the icon set. iconLatin reuses the small-letter-
+     badge visual language from scopeBadge above (a plain glyph in a
+     circle) as a deliberate callback. -->
 {#snippet iconPlus()}
 	<svg class="w-4 h-4" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
 		<circle cx="10" cy="10" r="8" />
@@ -1153,15 +1183,32 @@
 	</svg>
 {/snippet}
 
+{#snippet iconBook()}
+	<svg class="w-4 h-4" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+		<path d="M10 5.5c-1.2-1-3-1.5-5.5-1.5v10c2.5 0 4.3.5 5.5 1.5c1.2-1 3-1.5 5.5-1.5V4c-2.5 0-4.3.5-5.5 1.5Z" />
+		<path d="M10 5.5v10" />
+	</svg>
+{/snippet}
+
+{#snippet iconStack()}
+	<svg class="w-4 h-4" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+		<rect x="3" y="3.5" width="14" height="3.5" rx="0.5" />
+		<rect x="3" y="8.25" width="14" height="3.5" rx="0.5" />
+		<rect x="3" y="13" width="14" height="3.5" rx="0.5" />
+	</svg>
+{/snippet}
+
 {#snippet bucketIcon(key: string)}
 	{#if key === 'garbage'}{@render iconTrash()}
 	{:else if key === 'hidden'}{@render iconEye(false)}
-	{:else if key === 'userWord'}{@render iconBookmark(true)}
+	{:else if key === 'userTier'}{@render iconBookmark(true)}
 	{:else if key === 'starred'}{@render iconStar(true)}
 	{:else if key === 'extraMatch'}{@render iconPlus()}
-	{:else if key === 'unrecognized'}{@render iconSequence()}
-	{:else if key === 'unknown'}{@render iconQuestion()}
-	{:else if key === 'dag'}{@render iconSegments()}
+	{:else if key === 'repeatedSequence'}{@render iconSequence()}
+	{:else if key === 'noneTier'}{@render iconQuestion()}
+	{:else if key === 'mainSegmentation'}{@render iconSegments()}
+	{:else if key === 'dictionaryTier'}{@render iconBook()}
+	{:else if key === 'corpusTier'}{@render iconStack()}
 	{:else if key === 'nonChinese'}{@render iconLatin()}
 	{/if}
 {/snippet}
@@ -1413,12 +1460,20 @@
 				{/if}
 			</div>
 
-			<!-- Filter bucket chip bar - order matches the review workflow:
-			     Garbage, Hidden, User words, Extra matches, Unrecognized,
-			     Unknown, DAG words, Starred, Non-Chinese (see BUCKETS above). -->
-			<div class="flex flex-wrap gap-1.5 items-center">
-				{#each BUCKETS as bucket}
-					{@render filterChip(bucket)}
+			<!-- Filter bucket chip bar - three visually-grouped clusters
+			     matching the two real axes plus orthogonal display states (see
+			     BUCKETS above): Bucket (which pass produced this row - every
+			     word in exactly one), Tier (why to trust it - Garbage takes
+			     precedence over the other four), Other (Hidden/Starred/
+			     Non-Chinese, unrelated to either axis). -->
+			<div class="flex flex-wrap gap-x-3 gap-y-1.5 items-center">
+				{#each bucketGroups as { group, label, buckets } (group)}
+					<div class="flex flex-wrap gap-1.5 items-center">
+						<span class="text-xs font-medium text-gray-400 uppercase tracking-wide">{label}</span>
+						{#each buckets as bucket}
+							{@render filterChip(bucket)}
+						{/each}
+					</div>
 				{/each}
 			</div>
 
@@ -1460,7 +1515,7 @@
 					<option value="">Default</option>
 					<option value="word">Word</option>
 					<option value="count">Count</option>
-					<option value="source">Source</option>
+					<option value="source">Tier</option>
 					<option value="familiarity">Familiarity</option>
 				</select>
 				{#if sortColumn}
@@ -1491,7 +1546,7 @@
 							<tr>
 								<th class="text-left px-4 py-3 text-sm font-medium text-gray-700">{@render sortHeader('Word', 'word')}</th>
 								<th class="text-left px-4 py-3 text-sm font-medium text-gray-700">{@render sortHeader('Count', 'count')}</th>
-								<th class="text-left px-4 py-3 text-sm font-medium text-gray-700">{@render sortHeader('Source', 'source')}</th>
+								<th class="text-left px-4 py-3 text-sm font-medium text-gray-700">{@render sortHeader('Tier', 'source')}</th>
 								<th class="text-left px-4 py-3 text-sm font-medium text-gray-700">{@render sortHeader('Familiarity', 'familiarity')}</th>
 								<th class="text-left px-4 py-3 text-sm font-medium text-gray-700">Mark as</th>
 								<th class="text-left px-4 py-3 text-sm font-medium text-gray-700">Actions</th>
@@ -1520,12 +1575,17 @@
 									<td class="px-4 py-3 text-gray-600">{result.count}</td>
 									<td class="px-4 py-3">
 										<div class="flex flex-wrap gap-1">
-											<span
-												class="text-xs px-2 py-1 rounded-full {evidenceTierColor(result.evidence_tier)}"
-												title={result.source === 'longest_match_only' ? 'Found only by the legacy longest-matching pass — not confirmed by the main segmenter. Likely a dictionary gap; review before trusting it.' : ''}
-											>
+											<span class="text-xs px-2 py-1 rounded-full {evidenceTierColor(result.evidence_tier)}">
 												{evidenceTierLabel(result.evidence_tier)}
 											</span>
+											{#if showsBucketChip(result.source)}
+												<span
+													class="text-xs px-2 py-1 rounded-full {bucketColor(result.source)}"
+													title={result.source === 'longest_match_only' ? 'Found only by the legacy longest-matching pass — not confirmed by the main segmenter. Likely a dictionary gap; review before trusting it.' : ''}
+												>
+													{bucketLabel(result.source)}
+												</span>
+											{/if}
 											{#if garbageWords.has(result.word)}
 												<span
 													class="text-xs px-2 py-1 rounded-full bg-red-100 text-red-700"
@@ -1672,12 +1732,17 @@
 							{#if expandedInfo.has(result.word)}
 								<div class="flex flex-wrap items-center gap-2 border-t border-gray-50 px-4 pt-2 pb-3 text-sm">
 									<span class="text-gray-600">Count: {result.count}</span>
-									<span
-										class="text-xs px-2 py-1 rounded-full {evidenceTierColor(result.evidence_tier)}"
-										title={result.source === 'longest_match_only' ? 'Found only by the legacy longest-matching pass — not confirmed by the main segmenter. Likely a dictionary gap; review before trusting it.' : ''}
-									>
+									<span class="text-xs px-2 py-1 rounded-full {evidenceTierColor(result.evidence_tier)}">
 										{evidenceTierLabel(result.evidence_tier)}
 									</span>
+									{#if showsBucketChip(result.source)}
+										<span
+											class="text-xs px-2 py-1 rounded-full {bucketColor(result.source)}"
+											title={result.source === 'longest_match_only' ? 'Found only by the legacy longest-matching pass — not confirmed by the main segmenter. Likely a dictionary gap; review before trusting it.' : ''}
+										>
+											{bucketLabel(result.source)}
+										</span>
+									{/if}
 									{#if garbageWords.has(result.word)}
 										<span class="text-xs px-2 py-1 rounded-full bg-red-100 text-red-700">garbage</span>
 									{/if}

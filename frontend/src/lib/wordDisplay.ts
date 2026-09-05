@@ -25,52 +25,60 @@ export function familiarityColor(score: number | null | undefined): string {
     return colors[score] ?? 'bg-gray-100 text-gray-600';
 }
 
-// Shared source label/color mapping - moved here from the results page so
-// the reading view (ReadingView.svelte) can reuse the exact same "Color
-// by: Source" scale instead of a third copy of this lookup table.
-export function sourceLabel(source: string | null | undefined): string {
-    if (!source) return 'unknown';
+// Bucket label/color mapping - the "which pass produced this row" axis,
+// orthogonal to evidence tier below. Three buckets going forward: best-
+// guess segmentation (dag/overlay/unknown - the DP's single chosen path,
+// including its own "unknown" fallback), Extra match (extra_match - a
+// full-segmentation candidate that existed but wasn't chosen), Repeated
+// sequence (repeated_sequence - a tokenizer/repeated-substring find).
+// Legacy pre-rework values map onto their semantic successor so old
+// analyses still bucket sensibly: trie -> main segmentation (same meaning
+// as dag, pre-rename), longest_match_only -> extra match, token -> repeated
+// sequence.
+export function bucketLabel(source: string | null | undefined): string {
+    if (!source) return 'Main segmentation';
     const labels: Record<string, string> = {
-        dag: 'segmenter',
-        overlay: 'your word',
-        token: 'unknown seq.',
-        unknown: 'unknown',
-        longest_match_only: 'extra match',
-        trie: 'segmenter', // legacy label from before the DAG segmenter
+        dag: 'Main segmentation',
+        overlay: 'Main segmentation',
+        unknown: 'Main segmentation',
+        trie: 'Main segmentation',
+        extra_match: 'Extra match',
+        longest_match_only: 'Extra match',
+        repeated_sequence: 'Repeated sequence',
+        token: 'Repeated sequence',
     };
     return labels[source] ?? source;
 }
 
-export function sourceColor(source: string | null | undefined): string {
-    if (!source) return 'bg-gray-100 text-gray-600';
+export function bucketColor(source: string | null | undefined): string {
+    if (!source) return 'bg-blue-100 text-blue-700';
     const colors: Record<string, string> = {
         dag: 'bg-blue-100 text-blue-700',
+        overlay: 'bg-blue-100 text-blue-700',
+        unknown: 'bg-blue-100 text-blue-700',
         trie: 'bg-blue-100 text-blue-700',
-        overlay: 'bg-indigo-100 text-indigo-700',
-        token: 'bg-purple-100 text-purple-700',
-        unknown: 'bg-gray-100 text-gray-600',
+        extra_match: 'bg-amber-100 text-amber-700',
         longest_match_only: 'bg-amber-100 text-amber-700',
+        repeated_sequence: 'bg-purple-100 text-purple-700',
+        token: 'bg-purple-100 text-purple-700',
     };
     return colors[source] ?? 'bg-gray-100 text-gray-600';
 }
 
 // Evidence-tier label/color mapping - the primary per-row chip (results
-// table/cards, ReadingView's "Color by" mode), replacing sourceLabel/
-// sourceColor in that role. Orthogonal to source: source answers "which
-// pipeline pass produced this row" (still shown via the BUCKETS filter
-// bar and the longest_match_only warning, unchanged); evidence tier
-// answers "why should a user trust this as a real word" (User > Dictionary
-// > Corpus > Unknown - see WordResult.evidence_tier's docstring,
-// schemas.py, for the resolution hierarchy). sourceLabel/sourceColor stay
-// exactly as they are for source itself - they're just no longer what's
-// rendered as the main chip.
+// table/cards, ReadingView's "Color by" mode). Orthogonal to bucket above:
+// bucket answers "which pass produced this row" (bucketLabel/bucketColor,
+// still shown via the BUCKETS filter bar and the per-row bucket chip);
+// evidence tier answers "why should a user trust this as a real word"
+// (User > Dictionary > Corpus > None - see WordResult.evidence_tier's
+// docstring, schemas.py, for the resolution hierarchy).
 export function evidenceTierLabel(tier: string | null | undefined): string {
-    if (!tier) return 'Unknown';
+    if (!tier) return 'None';
     const labels: Record<string, string> = {
         user: 'Your word',
         dictionary: 'Dictionary',
         corpus: 'Corpus',
-        unknown: 'Unknown',
+        unknown: 'None',
     };
     return labels[tier] ?? tier;
 }
@@ -78,7 +86,7 @@ export function evidenceTierLabel(tier: string | null | undefined): string {
 export function evidenceTierColor(tier: string | null | undefined): string {
     if (!tier) return 'bg-gray-100 text-gray-600';
     const colors: Record<string, string> = {
-        // Matches overlay's existing color (sourceColor) - both mean "this
+        // Matches overlay's existing color (bucketColor) - both mean "this
         // word exists in segmentation because of the user's own data."
         user: 'bg-indigo-100 text-indigo-700',
         // Matches dag/trie's existing color - Dictionary is the direct
@@ -86,9 +94,9 @@ export function evidenceTierColor(tier: string | null | undefined): string {
         // dictionary word, not just something the DP happened to route
         // through).
         dictionary: 'bg-blue-100 text-blue-700',
-        // A new, distinct color (not reused from sourceColor) - "real
+        // A new, distinct color (not reused from bucketColor) - "real
         // corpus frequency, but not curated by HSK/CC-CEDICT" is a
-        // genuinely different signal from either Dictionary or Unknown,
+        // genuinely different signal from either Dictionary or None,
         // and needs its own color to read as a third thing at a glance.
         corpus: 'bg-teal-100 text-teal-700',
         unknown: 'bg-gray-100 text-gray-600',
