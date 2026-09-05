@@ -49,14 +49,18 @@ def analyze_text(
 
     - best-guess: the DP's single chosen path (aggregate_segments) -
       source is "dag"/"overlay"/"unknown" per word, exactly as before.
-    - extra matches: (full segmentation minus best-guess) unioned with the
-      tokenizer's repeated-sequence finds not already in best-guess - one
-      flat "source": "extra_match" bucket, replacing what the old
+    - extra matches: full segmentation minus best-guess (source
+      "extra_match") unioned with the tokenizer's repeated-sequence finds
+      not already in best-guess (source "repeated_sequence") - two
+      independently-filterable buckets, replacing what the old
       segmentor.py's longest_matching was approximating (a second,
-      lower-confidence pass over the same text) more completely: it
-      includes user-overlay words, real per-occurrence positions, and no
-      word-type coarseness, all for free from the same dag build the DP
-      walk already needed - never a second, separate scan.
+      lower-confidence pass over the same text) more completely: full
+      segmentation includes user-overlay words, real per-occurrence
+      positions, and no word-type coarseness, all for free from the same
+      dag build the DP walk already needed - never a second, separate scan.
+      The two are disjoint by construction (tokenize() skips anything
+      that's a complete trie/overlay word), so no reconciliation is needed
+      between them.
 
     Full segmentation's positions win over the tokenizer's on a word found
     by both (the tokenizer never records positions at all - see
@@ -97,11 +101,13 @@ def analyze_text(
         min_count=min_token_count,
     )
 
-    extra = {**repeated, **full}
-    extra = {
-        word: {**data, "source": "extra_match"}
-        for word, data in extra.items() if word not in best_guess
-    }
+    repeated_tagged = {word: {**data, "source": "repeated_sequence"} for word, data in repeated.items()}
+    full_tagged = {word: {**data, "source": "extra_match"} for word, data in full.items()}
+    # full wins on a word found by both - shouldn't happen in practice given
+    # tokenize()'s overlay_trie-aware skip above, but this keeps the same
+    # defensive tie-break the old flat merge implicitly had.
+    extra = {**repeated_tagged, **full_tagged}
+    extra = {word: data for word, data in extra.items() if word not in best_guess}
 
     return {**extra, **best_guess}
 

@@ -434,12 +434,13 @@ def analyze(
             userword_scopes=user_words.get(word, _uw_default)["scopes"],
             userword_resolved_affects_dag=user_words.get(word, _uw_default)["resolved_affects_dag"],
             userword_scope_affects_dag=user_words.get(word, _uw_default)["scope_affects_dag"],
-            # 'user' wins whenever an active (resolved_affects_dag=true)
-            # UserWord entry applies at this scope, even if the word is
-            # also dictionary/corpus-backed - see WordResult.evidence_tier's
+            # 'user' wins whenever ANY applicable UserWord entry exists at
+            # this scope, active or not - affects_dag only controls
+            # segmentation weight, not evidence trust - even if the word is
+            # also dictionary/corpus-backed. See WordResult.evidence_tier's
             # docstring, schemas.py, for the full hierarchy.
             evidence_tier=(
-                "user" if word in user_words and user_words[word]["resolved_affects_dag"]
+                "user" if word in user_words
                 else dictionary_tiers.get(word, "unknown")
             ),
         )
@@ -504,7 +505,7 @@ def get_analysis(
             userword_resolved_affects_dag=user_words.get(r.word, _uw_default)["resolved_affects_dag"],
             userword_scope_affects_dag=user_words.get(r.word, _uw_default)["scope_affects_dag"],
             evidence_tier=(
-                "user" if r.word in user_words and user_words[r.word]["resolved_affects_dag"]
+                "user" if r.word in user_words
                 else dictionary_tiers.get(r.word, "unknown")
             ),
         )
@@ -613,7 +614,7 @@ def get_analysis_spans(
             userword_scopes=user_words.get(word, _uw_default)["scopes"],
             userword_resolved_affects_dag=user_words.get(word, _uw_default)["resolved_affects_dag"],
             evidence_tier=(
-                "user" if word in user_words and user_words[word]["resolved_affects_dag"]
+                "user" if word in user_words
                 else dictionary_tiers.get(word, "unknown")
             ),
         ))

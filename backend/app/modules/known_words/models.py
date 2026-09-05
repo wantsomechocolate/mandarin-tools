@@ -514,7 +514,7 @@ class AnalysisResult(Base):
     analysis_id: Mapped[int] = mapped_column(Integer, ForeignKey("analyses.id"), nullable=False, index=True)
     word: Mapped[str] = mapped_column(String, nullable=False)
     count: Mapped[int] = mapped_column(Integer, nullable=False)
-    source: Mapped[str] = mapped_column(String, nullable=False)  # "dag", "overlay", "unknown", "extra_match" (going forward), or a legacy "trie"/"token"/"longest_match_only" value on a pre-retirement row (see ck_analysis_results_source - kept in the allowed set, never backfilled)
+    source: Mapped[str] = mapped_column(String, nullable=False)  # "dag", "overlay", "unknown", "extra_match", "repeated_sequence" (going forward), or a legacy "trie"/"token"/"longest_match_only"/pre-split-ambiguous "extra_match" value on an older row (see ck_analysis_results_source - kept in the allowed set, never backfilled)
     # [[start, end], ...] character offsets into the parent InputText.body,
     # exclusive end, one pair per occurrence - powers "show this word in
     # context" without re-running segmentation. Only populated for
@@ -530,7 +530,7 @@ class AnalysisResult(Base):
     __table_args__ = (
         Index("ix_analysis_results_analysis_word", "analysis_id", "word", unique=True),
         CheckConstraint(
-            "source IN ('trie', 'token', 'unknown', 'dag', 'overlay', 'longest_match_only', 'extra_match')",
+            "source IN ('trie', 'token', 'unknown', 'dag', 'overlay', 'longest_match_only', 'extra_match', 'repeated_sequence')",
             name="ck_analysis_results_source",
         ),
     )

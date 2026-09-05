@@ -74,15 +74,16 @@ class WordResult(BaseModel):
     userword_scope_affects_dag: dict[str, bool | None] = {}
     # Resolved (never persisted) same as is_garbage/is_hidden - a second,
     # orthogonal dimension from `source` above: `source` answers "which
-    # pipeline pass produced this row" (trie/dag/overlay/token/unknown/
-    # longest_match_only, unchanged, still backs the filter-bucket bar and
-    # the longest_match_only warning); `evidence_tier` answers "why should
-    # a user trust this as a real word," resolved fresh from current
-    # UserWord/dictionary_words state on every read - see
-    # service.get_word_dictionary_tiers and router.py's per-endpoint
-    # resolution. Hierarchy: 'user' (an active UserWord entry at this
-    # scope) > 'dictionary' (HSK and/or CC-CEDICT backed) > 'corpus' (real
-    # corpus frequency, no dictionary backing) > 'unknown'.
+    # pipeline pass produced this row" (dag/overlay/unknown for best-guess,
+    # extra_match/repeated_sequence for everything else, or a legacy
+    # trie/token/longest_match_only/pre-split-ambiguous extra_match value on
+    # an older row); `evidence_tier` answers "why should a user trust this
+    # as a real word," resolved fresh from current UserWord/dictionary_words
+    # state on every read - see service.get_word_dictionary_tiers and
+    # router.py's per-endpoint resolution. Hierarchy: 'user' (an applicable
+    # UserWord entry at this scope, active or not) > 'dictionary' (HSK
+    # and/or CC-CEDICT backed) > 'corpus' (real corpus frequency, no
+    # dictionary backing) > 'unknown'.
     evidence_tier: Literal["user", "dictionary", "corpus", "unknown"] = "unknown"
 
 
