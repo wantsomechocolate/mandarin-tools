@@ -72,6 +72,18 @@ class WordResult(BaseModel):
     # scope's actual setting instead of only the winner's - see
     # _resolve_user_word_detail's docstring, router.py.
     userword_scope_affects_dag: dict[str, bool | None] = {}
+    # Resolved (never persisted) same as is_garbage/is_hidden - a second,
+    # orthogonal dimension from `source` above: `source` answers "which
+    # pipeline pass produced this row" (trie/dag/overlay/token/unknown/
+    # longest_match_only, unchanged, still backs the filter-bucket bar and
+    # the longest_match_only warning); `evidence_tier` answers "why should
+    # a user trust this as a real word," resolved fresh from current
+    # UserWord/dictionary_words state on every read - see
+    # service.get_word_dictionary_tiers and router.py's per-endpoint
+    # resolution. Hierarchy: 'user' (an active UserWord entry at this
+    # scope) > 'dictionary' (HSK and/or CC-CEDICT backed) > 'corpus' (real
+    # corpus frequency, no dictionary backing) > 'unknown'.
+    evidence_tier: Literal["user", "dictionary", "corpus", "unknown"] = "unknown"
 
 
 class CompareSegmentationRequest(BaseModel):
@@ -90,11 +102,11 @@ class SegmentedWord(BaseModel):
 
 class CompareSegmentationResponse(BaseModel):
     body: str
-    longest_match_results: list[SegmentedWord]
-    dag_results: list[SegmentedWord]
+    best_guess_results: list[SegmentedWord]
+    full_segmentation_results: list[SegmentedWord]
     # words present in one result set but not the other, for a quick diff
-    only_in_longest_match: list[str]
-    only_in_dag: list[str]
+    only_in_best_guess: list[str]
+    only_in_full_segmentation: list[str]
 
 
 class AnalysisResponse(BaseModel):
@@ -135,6 +147,11 @@ class AnalysisSpan(BaseModel):
     rarity_tier: str | None = None
     userword_scopes: list[str] = []
     userword_resolved_affects_dag: bool = True
+    # Same resolved-fresh evidence tier as WordResult.evidence_tier (see its
+    # docstring) - null on a "gap" span, same nullable pattern `source`
+    # already uses here, since both are only meaningful for a "word" span.
+    # Powers ReadingView's "Color by: Dictionary" mode.
+    evidence_tier: Literal["user", "dictionary", "corpus", "unknown"] | None = None
 
 
 class AnalysisSpansResponse(BaseModel):
@@ -305,14 +322,12 @@ class InputTextResponse(BaseModel):
 
 class StopwordCreate(BaseModel):
     word: str
-    algo_type: str  # "longest_match" or "tokenization"
     is_override: bool = False
 
 
 class StopwordResponse(BaseModel):
     id: int
     word: str
-    algo_type: str
     is_override: bool
     user_id: int | None = None
 

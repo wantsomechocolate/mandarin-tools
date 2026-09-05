@@ -24,6 +24,18 @@ class Trie:
     def get_child(self, node: TrieNode, char: str) -> TrieNode | None:
         return node.children.get(char)
 
+    def contains(self, word: str) -> bool:
+        """Whether `word` was inserted as a complete word (not just a
+        prefix of something else) - the same root->children walk already
+        duplicated by hand in tokenizer.py/segmentor.py, now a single
+        shared method."""
+        node = self.root
+        for char in word:
+            if char not in node.children:
+                return False
+            node = node.children[char]
+        return node.is_word
+
 
 def build_trie(words: list[str]) -> Trie:
     trie = Trie()

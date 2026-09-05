@@ -12,8 +12,7 @@ locally longest match at each position.
 import pytest
 
 from app.modules.known_words.trie import Trie
-from app.modules.known_words.dag_segmentor import Segmenter, UserOverlay, aggregate_segments
-from app.modules.known_words.segmentor import longest_matching
+from app.modules.known_words.dag_segmentor import Segmenter, UserOverlay, aggregate_segments, aggregate_full_segmentation
 
 
 # A small hand-built dictionary covering the classic ambiguous case
@@ -67,27 +66,68 @@ class TestDagSegmenterBasics:
         assert result[0].in_dictionary is False
 
 
-class TestDagVsLongestMatch:
+class TestDictionaryOnlyWords:
     """
-    The core case DAG+DP is supposed to fix: longest-matching greedily grabs
-    研究生 (the longest match starting at position 0), which then forces an
-    awkward split of 命 and 起源 from what should be 生命起源. DAG+DP should
-    prefer 研究/生命/起源 instead, since that path scores higher overall even
-    though 研究生 alone is a "longer" individual match.
+    Covers the in_dictionary bug fix: a word can be a real trie hit (backed
+    by HSK/CC-CEDICT alone, in the real dictionary_words data) with no
+    frequency row at all - self.freq (segmenter_loader._build_segmenter) is
+    deliberately restricted to rows with usable frequency, while the trie
+    is built from every dictionary_words row regardless. in_dictionary must
+    key off trie membership, not `word in self.freq`, or a legitimate
+    dictionary word the DAG walked straight through gets mislabeled
+    "unknown".
     """
 
-    def test_dag_prefers_globally_better_split(self, segmenter: Segmenter, trie: Trie):
+    def test_trie_contains_matches_inserted_words(self):
+        trie = Trie()
+        trie.insert("你好")
+        assert trie.contains("你好") is True
+        assert trie.contains("你") is False  # prefix only, never inserted as its own word
+        assert trie.contains("再见") is False  # not in the trie at all
+
+    def test_word_with_no_frequency_row_still_counts_as_in_dictionary(self):
+        # "谊" is in the trie (as it would be via an HSK/CC-CEDICT-only
+        # dictionary_words row) but deliberately absent from freq_dict -
+        # freq_dict must stay non-empty for Segmenter's own validation.
+        trie = Trie()
+        trie.insert("我")
+        trie.insert("谊")
+        segmenter = Segmenter(trie=trie, freq_dict={"我": 50000})
+
+        result = segmenter.segment("我谊")
+        assert words(result) == ["我", "谊"]
+        yi_result = next(r for r in result if r.word == "谊")
+        assert yi_result.in_dictionary is True
+
+        agg = aggregate_segments(result)
+        assert agg["谊"]["source"] == "dag"  # not "unknown"
+
+
+class TestDagChoosesGloballyBetterSplit:
+    """
+    The core benefit DP scoring provides over any greedy/local matching
+    approach: 研究生 is a real dictionary word startable at position 0, but
+    taking it forces an awkward split of 命/起源 from what should be
+    生命/起源. The DP should prefer 研究/生命/起源 instead, since that path
+    scores higher overall - even though 研究生 alone is a "longer"
+    individual match at that position.
+    """
+
+    def test_dag_prefers_globally_better_split(self, segmenter: Segmenter):
         text = "研究生命起源"
+        assert words(segmenter.segment(text)) == ["研究", "生命", "起源"]
 
-        dag_result = words(segmenter.segment(text))
-        lm_result_raw = longest_matching(text, trie, stopwords=set())
-        lm_result = list(lm_result_raw.keys())
+    def test_unchosen_local_alternative_still_appears_in_full_segmentation(self, segmenter: Segmenter):
+        # Proves the DP genuinely chose between real alternatives, not that
+        # 研究生 was somehow unreachable - it's still there as a considered-
+        # but-passed-over candidate, just never in best-guess.
+        text = "研究生命起源"
+        dag = segmenter.build_dag(text, overlay=None)
+        best_guess = aggregate_segments(segmenter.segment(text, dag=dag))
+        full = aggregate_full_segmentation(text, dag)
 
-        assert dag_result == ["研究", "生命", "起源"]
-        # Demonstrate the difference actually exists in this fixture -
-        # if longest-matching happened to agree, this test wouldn't be
-        # proving anything about the DP's benefit.
-        assert lm_result != dag_result
+        assert "研究生" not in best_guess
+        assert "研究生" in full
 
 
 class TestUserOverlay:
@@ -115,6 +155,60 @@ class TestUserOverlay:
 
         assert len(segmenter.freq) == original_freq_count
         assert "研究生命" not in segmenter.freq
+
+
+class TestFloorBasedUserWords:
+    """
+    Covers the affects_dag=false rewrite: a UserWord scoped to not affect
+    segmentation is no longer excluded from the overlay entirely - it's
+    still inserted into the trie (so it's always a real candidate) but
+    never given a competitive frequency (see UserOverlay.add_word's
+    docstring), so it essentially never wins best-guess while still
+    surfacing via full segmentation. affects_dag=true keeps behaving
+    exactly as before (regression check, alongside
+    TestUserOverlay.test_overlay_word_wins_over_default_split above).
+    """
+
+    def test_affects_dag_true_still_reliably_wins_best_guess(self, segmenter: Segmenter):
+        overlay = UserOverlay()
+        overlay.add_word("研究生命", freq=None, dominance_floor=segmenter.dominance_floor(), affects_dag=True)
+
+        assert "研究生命" in overlay.freq
+        result = segmenter.segment("研究生命起源", overlay=overlay)
+        assert words(result) == ["研究生命", "起源"]
+
+    def test_affects_dag_false_is_trie_resident_but_not_in_freq(self, segmenter: Segmenter):
+        overlay = UserOverlay()
+        overlay.add_word("生命起源", freq=None, dominance_floor=segmenter.dominance_floor(), affects_dag=False)
+
+        assert overlay.trie.contains("生命起源") is True
+        assert "生命起源" not in overlay.freq
+
+    def test_affects_dag_false_essentially_never_wins_best_guess(self, segmenter: Segmenter):
+        # Without the overlay, "生命"/"起源" (both real, decently-frequent
+        # dictionary words) already split cleanly - a personal word with no
+        # real frequency shouldn't be able to out-score that real
+        # alternative just by existing in the trie.
+        overlay = UserOverlay()
+        overlay.add_word("生命起源", freq=None, dominance_floor=segmenter.dominance_floor(), affects_dag=False)
+
+        result = segmenter.segment("生命起源", overlay=overlay)
+        assert words(result) == ["生命", "起源"]
+
+    def test_affects_dag_false_still_appears_in_full_segmentation(self, segmenter: Segmenter):
+        # The actual point: "don't drive segmentation" must not mean
+        # "invisible" - it should still surface as a real, findable
+        # candidate (an "extra match" once merged in service.analyze_text).
+        overlay = UserOverlay()
+        overlay.add_word("生命起源", freq=None, dominance_floor=segmenter.dominance_floor(), affects_dag=False)
+
+        text = "生命起源"
+        dag = segmenter.build_dag(text, overlay=overlay)
+        best_guess = aggregate_segments(segmenter.segment(text, overlay=overlay, dag=dag))
+        full = aggregate_full_segmentation(text, dag)
+
+        assert "生命起源" not in best_guess
+        assert "生命起源" in full
 
 
 class TestAggregateSegments:
@@ -227,19 +321,21 @@ class TestAffixDiscount:
         assert words(segmenter.segment("森林里")) == ["森林里"]
 
 
-class TestCombinedAnalysis:
+class TestFullSegmentation:
     """
-    Covers the 大风车 case directly: a word missing from the dictionary
-    entirely has no DAG path, but longest_matching's overlapping-match scan
-    can still surface fragments of it. The combined view should never let
-    those fragments silently override or hide what the DAG already decided,
-    only supplement it.
+    Covers the 风车 case directly - this used to require segmentor.py's
+    longest_matching (its overlapping-match scan happened to stumble onto
+    风车 even though the DAG's own chosen route skips over it: "大风"
+    starting at position 0 already spans past position 1, so best-guess's
+    route never independently visits it). Full segmentation has no such
+    blind spot: it walks every position's own candidates regardless of
+    whether the DP's chosen route ever passes through that position, so a
+    real trie hit like 风车 (startable at position 1) shows up on its own,
+    with no separate algorithm needed - this is what fully replaces
+    longest_matching's role as a dictionary-coverage safety net.
     """
 
-    def test_longest_match_only_words_are_tagged_supplemental(self):
-        from app.modules.known_words.segmentor import longest_matching
-        from app.modules.known_words.dag_segmentor import aggregate_segments
-
+    def test_full_segmentation_finds_words_best_guess_route_skips_over(self):
         freq = {"大风": 1000, "风车": 800, "车": 500, "快速": 2000, "转动": 1500}
         trie = Trie()
         for w in freq:
@@ -247,21 +343,91 @@ class TestCombinedAnalysis:
         segmenter = Segmenter(trie=trie, freq_dict=freq)
 
         text = "大风车快速转动"
-        dag_merged = aggregate_segments(segmenter.segment(text))
-        lm_merged = longest_matching(text, trie, stopwords=set())
+        dag = segmenter.build_dag(text, overlay=None)
+        best_guess = aggregate_segments(segmenter.segment(text, dag=dag))
+        full = aggregate_full_segmentation(text, dag)
 
-        combined = dict(dag_merged)
-        for word, data in lm_merged.items():
-            if word not in combined:
-                combined[word] = {**data, "source": "longest_match_only"}
+        # best-guess's own picks, untouched
+        assert best_guess["大风"]["source"] == "dag"
+        assert best_guess["快速"]["source"] == "dag"
+        assert best_guess["转动"]["source"] == "dag"
+        # 风车 was never part of best-guess's chosen route...
+        assert "风车" not in best_guess
+        # ...but full segmentation isn't blind to a position best-guess's
+        # route happened to skip over - it's a real trie hit either way.
+        assert "风车" in full
+        assert full["风车"]["positions"] == [(1, 3)]
 
-        # DAG's own picks are untouched
-        assert combined["快速"]["source"] == "dag"
-        assert combined["转动"]["source"] == "dag"
-        # 风车 only came from longest_matching's overlapping scan - present,
-        # but clearly marked as lower-confidence rather than silently primary
-        assert "风车" in combined
-        assert combined["风车"]["source"] == "longest_match_only"
-        # words the DAG did find are never demoted even if longest_matching
-        # also happens to report them
-        assert combined["大风"]["source"] == "dag"
+
+class TestStopwordsInDag:
+    """
+    Stopwords now reach the DAG itself (build_dag), not just the two
+    supplementary passes - covers the direct fix for a stopword character
+    (e.g. an opening quotation mark) fusing onto an adjacent word.
+    """
+
+    def test_stopword_character_blocks_a_word_from_starting_there(self):
+        freq = {"小猪": 900}
+        trie = Trie()
+        trie.insert("小猪")
+        segmenter = Segmenter(trie=trie, freq_dict=freq)
+
+        # "「" immediately precedes "小猪" - without stopword-awareness in
+        # build_dag, nothing would actually glue them (「 isn't a trie
+        # prefix), but the dag must still never offer 「 as part of any
+        # multi-character candidate, and segment() must drop it entirely.
+        result = segmenter.segment("「小猪", stopwords={"「"})
+        assert words(result) == ["小猪"]
+
+    def test_stopword_character_blocks_a_word_from_extending_through_it(self):
+        # A word that WOULD span across a stopword character if the DAG
+        # walk ignored it - the direct "gluing" case. 小猪「大 isn't a real
+        # word, so use a synthetic trie word that spans exactly where the
+        # stopword sits, to prove the walk actually stops there rather than
+        # continuing through by coincidence.
+        freq = {"小猪大": 900, "小猪": 800}
+        trie = Trie()
+        trie.insert("小猪大")
+        trie.insert("小猪")
+        segmenter = Segmenter(trie=trie, freq_dict=freq)
+
+        result = segmenter.segment("小猪「大", stopwords={"「"})
+        # "小猪大" must never be offered as a candidate - the walk from
+        # position 0 has to stop before consuming "「". "「" itself is
+        # dropped entirely (see the next test class), leaving "小猪" and
+        # the lone trailing "大" (never itself a dictionary word here).
+        assert words(result) == ["小猪", "大"]
+
+    def test_stopword_never_appears_as_its_own_row(self):
+        freq = {"你好": 900}
+        trie = Trie()
+        trie.insert("你好")
+        segmenter = Segmenter(trie=trie, freq_dict=freq)
+
+        result = segmenter.segment("你好，", stopwords={"，"})
+        assert words(result) == ["你好"]
+
+        agg = aggregate_segments(result)
+        assert "，" not in agg
+
+    def test_stopword_never_appears_in_full_segmentation_either(self):
+        freq = {"你好": 900}
+        trie = Trie()
+        trie.insert("你好")
+        segmenter = Segmenter(trie=trie, freq_dict=freq)
+
+        text = "你好，"
+        dag = segmenter.build_dag(text, overlay=None, stopwords={"，"})
+        full = aggregate_full_segmentation(text, dag, stopwords={"，"})
+        assert "，" not in full
+
+    def test_stopword_still_gets_a_route_so_the_dp_never_breaks(self):
+        # Even though it's dropped from the final output, position i must
+        # still get a real (if unused) DAG edge, or the DP route table
+        # would have a gap.
+        freq = {"你好": 900}
+        trie = Trie()
+        trie.insert("你好")
+        segmenter = Segmenter(trie=trie, freq_dict=freq)
+        dag = segmenter.build_dag("你好，", overlay=None, stopwords={"，"})
+        assert dag[2] == [(2, False)]

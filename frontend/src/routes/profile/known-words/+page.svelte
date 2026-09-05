@@ -297,6 +297,10 @@
 						words = words.map((w) => w.word === selectedWordForPanel ? { ...w, familiarity } : w);
 					}
 				}}
+				onGarbageMarked={() => {
+					if (!selectedWordForPanel) return;
+					words = words.filter((w) => w.word !== selectedWordForPanel);
+				}}
 			/>
 		</div>
 	</div>

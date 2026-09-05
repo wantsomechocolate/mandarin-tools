@@ -32,6 +32,10 @@
 </script>
 
 <div class="min-h-screen bg-gray-50">
+	<!-- No mobile-stacking fix needed: "New Analysis" is a fixed, short
+	     English string (no dynamic title, no per-text length risk) and
+	     there's no competing right-side cluster - the one-character-per-
+	     line failure mode this pass fixes elsewhere can't occur here. -->
 	<nav class="bg-white shadow-sm px-6 py-4 flex justify-between items-center">
 		<div class="flex items-center gap-4">
 			<a href="/" class="text-gray-600 hover:text-gray-800 text-sm">← Back</a>

@@ -1,18 +1,35 @@
 """
-DAG + dynamic-programming segmenter (jieba-style "accurate mode", minus the
-HMM new-word layer — see project notes for why that's intentionally skipped).
+DAG + dynamic-programming segmenter, jieba-style. Produces two views of the
+same underlying DAG (see build_dag) - jieba calls these "accurate mode" and
+"full mode", and this module keeps both names' spirit without borrowing the
+terms verbatim:
 
-Unlike segmentor.py's longest_matching, this considers *every* dictionary-backed
-segmentation of a sentence and picks the one with the highest total word
-frequency via right-to-left dynamic programming, rather than greedily taking
-the longest match at each position. This fixes cases where the longest match
-at a given position isn't actually part of the best overall segmentation
-(classic example: 研究生命起源 -> 研究/生命/起源, not 研究生/命/起源).
+- best-guess (aggregate_segments, over Segmenter.segment()'s DP walk): the
+  single highest-total-frequency path through the sentence, chosen via
+  right-to-left dynamic programming rather than greedily taking the longest
+  match at each position. This fixes cases where the longest match at a
+  given position isn't actually part of the best overall segmentation
+  (classic example: 研究生命起源 -> 研究/生命/起源, not 研究生/命/起源).
+- full segmentation (aggregate_full_segmentation, over the same dag dict):
+  every dictionary/corpus/user-backed candidate word the DAG's own
+  candidate generation found at every position, chosen by the DP or not.
+  This is what service.py's "extra matches" are built from - it fully
+  replaces what the old segmentor.py's longest_matching was approximating
+  (a second, lower-confidence pass over the same text), and does it more
+  completely: it includes user-overlay words, real per-occurrence
+  positions, and no word-type coarseness, all for free from the same dag
+  build the DP walk already needed.
 
-Unknown spans (no dictionary path at all) fall back to single characters here,
-on the assumption that the existing tokenizer.py pass downstream is a better
-tool for surfacing genuinely unknown multi-character sequences than trying to
-guess word boundaries for them.
+Deliberately still skips jieba's HMM new-word-discovery layer - an
+unresolved character sequence is useful signal for this app (something to
+flag for the user), not a failure to paper over. The tokenizer.py pass
+(a distinct algorithm - sliding-window repeat detection, not a DAG walk)
+covers that role instead.
+
+A single character with no dictionary/overlay path at all falls back to its
+own one-character DAG edge (see build_dag), so the DP always has somewhere
+to route through - this is what produces a best-guess "unknown" row rather
+than silently dropping unrecognized content.
 """
 
 import math
@@ -83,9 +100,29 @@ class UserOverlay:
         self.trie = Trie()
         self.freq: dict[str, int] = {}
 
-    def add_word(self, word: str, freq: int | None, dominance_floor: int) -> None:
+    def add_word(self, word: str, freq: int | None, dominance_floor: int, affects_dag: bool = True) -> None:
+        """
+        Always inserts into the trie, so the word is always a real DAG
+        candidate (both best-guess and full segmentation) regardless of
+        affects_dag - see build_user_overlay's docstring for why floor
+        scoring, not exclusion, is what "doesn't affect segmentation" means
+        now.
+
+        Only populates self.freq when affects_dag is true - a near-
+        guaranteed-win floor (dominance_floor, or the word's own
+        freq_combined if it has one) so it reliably wins the DP exactly as
+        a boosted word should. When affects_dag is false, self.freq is left
+        untouched for this word: Segmenter._word_weight's existing
+        `from_overlay and word in overlay.freq` check then falls straight
+        through to `self.freq.get(word)` (almost always None for a
+        personal-only word), landing on the same low-confidence
+        unknown-floor score any no-frequency dictionary word already gets -
+        no separate scoring path needed, the word just essentially never
+        wins best-guess while still being a real, visible candidate.
+        """
         self.trie.insert(word)
-        self.freq[word] = freq if freq is not None else dominance_floor
+        if affects_dag:
+            self.freq[word] = freq if freq is not None else dominance_floor
 
 
 class Segmenter:
@@ -123,22 +160,41 @@ class Segmenter:
         for user words added without an explicit frequency."""
         return self.max_freq * 2
 
-    def _build_dag(
-        self, text: str, overlay: UserOverlay | None
+    def build_dag(
+        self, text: str, overlay: UserOverlay | None, stopwords: set[str] | None = None
     ) -> dict[int, list[tuple[int, bool]]]:
         """
         For each start position, every (end_index_inclusive, from_overlay)
         reachable via a dictionary word in either trie. Falls back to a
         single unknown character when nothing matches, so every position
         always has at least one outgoing edge.
+
+        Non-underscored (unlike the old _build_dag) so service.py can call
+        it directly and reuse the exact same dag dict for both the DP walk
+        (via segment()) and aggregate_full_segmentation - built exactly
+        once per analysis, never twice.
+
+        `stopwords` (never baked into the shared, cached Segmenter, passed
+        per-call exactly like overlay) is enforced with a single guard on
+        each trie walk's next character: `text[j] not in stopwords`. This
+        does double duty - a walk starting exactly ON a stopword character
+        fails on its very first iteration (j == i), so that position gets
+        no real candidates and falls through to the single-character
+        fallback below, exactly as if nothing had matched there; a walk
+        that reaches a stopword character partway through simply can't
+        extend past it either, so no candidate word can ever span across
+        one (the direct fix for punctuation gluing onto an adjacent word,
+        e.g. a quotation mark fusing onto the word it quotes). Both
+        global and overlay tries get the same guard.
         """
+        stopwords = stopwords or set()
         n = len(text)
         dag: dict[int, list[tuple[int, bool]]] = {}
         for i in range(n):
             candidates: list[tuple[int, bool]] = []
 
             node, j = self.trie.root, i
-            while j < n and text[j] in node.children:
+            while j < n and text[j] not in stopwords and text[j] in node.children:
                 node = node.children[text[j]]
                 if node.is_word:
                     candidates.append((j, False))
@@ -146,7 +202,7 @@ class Segmenter:
 
             if overlay is not None:
                 onode, oj = overlay.trie.root, i
-                while oj < n and text[oj] in onode.children:
+                while oj < n and text[oj] not in stopwords and text[oj] in onode.children:
                     onode = onode.children[text[oj]]
                     if onode.is_word:
                         candidates.append((oj, True))
@@ -201,10 +257,25 @@ class Segmenter:
             route[idx] = best
         return route
 
-    def segment(self, text: str, overlay: UserOverlay | None = None) -> list[SegmentResult]:
+    def segment(
+        self,
+        text: str,
+        overlay: UserOverlay | None = None,
+        stopwords: set[str] | None = None,
+        dag: dict[int, list[tuple[int, bool]]] | None = None,
+    ) -> list[SegmentResult]:
+        """
+        The DP's own best-guess walk. `dag` lets a caller (service.py) pass
+        in a dag it already built via build_dag, so the DP walk and
+        aggregate_full_segmentation consume the exact same candidate set
+        instead of building it twice - build it internally from
+        `text`/`overlay`/`stopwords` when omitted (e.g. every existing
+        test/call site that only cares about best-guess).
+        """
         if not text:
             return []
-        dag = self._build_dag(text, overlay)
+        if dag is None:
+            dag = self.build_dag(text, overlay, stopwords)
         route = self._dp(text, dag, overlay)
         results: list[SegmentResult] = []
         idx, n = 0, len(text)
@@ -215,28 +286,46 @@ class Segmenter:
                 word=word,
                 start=idx,
                 end=next_idx,
-                in_dictionary=(word in self.freq) or (overlay is not None and word in overlay.freq),
+                # Trie membership, not frequency membership - self.freq is
+                # deliberately restricted to rows with usable frequency
+                # (see segmenter_loader._build_segmenter), while the trie is
+                # built from every dictionary_words row regardless of
+                # frequency. A word backed only by HSK/CC-CEDICT (no
+                # frequency row) is a real trie hit and should count as a
+                # dictionary word - frequency still drives DP scoring via
+                # self.freq exactly as before (_word_weight's floor-score
+                # fallback is unchanged), only this classification changes.
+                in_dictionary=self.trie.contains(word) or (overlay is not None and overlay.trie.contains(word)),
                 from_overlay=from_overlay,
             ))
             idx = next_idx
+        # A stopword character always ends up as its own one-character
+        # fallback edge (build_dag can't extend a trie walk onto or past
+        # one), so without this filter every stopword in the text would
+        # otherwise surface as its own "unknown" row here - drop it
+        # entirely instead, matching how the tokenizer already silently
+        # excludes stopwords rather than surfacing them as clutter.
+        if stopwords:
+            results = [r for r in results if not (len(r.word) == 1 and r.word in stopwords)]
         return results
 
 
 def aggregate_segments(results: list[SegmentResult]) -> dict[str, dict]:
     """
-    Collapses an ordered segment list into {word: {"count", "source", "positions"}},
-    matching the shape segmentor.longest_matching/tokenizer.tokenize already
-    return (plus "positions"), so results are comparable/mergeable with the
-    existing pipeline.
+    Collapses an ordered best-guess segment list (Segmenter.segment()'s own
+    output) into {word: {"count", "source", "positions"}}, matching the
+    shape tokenizer.tokenize/aggregate_full_segmentation return (plus
+    "positions" - see below), so results are comparable/mergeable with the
+    rest of the pipeline (service.analyze_text).
 
     "positions" is a list of (start, end) pairs, one per occurrence - every
     entry here comes from the DAG's own ordered, non-overlapping walk of the
     text, so exact positions are always available at this point, regardless
     of which source label ends up assigned. This is what makes "positions"
-    NOT available later for words added only by the tokenizer or
-    longest-matching passes (see analyze_text_dag/analyze_text_combined in
-    service.py) - those scan overlapping substrings rather than a disjoint
-    segmentation, so they have no single natural span per occurrence.
+    NOT available for words added only by the tokenizer's repeated-sequence
+    pass (see service.analyze_text) - that scans overlapping substrings
+    rather than a disjoint segmentation, so it has no single natural span
+    per occurrence.
     """
     output: dict[str, dict] = {}
     for r in results:
@@ -251,4 +340,50 @@ def aggregate_segments(results: list[SegmentResult]) -> dict[str, dict]:
             output[r.word]["positions"].append((r.start, r.end))
         else:
             output[r.word] = {"count": 1, "source": source, "positions": [(r.start, r.end)]}
+    return output
+
+
+def aggregate_full_segmentation(
+    text: str,
+    dag: dict[int, list[tuple[int, bool]]],
+    stopwords: set[str] | None = None,
+) -> dict[str, dict]:
+    """
+    Jieba's "full mode" counterpart to aggregate_segments: every candidate
+    word the DAG's own candidate generation found at each position, chosen
+    by the DP or not - not just the single best-scoring path. This is what
+    service.analyze_text's "extra matches" are built from.
+
+    Must consume the SAME dag dict the DP walk used (Segmenter.build_dag,
+    called once by the caller) - never rebuilt here, so the two views of
+    one analysis can't drift apart.
+
+    Every real entry in dag[i] is a genuine trie/overlay word-boundary hit
+    - no separate "is this a dictionary word" check needed here, unlike the
+    tokenizer's free-form scan. The one exception is build_dag's own
+    single-character fallback (`if not candidates: candidates = [(i,
+    False)]`), emitted whenever nothing else matched at position i -
+    structurally identical whether that position holds a stopword
+    character or a genuinely unrecognized one, so this function can't tell
+    those two cases apart by shape alone. The stopword case is filtered
+    explicitly here (same rule Segmenter.segment() applies to its own
+    output) because that word was already stripped out of best-guess, so
+    the caller's "not already in best-guess" dedup wouldn't otherwise catch
+    it. A genuinely unrecognized character needs no such handling: nothing
+    can span across it either (it has no trie children at all), so it's
+    guaranteed to land in best-guess's own "unknown" output wherever it
+    occurs, and the caller's dedup against best-guess takes care of it.
+    """
+    stopwords = stopwords or set()
+    output: dict[str, dict] = {}
+    for i, candidates in dag.items():
+        for end, _from_overlay in candidates:
+            word = text[i:end + 1]
+            if len(word) == 1 and word in stopwords:
+                continue
+            if word in output:
+                output[word]["count"] += 1
+                output[word]["positions"].append((i, end + 1))
+            else:
+                output[word] = {"count": 1, "positions": [(i, end + 1)]}
     return output

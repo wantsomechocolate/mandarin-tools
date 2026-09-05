@@ -7,7 +7,6 @@
 	interface StopwordRow {
 		id: number;
 		word: string;
-		algo_type: string;
 		is_override: boolean;
 		user_id: number | null;
 	}
@@ -16,17 +15,11 @@
 	let loading = $state(true);
 	let error = $state('');
 	let search = $state('');
-	let algoFilter: 'all' | 'longest_match' | 'tokenization' = $state('all');
 	let deleting: number | null = $state(null);
 
 	let newWord = $state('');
-	let newAlgoType: 'longest_match' | 'tokenization' = $state('longest_match');
 	let newIsOverride = $state(false);
 	let adding = $state(false);
-
-	function algoLabel(algo: string): string {
-		return algo === 'longest_match' ? 'Longest match' : 'Tokenization';
-	}
 
 	onMount(async () => {
 		if (!isLoggedIn()) {
@@ -44,11 +37,7 @@
 
 	const filtered = $derived(() => {
 		const q = search.trim();
-		return rows.filter((r) => {
-			if (algoFilter !== 'all' && r.algo_type !== algoFilter) return false;
-			if (q && !r.word.includes(q)) return false;
-			return true;
-		});
+		return q ? rows.filter((r) => r.word.includes(q)) : rows;
 	});
 
 	async function remove(row: StopwordRow) {
@@ -68,7 +57,7 @@
 		if (!word) return;
 		adding = true;
 		try {
-			const created = await api.createStopword(word, newAlgoType, newIsOverride) as StopwordRow;
+			const created = await api.createStopword(word, newIsOverride) as StopwordRow;
 			rows = [created, ...rows];
 			newWord = '';
 		} catch (e: unknown) {
@@ -87,14 +76,13 @@
 	</div>
 {/if}
 
-<!-- Stopwords affect the segmentation algorithms directly, per algo_type -
-     "Longest match" (the legacy segmenter, still run alongside the DAG one
-     as a coverage safety net - see CLAUDE.md) and "Tokenization" (the
-     repeated-unknown-sequence flagger) are configured independently.
-     Note: this only shows rows actually in the database - the code-level
-     default stopword lists (DEFAULT_LM_STOPWORDS/DEFAULT_TOKENIZER_STOPWORDS,
-     service.py) that also apply aren't stored rows and have no API of their
-     own, so they can't be listed or edited here. -->
+<!-- One unified stopword list - both the DAG and the tokenizer's repeated-
+     sequence pass consult the same set now (see Stopword's docstring,
+     models.py), so there's no more per-algorithm split to filter/badge by
+     here. Note: this only shows rows actually in the database - the
+     code-level default list (DEFAULT_STOPWORDS, service.py) that also
+     applies isn't stored rows and has no API of its own, so it can't be
+     listed or edited here. -->
 <div class="bg-white rounded-lg shadow-sm p-4 mb-4">
 	<p class="text-sm font-medium text-gray-600 mb-2">Add a stopword</p>
 	<div class="flex flex-wrap items-center gap-2">
@@ -105,10 +93,6 @@
 			class="border border-gray-300 rounded px-2 py-1 text-sm w-40"
 			onkeydown={(e) => { if (e.key === 'Enter') addWord(); }}
 		/>
-		<select bind:value={newAlgoType} class="border border-gray-300 rounded px-2 py-1 text-sm">
-			<option value="longest_match">Longest match</option>
-			<option value="tokenization">Tokenization</option>
-		</select>
 		<label class="flex items-center gap-1.5 text-sm text-gray-600">
 			<input type="checkbox" bind:checked={newIsOverride} class="rounded border-gray-300" />
 			Override (exclude from the default list instead of adding to it)
@@ -124,19 +108,12 @@
 </div>
 
 <div class="flex items-center justify-between mb-3 gap-3 flex-wrap">
-	<div class="flex items-center gap-2">
-		<input
-			type="search"
-			bind:value={search}
-			placeholder="Search words..."
-			class="border border-gray-300 rounded px-2 py-1 text-sm w-48"
-		/>
-		<select bind:value={algoFilter} class="border border-gray-300 rounded px-2 py-1 text-sm">
-			<option value="all">Both algorithms</option>
-			<option value="longest_match">Longest match</option>
-			<option value="tokenization">Tokenization</option>
-		</select>
-	</div>
+	<input
+		type="search"
+		bind:value={search}
+		placeholder="Search words..."
+		class="border border-gray-300 rounded px-2 py-1 text-sm w-48"
+	/>
 	<span class="text-sm text-gray-400">{filtered().length} of {rows.length} rows</span>
 </div>
 
@@ -152,7 +129,6 @@
 			<thead class="bg-gray-50 border-b border-gray-200">
 				<tr>
 					<th class="text-left px-4 py-3 text-sm font-medium text-gray-700">Word</th>
-					<th class="text-left px-4 py-3 text-sm font-medium text-gray-700">Algorithm</th>
 					<th class="text-left px-4 py-3 text-sm font-medium text-gray-700">Type</th>
 					<th class="text-left px-4 py-3 text-sm font-medium text-gray-700">Actions</th>
 				</tr>
@@ -161,9 +137,6 @@
 				{#each filtered() as r (r.id)}
 					<tr class="hover:bg-gray-50">
 						<td class="px-4 py-3 text-base">{r.word}</td>
-						<td class="px-4 py-3">
-							<span class="text-xs px-2 py-1 rounded-full bg-purple-100 text-purple-700">{algoLabel(r.algo_type)}</span>
-						</td>
 						<td class="px-4 py-3">
 							{#if r.user_id === null}
 								<span class="text-xs px-2 py-1 rounded-full bg-gray-100 text-gray-500">system default</span>

@@ -140,6 +140,12 @@ class DictionaryWord(Base):
     hsk_v3_2026: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
     freq_per_million: Mapped[float | None] = mapped_column(Float, nullable=True)
     rarity_tier: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Whether this word has a CC-CEDICT entry - set from build_dictionary.py's
+    # CEDICT join (ce.simplified IS NOT NULL), not maintained live. Needed
+    # so evidence-tier resolution (service.get_word_dictionary_tiers) can
+    # check CEDICT backing per-word without a live join on every results
+    # view - see build_dictionary.py's docstring for how this is populated.
+    is_cedict: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
 
     # Relationships
     #user_words: Mapped[list["UserWord"]] = relationship("UserWord", back_populates="dictionary_word")
@@ -427,19 +433,26 @@ class StarredWord(Base):
 
 
 class Stopword(Base):
+    """
+    One unified list, not one per algorithm - both the DAG (Segmenter.
+    build_dag) and the tokenizer's repeated-sequence scan consult the same
+    set (see service.get_user_stopwords/DEFAULT_STOPWORDS). Previously
+    split by `algo_type` ("longest_match"/"tokenization"), each algorithm
+    only seeing its own half - dropped once every consumer needed the same
+    list anyway and the split only ever meant a stopword added for one
+    algorithm silently didn't apply to the other.
+    """
     __tablename__ = "stopwords"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     word: Mapped[str] = mapped_column(String, nullable=False)
-    algo_type: Mapped[str] = mapped_column(String, nullable=False)  # "longest_match" or "tokenization"
     user_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("users.id"), nullable=True, index=True)
     is_override: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     user: Mapped["User | None"] = relationship("User")
 
     __table_args__ = (
-        Index("ix_stopwords_user_word_algo", "user_id", "word", "algo_type", unique=True),
-        CheckConstraint("algo_type IN ('longest_match', 'tokenization')", name="ck_stopwords_algo_type"),
+        Index("ix_stopwords_user_word", "user_id", "word", unique=True),
     )
 
 
@@ -501,7 +514,7 @@ class AnalysisResult(Base):
     analysis_id: Mapped[int] = mapped_column(Integer, ForeignKey("analyses.id"), nullable=False, index=True)
     word: Mapped[str] = mapped_column(String, nullable=False)
     count: Mapped[int] = mapped_column(Integer, nullable=False)
-    source: Mapped[str] = mapped_column(String, nullable=False)  # "trie", "token", "unknown", "dag", "overlay", "longest_match_only"
+    source: Mapped[str] = mapped_column(String, nullable=False)  # "dag", "overlay", "unknown", "extra_match" (going forward), or a legacy "trie"/"token"/"longest_match_only" value on a pre-retirement row (see ck_analysis_results_source - kept in the allowed set, never backfilled)
     # [[start, end], ...] character offsets into the parent InputText.body,
     # exclusive end, one pair per occurrence - powers "show this word in
     # context" without re-running segmentation. Only populated for
@@ -517,7 +530,7 @@ class AnalysisResult(Base):
     __table_args__ = (
         Index("ix_analysis_results_analysis_word", "analysis_id", "word", unique=True),
         CheckConstraint(
-            "source IN ('trie', 'token', 'unknown', 'dag', 'overlay', 'longest_match_only')",
+            "source IN ('trie', 'token', 'unknown', 'dag', 'overlay', 'longest_match_only', 'extra_match')",
             name="ck_analysis_results_source",
         ),
     )

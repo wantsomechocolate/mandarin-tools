@@ -21,14 +21,15 @@ def build_dictionary():
         # freq_dict filter), so it's only chosen when nothing better covers
         # that span - not force-injected into segmentation.
         db.execute(text("""
-            INSERT INTO dictionary_words (word, frequency, hsk_v2_2012, hsk_v3_2021, hsk_v3_2026)
+            INSERT INTO dictionary_words (word, frequency, hsk_v2_2012, hsk_v3_2021, hsk_v3_2026, is_cedict)
 
             SELECT
                 COALESCE(wf.word, he.simplified, ce.simplified) AS word,
                 wf.frequency,
                 he.hsk_v2_2012,
                 he.hsk_v3_2021,
-                he.hsk_v3_2026
+                he.hsk_v3_2026,
+                (ce.simplified IS NOT NULL) AS is_cedict
 
             FROM word_frequencies wf
             FULL OUTER JOIN hsk_entries he ON he.simplified = wf.word
@@ -39,7 +40,8 @@ def build_dictionary():
                 frequency = EXCLUDED.frequency,
                 hsk_v2_2012 = EXCLUDED.hsk_v2_2012,
                 hsk_v3_2021 = EXCLUDED.hsk_v3_2021,
-                hsk_v3_2026 = EXCLUDED.hsk_v3_2026
+                hsk_v3_2026 = EXCLUDED.hsk_v3_2026,
+                is_cedict = EXCLUDED.is_cedict
         """))
 
         db.commit()

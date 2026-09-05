@@ -4,7 +4,7 @@
 	import { isLoggedIn } from '$lib/auth';
 	import * as api from '$lib/api';
 	import type { Scope } from '$lib/api';
-	import { familiarityLabel, familiarityColor, sourceLabel, sourceColor } from '$lib/wordDisplay';
+	import { familiarityLabel, familiarityColor, evidenceTierLabel, evidenceTierColor } from '$lib/wordDisplay';
 	import { goto } from '$app/navigation';
 	import type { PageProps } from './$types';
 	import WordDetailPanel from '$lib/components/WordDetailPanel.svelte';
@@ -87,6 +87,14 @@
 		// each badge in the fan showing ITS OWN scope's setting, rather
 		// than every badge showing the one resolved winner's.
 		userword_scope_affects_dag: Record<string, boolean | null>;
+		// Resolved (never persisted) same as is_garbage/is_hidden - a second,
+		// orthogonal dimension from `source`: `source` is which pipeline
+		// pass produced this row (still backs BUCKETS and the
+		// longest_match_only warning below, unchanged); `evidence_tier` is
+		// why a user should trust this as a real word (User > Dictionary >
+		// Corpus > Unknown - see WordResult.evidence_tier's docstring,
+		// schemas.py). This is what the per-row chip now shows.
+		evidence_tier: 'user' | 'dictionary' | 'corpus' | 'unknown';
 	}
 
 	interface UserWordDetail {
@@ -344,11 +352,13 @@
 				cmp = a.count - b.count;
 				break;
 			case 'source':
-				// Sorts by the DISPLAYED label (sourceLabel), not the raw
-				// source key - e.g. 'dag' and legacy 'trie' both show as
-				// "segmenter" and should sort adjacently, matching what's
-				// actually in the column.
-				cmp = sourceLabel(a.source).localeCompare(sourceLabel(b.source));
+				// Sorts by the DISPLAYED label - now evidence_tier's label,
+				// not source's, since the chip in this column shows the
+				// evidence tier (User/Dictionary/Corpus/Unknown), not the
+				// pipeline-pass source anymore. The column/sort-key name
+				// ('source') is unchanged - only what it compares moved to
+				// match what's actually rendered.
+				cmp = evidenceTierLabel(a.evidence_tier).localeCompare(evidenceTierLabel(b.evidence_tier));
 				break;
 			case 'familiarity': {
 				// Unknown (null) sorts as lower than any scored value (1-5).
@@ -1012,7 +1022,8 @@
 
 {#snippet iconTrash()}
 	<svg class="w-4 h-4" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-		<path d="M4 5.5h12M8 5.5V4a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v1.5M6 5.5l.6 10.2a1 1 0 0 0 1 .8h4.8a1 1 0 0 0 1-.8l.6-10.2M8.5 8.5v5M11.5 8.5v5" />
+		<circle cx="10" cy="10" r="7.25" />
+		<path d="M5.15 14.85l9.7-9.7" />
 	</svg>
 {/snippet}
 
@@ -1333,28 +1344,37 @@
 {/snippet}
 
 <div class="min-h-screen bg-gray-50">
-	<nav class="bg-white shadow-sm px-6 py-4 flex justify-between items-center">
-		<div class="flex items-center gap-4">
-			<a href="/" class="text-gray-600 hover:text-gray-800 text-sm">← Back</a>
-			<h1 class="text-xl font-bold text-gray-800">
+	<!-- Below sm (640px, this page's own desktop-table/mobile-card
+	     breakpoint - see the hidden sm:block / sm:hidden pair on the results
+	     list): the title cluster and the reading-view/counts cluster stack
+	     as two full-width rows instead of sharing one - at sm+, unchanged
+	     single-row layout. The title itself gets min-w-0 + truncate (plus a
+	     title= attribute for the full value) so it's protected from being
+	     squeezed toward zero width even before the stacking kicks in - that
+	     protection, not the stacking, is what stops a spaceless Chinese
+	     title from wrapping one character per line. -->
+	<nav class="bg-white shadow-sm px-6 py-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 sm:gap-0">
+		<div class="flex flex-wrap items-center gap-4 min-w-0">
+			<a href="/" class="text-gray-600 hover:text-gray-800 text-sm shrink-0">← Back</a>
+			<h1 class="text-xl font-bold text-gray-800 min-w-0 truncate" title={analysis?.title ?? 'Analysis Results'}>
 				{analysis?.title ?? 'Analysis Results'}
 			</h1>
 			{#if analysis}
 				<a
 					href="/input-texts/{analysis.input_text_id}"
-					class="text-sm text-blue-600 hover:text-blue-800"
+					class="text-sm text-blue-600 hover:text-blue-800 shrink-0"
 				>
 					View source text
 				</a>
 			{/if}
 		</div>
 		{#if analysis}
-			<div class="flex items-center gap-4">
-				<label class="flex items-center gap-1.5 text-sm text-gray-700 cursor-pointer">
+			<div class="flex flex-wrap items-center gap-4">
+				<label class="flex items-center gap-1.5 text-sm text-gray-700 cursor-pointer shrink-0">
 					<input type="checkbox" bind:checked={readingViewOn} class="rounded" />
 					Reading view
 				</label>
-				<div class="text-sm text-gray-500 flex gap-4">
+				<div class="text-sm text-gray-500 flex flex-wrap gap-4">
 					<span>{analysis.unique_words} unique words</span>
 					<span>{analysis.total_words} total occurrences</span>
 				</div>
@@ -1501,10 +1521,10 @@
 									<td class="px-4 py-3">
 										<div class="flex flex-wrap gap-1">
 											<span
-												class="text-xs px-2 py-1 rounded-full {sourceColor(result.source)}"
+												class="text-xs px-2 py-1 rounded-full {evidenceTierColor(result.evidence_tier)}"
 												title={result.source === 'longest_match_only' ? 'Found only by the legacy longest-matching pass — not confirmed by the main segmenter. Likely a dictionary gap; review before trusting it.' : ''}
 											>
-												{sourceLabel(result.source)}
+												{evidenceTierLabel(result.evidence_tier)}
 											</span>
 											{#if garbageWords.has(result.word)}
 												<span
@@ -1653,10 +1673,10 @@
 								<div class="flex flex-wrap items-center gap-2 border-t border-gray-50 px-4 pt-2 pb-3 text-sm">
 									<span class="text-gray-600">Count: {result.count}</span>
 									<span
-										class="text-xs px-2 py-1 rounded-full {sourceColor(result.source)}"
+										class="text-xs px-2 py-1 rounded-full {evidenceTierColor(result.evidence_tier)}"
 										title={result.source === 'longest_match_only' ? 'Found only by the legacy longest-matching pass — not confirmed by the main segmenter. Likely a dictionary gap; review before trusting it.' : ''}
 									>
-										{sourceLabel(result.source)}
+										{evidenceTierLabel(result.evidence_tier)}
 									</span>
 									{#if garbageWords.has(result.word)}
 										<span class="text-xs px-2 py-1 rounded-full bg-red-100 text-red-700">garbage</span>

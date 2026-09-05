@@ -221,6 +221,10 @@
 				word={selectedWordForPanel}
 				context={panelContext}
 				onClose={() => selectedWordForPanel = null}
+				onGarbageMarked={() => {
+					if (!selectedWordForPanel) return;
+					rows = rows.filter((r) => r.word !== selectedWordForPanel);
+				}}
 			/>
 		</div>
 	</div>

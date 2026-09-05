@@ -73,6 +73,7 @@
 		onUserWordEntriesChanged,
 		onVisibilityEntriesChanged,
 		onFamiliarityChanged,
+		onGarbageMarked,
 	}: {
 		word: string;
 		context: WordDetailContext;
@@ -92,6 +93,16 @@
 		// to know the moment a word's score is cleared via the panel, not
 		// just when the panel's own display updates.
 		onFamiliarityChanged?: (familiarity: number | null) => void;
+		// Fired when this word transitions to is_garbage=true - garbage now
+		// takes precedence as a read-time filter on the Known/User/Starred
+		// Words listings (see list_known_words/list_user_words/
+		// list_starred_words, router.py), so a list page showing this word
+		// needs to drop it immediately rather than waiting for a reload.
+		// Nothing fires on unmark - a word becoming visible again on a list
+		// it's currently not excluded from doesn't need to appear without a
+		// refresh (see this feature's spec). Single point of firing, so a
+		// future undo affordance has one place to hook rather than several.
+		onGarbageMarked?: () => void;
 	} = $props();
 
 	let detail = $state<WordDetail | null>(null);
@@ -259,12 +270,14 @@
 	async function toggleGarbage() {
 		togglingGarbage = true;
 		try {
-			if (detail?.is_garbage) {
+			const wasGarbage = detail?.is_garbage ?? false;
+			if (wasGarbage) {
 				await api.unmarkGarbageWord(word);
 			} else {
 				await api.createGarbageWord(word);
 			}
 			if (detail) detail = { ...detail, is_garbage: !detail.is_garbage };
+			if (!wasGarbage) onGarbageMarked?.();
 		} catch (e: unknown) {
 			error = e instanceof Error ? e.message : 'Failed to update garbage status';
 		} finally {
@@ -551,7 +564,8 @@
 					aria-label="Garbage"
 				>
 					<svg class="w-4 h-4" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-						<path d="M4 5.5h12M8 5.5V4a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v1.5M6 5.5l.6 10.2a1 1 0 0 0 1 .8h4.8a1 1 0 0 0 1-.8l.6-10.2M8.5 8.5v5M11.5 8.5v5" />
+						<circle cx="10" cy="10" r="7.25" />
+						<path d="M5.15 14.85l9.7-9.7" />
 					</svg>
 				</button>
 			</div>

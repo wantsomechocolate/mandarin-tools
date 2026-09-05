@@ -1,6 +1,6 @@
 <script lang="ts">
 	import * as api from '$lib/api';
-	import { sourceColor, rarityColor, familiarityColor } from '$lib/wordDisplay';
+	import { evidenceTierColor, rarityColor, familiarityColor } from '$lib/wordDisplay';
 	import WordDetailPanel from './WordDetailPanel.svelte';
 	import type { WordDetailContext } from '$lib/wordDetailContext';
 
@@ -39,6 +39,10 @@
 		rarity_tier: string | null;
 		userword_scopes: string[];
 		userword_resolved_affects_dag: boolean;
+		// Same resolved-fresh evidence tier as the results table's per-row
+		// chip (WordResult.evidence_tier) - see get_analysis_spans'
+		// docstring, router.py. Powers this view's "Color by: Evidence" mode.
+		evidence_tier: 'user' | 'dictionary' | 'corpus' | 'unknown' | null;
 	}
 	interface GapSpan {
 		type: 'gap';
@@ -53,7 +57,7 @@
 	let loading = $state(true);
 	let error = $state('');
 
-	type ColorBy = 'none' | 'source' | 'rarity' | 'familiarity';
+	type ColorBy = 'none' | 'evidence' | 'rarity' | 'familiarity';
 	let colorBy: ColorBy = $state('none');
 
 	let selectedWordForPanel: string | null = $state(null);
@@ -108,7 +112,7 @@
 	}
 
 	function spanClass(span: WordSpan): string {
-		if (colorBy === 'source') return bgOnly(sourceColor(span.source));
+		if (colorBy === 'evidence') return bgOnly(evidenceTierColor(span.evidence_tier));
 		if (colorBy === 'rarity') return bgOnly(rarityColor(span.rarity_tier));
 		if (colorBy === 'familiarity') return bgOnly(familiarityColor(span.familiarity));
 		// 'none' - the default subtle alternating tint, just enough to show
@@ -139,7 +143,12 @@
 			Color by
 			<select bind:value={colorBy} class="border border-gray-300 rounded px-2 py-1 text-sm">
 				<option value="none">None</option>
-				<option value="source">Source</option>
+				<!-- Renamed from "Source" to "Evidence": the color now comes from
+				     evidence_tier (User/Dictionary/Corpus/Unknown - why a word
+				     should be trusted), not source (which pipeline pass produced
+				     it) - "Dictionary" alone would undersell the User/Corpus tiers
+				     this mode also colors, so the umbrella term matches better. -->
+				<option value="evidence">Evidence</option>
 				<option value="rarity">Rarity</option>
 				<option value="familiarity">Familiarity</option>
 			</select>

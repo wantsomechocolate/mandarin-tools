@@ -61,10 +61,15 @@
 </script>
 
 <div class="min-h-screen bg-gray-50">
-	<nav class="bg-white shadow-sm px-6 py-4 flex justify-between items-center">
-		<div class="flex items-center gap-4">
-			<a href="/" class="text-gray-600 hover:text-gray-800 text-sm">← Back</a>
-			<h1 class="text-xl font-bold text-gray-800">
+	<!-- Same dynamic-title risk as analyze/[id] (a Chinese title has no
+	     spaces to wrap on) even though this row has no competing right-side
+	     content today - min-w-0 + truncate + title= protects it now and
+	     keeps it safe if a right-side cluster is ever added here later.
+	     justify-between dropped: this row has only one flex child. -->
+	<nav class="bg-white shadow-sm px-6 py-4 flex items-center">
+		<div class="flex items-center gap-4 min-w-0">
+			<a href="/" class="text-gray-600 hover:text-gray-800 text-sm shrink-0">← Back</a>
+			<h1 class="text-xl font-bold text-gray-800 min-w-0 truncate" title={inputText?.title ?? 'Untitled'}>
 				{inputText?.title ?? 'Untitled'}
 			</h1>
 		</div>

@@ -8,6 +8,8 @@ from app.core.auth import get_current_user
 from app.core.database import get_db
 from app.models.user import User
 from app.modules.known_words import service
+from app.modules.known_words.segmenter_loader import get_segmenter, build_user_overlay
+from app.modules.known_words.dag_segmentor import aggregate_segments, aggregate_full_segmentation
 
 from app.modules.known_words.models import (
     InputText,
@@ -274,47 +276,46 @@ def compare_segmentation(
     current_user: User = Depends(get_current_user),
 ):
     """
-    Runs both the existing longest-matching segmenter and the new DAG+DP
-    segmenter over the same text and returns both, for manual comparison.
-    Does not persist anything - safe to call repeatedly while testing.
+    Manual QA tool: runs the segmenter's DP walk (best-guess) and full
+    segmentation (every DAG candidate, chosen or not) over the same text
+    and returns both, for eyeballing what full segmentation adds before
+    trusting it as the source of "extra matches" in production analysis
+    (service.analyze_text). Does not persist anything - safe to call
+    repeatedly while testing.
+
+    Previously compared the DAG segmenter against the now-retired
+    segmentor.py longest_matching; repurposed rather than deleted, since
+    "what does full segmentation find that best-guess didn't choose" is
+    exactly the same kind of manual comparison this endpoint always did.
     """
-    lm_stopwords, tokenizer_stopwords = service.get_user_stopwords(current_user.id, db)
-
-    lm_merged = service.analyze_text(
-        text_body=request.body,
-        db=db,
-        min_token_length=request.min_token_length,
-        max_token_length=request.max_token_length,
-        min_token_count=request.min_token_count,
-        lm_stopwords=lm_stopwords,
-        tokenizer_stopwords=tokenizer_stopwords,
+    stopwords = service.get_user_stopwords(current_user.id, db)
+    segmenter = get_segmenter(db)
+    overlay = (
+        build_user_overlay(current_user.id, db, segmenter)
+        if request.use_user_overlay else None
     )
 
-    dag_merged = service.analyze_text_dag(
-        text_body=request.body,
-        db=db,
-        user_id=current_user.id if request.use_user_overlay else None,
-        tokenizer_stopwords=tokenizer_stopwords,
-        min_token_length=request.min_token_length,
-        max_token_length=request.max_token_length,
-        min_token_count=request.min_token_count,
+    dag = segmenter.build_dag(request.body, overlay, stopwords)
+    best_guess = aggregate_segments(
+        segmenter.segment(request.body, overlay=overlay, stopwords=stopwords, dag=dag)
     )
+    full_segmentation = aggregate_full_segmentation(request.body, dag, stopwords)
 
     def to_list(results: dict[str, dict]) -> list[SegmentedWord]:
         return [
-            SegmentedWord(word=w, count=d["count"], source=d["source"])
+            SegmentedWord(word=w, count=d["count"], source=d.get("source", ""))
             for w, d in sorted(results.items(), key=lambda x: x[1]["count"], reverse=True)
         ]
 
-    lm_words = set(lm_merged.keys())
-    dag_words = set(dag_merged.keys())
+    best_guess_words = set(best_guess.keys())
+    full_words = set(full_segmentation.keys())
 
     return CompareSegmentationResponse(
         body=request.body,
-        longest_match_results=to_list(lm_merged),
-        dag_results=to_list(dag_merged),
-        only_in_longest_match=sorted(lm_words - dag_words),
-        only_in_dag=sorted(dag_words - lm_words),
+        best_guess_results=to_list(best_guess),
+        full_segmentation_results=to_list(full_segmentation),
+        only_in_best_guess=sorted(best_guess_words - full_words),
+        only_in_full_segmentation=sorted(full_words - best_guess_words),
     )
 
 
@@ -350,12 +351,13 @@ def analyze(
     body = input_text.body
 
     # Get user's stopwords and garbage words
-    lm_stopwords, tokenizer_stopwords = service.get_user_stopwords(current_user.id, db)
+    stopwords = service.get_user_stopwords(current_user.id, db)
     garbage_words = service.get_user_garbage_words(current_user.id, db)
 
-    # Run analysis — DAG+DP is primary, longest-matching supplements it with
-    # words the DAG's dictionary coverage misses (tagged source="longest_match_only")
-    results = service.analyze_text_combined(
+    # Best-guess (the DP's chosen path) plus extra matches (full
+    # segmentation + repeated-sequence tokenizer finds not already in
+    # best-guess) - see analyze_text's docstring, service.py.
+    results = service.analyze_text(
         text_body=body,
         db=db,
         user_id=current_user.id,
@@ -363,8 +365,7 @@ def analyze(
         min_token_length=request.min_token_length,
         max_token_length=request.max_token_length,
         min_token_count=request.min_token_count,
-        lm_stopwords=lm_stopwords,
-        tokenizer_stopwords=tokenizer_stopwords,
+        stopwords=stopwords,
     )
 
     # Get user's known words (always global - see KnownWord's docstring) and
@@ -415,6 +416,10 @@ def analyze(
     visibility = _resolve_word_visibility(current_user.id, db, analysis.id, input_text.id)
     user_words = _resolve_user_word_detail(current_user.id, db, analysis.id, input_text.id)
     _uw_default = {"scopes": [], "resolved_affects_dag": True, "scope_affects_dag": {}}
+    # Bulk, not per-row - see get_word_dictionary_tiers's docstring for why
+    # a missing key means "no dictionary backing" (caller falls through to
+    # 'unknown' via .get's default below).
+    dictionary_tiers = service.get_word_dictionary_tiers(set(filtered.keys()), db)
 
     word_results = [
         WordResult(
@@ -429,6 +434,14 @@ def analyze(
             userword_scopes=user_words.get(word, _uw_default)["scopes"],
             userword_resolved_affects_dag=user_words.get(word, _uw_default)["resolved_affects_dag"],
             userword_scope_affects_dag=user_words.get(word, _uw_default)["scope_affects_dag"],
+            # 'user' wins whenever an active (resolved_affects_dag=true)
+            # UserWord entry applies at this scope, even if the word is
+            # also dictionary/corpus-backed - see WordResult.evidence_tier's
+            # docstring, schemas.py, for the full hierarchy.
+            evidence_tier=(
+                "user" if word in user_words and user_words[word]["resolved_affects_dag"]
+                else dictionary_tiers.get(word, "unknown")
+            ),
         )
         for word, data in sorted(filtered.items(), key=lambda x: x[1]["count"], reverse=True)
     ]
@@ -471,6 +484,11 @@ def get_analysis(
     visibility = _resolve_word_visibility(current_user.id, db, analysis.id, analysis.input_text_id)
     user_words = _resolve_user_word_detail(current_user.id, db, analysis.id, analysis.input_text_id)
     _uw_default = {"scopes": [], "resolved_affects_dag": True, "scope_affects_dag": {}}
+    # Bulk, not per-row - resolved fresh on every read (like familiarity/
+    # is_garbage above), not from the persisted `source` column, so a
+    # pre-fix analysis's tiers correct themselves here with no migration -
+    # see get_word_dictionary_tiers's docstring.
+    dictionary_tiers = service.get_word_dictionary_tiers({r.word for r in results}, db)
 
     word_results = [
         WordResult(
@@ -485,6 +503,10 @@ def get_analysis(
             userword_scopes=user_words.get(r.word, _uw_default)["scopes"],
             userword_resolved_affects_dag=user_words.get(r.word, _uw_default)["resolved_affects_dag"],
             userword_scope_affects_dag=user_words.get(r.word, _uw_default)["scope_affects_dag"],
+            evidence_tier=(
+                "user" if r.word in user_words and user_words[r.word]["resolved_affects_dag"]
+                else dictionary_tiers.get(r.word, "unknown")
+            ),
         )
         for r in sorted(results, key=lambda x: x.count, reverse=True)
     ]
@@ -563,6 +585,12 @@ def get_analysis_spans(
     if distinct_words:
         for w, tier in db.query(DictionaryWord.word, DictionaryWord.rarity_tier).filter(DictionaryWord.word.in_(distinct_words)).all():
             rarity_by_word[w] = tier
+    # Same resolved-fresh evidence tier as WordResult's - see
+    # get_word_dictionary_tiers's docstring and WordResult.evidence_tier's
+    # docstring (schemas.py) for the hierarchy. Powers ReadingView's
+    # "Color by: Dictionary" mode the same way the results-table chip uses
+    # this elsewhere.
+    dictionary_tiers = service.get_word_dictionary_tiers(distinct_words, db)
 
     spans: list[AnalysisSpan] = []
     cursor = 0
@@ -584,6 +612,10 @@ def get_analysis_spans(
             rarity_tier=rarity_by_word.get(word),
             userword_scopes=user_words.get(word, _uw_default)["scopes"],
             userword_resolved_affects_dag=user_words.get(word, _uw_default)["resolved_affects_dag"],
+            evidence_tier=(
+                "user" if word in user_words and user_words[word]["resolved_affects_dag"]
+                else dictionary_tiers.get(word, "unknown")
+            ),
         ))
         cursor = end
     if cursor < len(body):
@@ -692,7 +724,15 @@ def list_known_words(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    return db.query(KnownWord).filter(KnownWord.user_id == current_user.id).all()
+    """
+    Excludes garbage words (see service.get_user_garbage_words) - this is a
+    read-time filter only, same spirit as filter_results/analyze results:
+    the underlying KnownWord row is untouched and reappears here the moment
+    the word is un-marked as garbage.
+    """
+    garbage_words = service.get_user_garbage_words(current_user.id, db)
+    rows = db.query(KnownWord).filter(KnownWord.user_id == current_user.id).all()
+    return [r for r in rows if r.word not in garbage_words]
 
 
 @router.delete("/known-words/{word}", status_code=status.HTTP_204_NO_CONTENT)
@@ -822,9 +862,17 @@ def list_user_words(
     pick-one-per-word resolution used elsewhere. Each row is annotated with
     input_text_title (see _resolve_input_text_titles) so the UI can label
     scoped rows without a per-row round trip.
+
+    Garbage words (see service.get_user_garbage_words) are excluded from
+    both branches - a read-time filter only, same spirit as filter_results;
+    the underlying UserWord row(s) are untouched and reappear here the
+    moment the word is un-marked as garbage.
     """
+    garbage_words = service.get_user_garbage_words(current_user.id, db)
+
     if all_scopes:
         rows = db.query(UserWord).filter(UserWord.user_id == current_user.id).all()
+        rows = [r for r in rows if r.word not in garbage_words]
         context = _resolve_scope_context_info(rows, db)
         return [
             UserWordResponse.model_validate(r).model_copy(update={"input_text_title": context[r.id]["text_title"]})
@@ -835,6 +883,7 @@ def list_user_words(
         UserWord.user_id == current_user.id,
         or_(*_scope_filter_conditions(UserWord, analysis_id, input_text_id)),
     ).all()
+    rows = [r for r in rows if r.word not in garbage_words]
     return list(_resolve_by_scope(rows, key_fn=lambda uw: uw.word).values())
 
 
@@ -1128,15 +1177,9 @@ def create_stopword(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    if stopword_in.algo_type not in ("longest_match", "tokenization"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="algo_type must be 'longest_match' or 'tokenization'"
-        )
     existing = db.query(Stopword).filter_by(
         user_id=current_user.id,
         word=stopword_in.word,
-        algo_type=stopword_in.algo_type,
     ).first()
     if existing:
         raise HTTPException(
@@ -1146,7 +1189,6 @@ def create_stopword(
     stopword = Stopword(
         user_id=current_user.id,
         word=stopword_in.word,
-        algo_type=stopword_in.algo_type,
         is_override=stopword_in.is_override,
     )
     db.add(stopword)
@@ -1271,7 +1313,16 @@ def list_starred_words(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    return db.query(StarredWord).filter_by(user_id=current_user.id).all()
+    """
+    Excludes garbage words (see service.get_user_garbage_words) - garbage
+    takes precedence over starred status, same read-time-filter-only
+    treatment as list_known_words/list_user_words. The underlying
+    StarredWord row is untouched and reappears here the moment the word is
+    un-marked as garbage.
+    """
+    garbage_words = service.get_user_garbage_words(current_user.id, db)
+    rows = db.query(StarredWord).filter_by(user_id=current_user.id).all()
+    return [r for r in rows if r.word not in garbage_words]
 
 
 @router.post("/starred-words", response_model=StarredWordResponse, status_code=status.HTTP_201_CREATED)

@@ -54,6 +54,48 @@ export function sourceColor(source: string | null | undefined): string {
     return colors[source] ?? 'bg-gray-100 text-gray-600';
 }
 
+// Evidence-tier label/color mapping - the primary per-row chip (results
+// table/cards, ReadingView's "Color by" mode), replacing sourceLabel/
+// sourceColor in that role. Orthogonal to source: source answers "which
+// pipeline pass produced this row" (still shown via the BUCKETS filter
+// bar and the longest_match_only warning, unchanged); evidence tier
+// answers "why should a user trust this as a real word" (User > Dictionary
+// > Corpus > Unknown - see WordResult.evidence_tier's docstring,
+// schemas.py, for the resolution hierarchy). sourceLabel/sourceColor stay
+// exactly as they are for source itself - they're just no longer what's
+// rendered as the main chip.
+export function evidenceTierLabel(tier: string | null | undefined): string {
+    if (!tier) return 'Unknown';
+    const labels: Record<string, string> = {
+        user: 'Your word',
+        dictionary: 'Dictionary',
+        corpus: 'Corpus',
+        unknown: 'Unknown',
+    };
+    return labels[tier] ?? tier;
+}
+
+export function evidenceTierColor(tier: string | null | undefined): string {
+    if (!tier) return 'bg-gray-100 text-gray-600';
+    const colors: Record<string, string> = {
+        // Matches overlay's existing color (sourceColor) - both mean "this
+        // word exists in segmentation because of the user's own data."
+        user: 'bg-indigo-100 text-indigo-700',
+        // Matches dag/trie's existing color - Dictionary is the direct
+        // successor to what "segmenter" meant in the common case (a real
+        // dictionary word, not just something the DP happened to route
+        // through).
+        dictionary: 'bg-blue-100 text-blue-700',
+        // A new, distinct color (not reused from sourceColor) - "real
+        // corpus frequency, but not curated by HSK/CC-CEDICT" is a
+        // genuinely different signal from either Dictionary or Unknown,
+        // and needs its own color to read as a third thing at a glance.
+        corpus: 'bg-teal-100 text-teal-700',
+        unknown: 'bg-gray-100 text-gray-600',
+    };
+    return colors[tier] ?? 'bg-gray-100 text-gray-600';
+}
+
 // Shared rarity label/color mapping - moved here from WordDetailPanel.svelte
 // for the same reason (the reading view's "Color by: Rarity" reuses this
 // exact scale rather than a third copy).

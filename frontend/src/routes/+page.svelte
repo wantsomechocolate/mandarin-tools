@@ -34,9 +34,15 @@
 </script>
 
 <div class="min-h-screen bg-gray-50">
-	<nav class="bg-white shadow-sm px-6 py-4 flex justify-between items-center">
+	<!-- Static English title, no wrapping risk - so this row only needs
+	     flex-wrap on the right-side action group for very narrow widths,
+	     not the heavier two-row stacking analyze/[id] needs for its
+	     unpredictable-length Chinese title. Three short actions wrapping
+	     onto a second line reads fine here; don't "fix" this to match that
+	     page's full-stack treatment, the two pages have different problems. -->
+	<nav class="bg-white shadow-sm px-6 py-4 flex justify-between items-center flex-wrap gap-3">
 		<h1 class="text-xl font-bold text-gray-800">Mandarin Tools</h1>
-		<div class="flex gap-4 items-center">
+		<div class="flex gap-4 items-center flex-wrap">
 			<a href="/profile" class="text-gray-600 hover:text-gray-800 text-sm font-medium">
 				Profile
 			</a>

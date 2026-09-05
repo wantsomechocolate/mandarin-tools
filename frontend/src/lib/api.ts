@@ -271,8 +271,8 @@ export async function listStopwords() {
     return request('GET', '/known-words/stopwords');
 }
 
-export async function createStopword(word: string, algo_type: string, is_override: boolean = false) {
-    return request('POST', '/known-words/stopwords', { word, algo_type, is_override });
+export async function createStopword(word: string, is_override: boolean = false) {
+    return request('POST', '/known-words/stopwords', { word, is_override });
 }
 
 export async function deleteStopword(id: number) {

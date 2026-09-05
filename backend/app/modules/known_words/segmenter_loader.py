@@ -127,6 +127,15 @@ def build_user_overlay(
     functionally identical to the word having no UserWord entry at all:
     segmentation falls through to the segmenter's own global dictionary
     frequency, same as build_user_overlay returning None entirely.
+
+    A *resolved* affects_dag=false no longer means "excluded from the
+    overlay" - add_word is now called unconditionally for every resolved
+    row, passing affects_dag through. See UserOverlay.add_word's docstring
+    (dag_segmentor.py) for what it does with that: the word still becomes a
+    real trie candidate (so it always shows up as at least an extra match),
+    it just doesn't get a competitive frequency, so it essentially never
+    wins best-guess. This is the actual point of affects_dag=false - "don't
+    let this drive segmentation" - not "pretend this word doesn't exist."
     """
     rows = db.execute(text("""
         SELECT word, freq_combined, scope_input_text_id, affects_dag FROM user_words
@@ -151,6 +160,7 @@ def build_user_overlay(
 
     overlay = UserOverlay()
     floor = segmenter.dominance_floor()
+    any_added = False
     for word in set(text_scoped) | set(global_scoped):
         # Walk text -> global, skipping any row whose affects_dag is NULL -
         # "no opinion here, inherit from the next broader scope" (see
@@ -167,13 +177,16 @@ def build_user_overlay(
             # from, so there's nothing to add (see docstring above).
             continue
         freq_combined, affects_dag = resolved
-        if not affects_dag:
-            continue
-        overlay.add_word(word, freq_combined, dominance_floor=floor)
-    # Keep the "None means nothing to add" contract honest even when every
-    # resolved row turned out to be affects_dag=false (or NULL all the way
-    # up) - functionally an empty UserOverlay already behaves identically
-    # to None in Segmenter (empty trie/freq dict, every lookup misses), but
-    # returning None here lets callers skip overlay handling entirely, same
-    # as the no-rows case.
-    return overlay if overlay.freq else None
+        # Called unconditionally, affects_dag included either way - see
+        # UserOverlay.add_word's docstring for what it does with a false
+        # opinion (floor scoring, not exclusion).
+        overlay.add_word(word, freq_combined, dominance_floor=floor, affects_dag=bool(affects_dag))
+        any_added = True
+    # Keep the "None means nothing to add" contract honest - tracked via
+    # `any_added` rather than `overlay.freq`, since an overlay containing
+    # only affects_dag=false words is trie-only (add_word deliberately
+    # skips self.freq for those - see its docstring) and so is NOT empty,
+    # even though overlay.freq is. Checking overlay.freq here would
+    # silently drop every affects_dag=false word from the overlay entirely,
+    # undoing the whole point of the floor-based rewrite.
+    return overlay if any_added else None

@@ -18,6 +18,11 @@
 </script>
 
 <div class="min-h-screen bg-gray-50">
+	<!-- No mobile-stacking fix needed: "Profile" is a fixed, short English
+	     string with no competing right-side content, same reasoning as
+	     analyze/+page.svelte's header. The tab bar below (overflow-x-auto +
+	     whitespace-nowrap) is a deliberate, separate exception to "stack
+	     instead of squeeze" and is untouched. -->
 	<nav class="bg-white shadow-sm px-6 py-4 flex items-center gap-4">
 		<a href="/" class="text-gray-600 hover:text-gray-800 text-sm">← Back</a>
 		<h1 class="text-xl font-bold text-gray-800">Profile</h1>

@@ -293,6 +293,10 @@
 					if (!selectedWordForPanel) return;
 					knownWords = { ...knownWords, [selectedWordForPanel]: familiarity };
 				}}
+				onGarbageMarked={() => {
+					if (!selectedWordForPanel) return;
+					rawRows = rawRows.filter((r) => r.word !== selectedWordForPanel);
+				}}
 			/>
 		</div>
 	</div>
