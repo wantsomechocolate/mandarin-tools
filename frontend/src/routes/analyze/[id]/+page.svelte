@@ -7,7 +7,7 @@
 	import { familiarityLabel, familiarityColor, evidenceTierLabel, evidenceTierColor, bucketLabel, bucketColor } from '$lib/wordDisplay';
 	import { goto } from '$app/navigation';
 	import type { PageProps } from './$types';
-	import WordDetailPanel from '$lib/components/WordDetailPanel.svelte';
+	import WordDetailModal from '$lib/components/WordDetailModal.svelte';
 	import ReadingView from '$lib/components/ReadingView.svelte';
 	import { isEntryEditable, type WordDetailContext } from '$lib/wordDetailContext';
 
@@ -552,10 +552,28 @@
 		}
 	}
 
+	// WordDetailPanel fires these after its own API calls succeed (see its
+	// onFamiliarityChanged/onGarbageMarked docstrings) - without wiring them
+	// here, marking familiarity or garbage from the panel updated the
+	// panel's own display but left this page's knownWords/garbageWords
+	// state (and so the row/card) stale until a manual reload. Same pattern
+	// already used for onUserWordEntriesChanged/onVisibilityEntriesChanged
+	// just below.
+	function handleFamiliarityChanged(word: string, familiarity: number | null) {
+		knownWords = { ...knownWords, [word]: familiarity };
+	}
+
+	function handleGarbageMarked(word: string) {
+		garbageWords = new Set([...garbageWords, word]);
+	}
+
 	// Desktop-only (see Phase 1 plan notes): clicking a row opens its info
 	// panel, unless the click originated on an actual interactive element
 	// within the row (button/link/input/select), which should handle itself.
-	function handleRowClick(event: MouseEvent, word: string) {
+	// MouseEvent from a row/card click, or KeyboardEvent from the mobile
+	// card's onkeydown (Enter/Space) - only `.target` is used, which both
+	// share, so one handler covers both activation paths.
+	function handleRowClick(event: MouseEvent | KeyboardEvent, word: string) {
 		const target = event.target as HTMLElement;
 		if (target.closest('button, a, input, select, textarea')) return;
 		openWordDetail(word);
@@ -971,6 +989,22 @@
 		return result.familiarity;
 	}
 
+	// Desktop table's Familiarity column renders this as 5 dots rather than
+	// familiarityColor's badge - same hue per score so it still reads as the
+	// same scale, just a different shape (a row of dots is denser than a
+	// pill badge in a table column). Unfilled dots are a flat bg-gray-200
+	// regardless of score - only the filled prefix carries color.
+	function familiarityDotColor(score: number): string {
+		const colors: Record<number, string> = {
+			1: 'bg-red-600',
+			2: 'bg-orange-600',
+			3: 'bg-yellow-600',
+			4: 'bg-green-400',
+			5: 'bg-emerald-600',
+		};
+		return colors[score] ?? 'bg-gray-200';
+	}
+
 	function toggleInfo(word: string) {
 		const next = new Set(expandedInfo);
 		if (next.has(word)) {
@@ -991,20 +1025,6 @@
 		expandedActions = next;
 	}
 </script>
-
-<!-- Bare "i" glyph, no circle outline - deliberately dropped the classic
-     info-circle shape since it sits right next to the row/card's other
-     circular elements (the G/T/A scope badges), and competing circles
-     read as visually muddled at this size. Solid filled pill shapes
-     (rather than a thin stroked line) for a thicker, curvier look - a
-     rounded-capsule stem (rx = half its own width, so both ends are fully
-     round) under a solid dot. -->
-{#snippet iconInfo()}
-	<svg class="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
-		<circle cx="10" cy="5.3" r="1.7" />
-		<rect x="8.2" y="8.6" width="3.6" height="7.6" rx="1.8" />
-	</svg>
-{/snippet}
 
 {#snippet iconChevron(expanded: boolean)}
 	<svg
@@ -1184,12 +1204,39 @@
 	</button>
 {/snippet}
 
+<!-- Menu-items list shared by visibilityAction's two containers below (the
+     sm+ dropdown and the below-sm bottom sheet) - written once, rendered
+     from both, rather than duplicated. -->
+{#snippet visibilityMenuItems(result: WordResult)}
+	{#if loadingVisibilityFor.has(result.word)}
+		<p class="text-xs text-gray-400 px-3 py-2">Loading...</p>
+	{:else}
+		{#each buildVisibilityMenu(result.is_hidden, visibilityRowsByWord[result.word] ?? []) as action}
+			<button
+				onclick={() => applyVisibilityAction(result.word, action)}
+				disabled={togglingVisibilityAction === result.word}
+				class="w-full text-left px-3 py-1.5 text-sm hover:bg-gray-50 disabled:opacity-50 {action.kind === 'remove' ? 'text-red-500' : 'text-gray-700'}"
+			>
+				{action.label}
+			</button>
+		{/each}
+	{/if}
+{/snippet}
+
 <!-- Visibility quick-action, reused by both the desktop table row and the
      mobile card. Icon reflects resolved is_hidden; the corner badge shows
      hidden_governing_scope (omitted entirely when "default" - see
      scopeBadge above). Click opens a menu built by buildVisibilityMenu,
      lazily fetching+caching that word's raw scope rows on first open (see
-     toggleVisibilityMenu). -->
+     toggleVisibilityMenu).
+
+     Two sibling containers, gated by the same open/close state, split by
+     breakpoint via CSS (hidden sm:block / sm:hidden) rather than JS - the
+     sm+ dropdown positions absolute right-0, fine when the trigger sits
+     near a wide row's right edge; below sm the same trigger sits near the
+     LEFT of a narrow card, where that same dropdown would overflow off the
+     left edge of the screen, so it becomes a bottom sheet instead (same
+     treatment WordDetailPanel's own modal uses, for visual consistency). -->
 {#snippet visibilityAction(result: WordResult)}
 	<div class="relative inline-block">
 		<button
@@ -1202,38 +1249,84 @@
 		</button>
 		{@render scopeBadge(result.hidden_governing_scope)}
 		{#if visibilityMenuOpenFor === result.word}
-			<div class="fixed inset-0 z-40" onclick={() => visibilityMenuOpenFor = null} role="presentation"></div>
+			<!-- sm and up: unchanged dropdown, invisible click-catcher backdrop. -->
+			<div class="hidden sm:block fixed inset-0 z-40" onclick={() => visibilityMenuOpenFor = null} role="presentation"></div>
 			<div
-				class="absolute right-0 top-full mt-1 z-50 w-56 bg-white rounded-lg shadow-lg border border-gray-100 py-1"
+				class="hidden sm:block absolute right-0 top-full mt-1 z-50 w-56 bg-white rounded-lg shadow-lg border border-gray-100 py-1"
 				onclick={(e) => e.stopPropagation()}
 				role="presentation"
 			>
-				{#if loadingVisibilityFor.has(result.word)}
-					<p class="text-xs text-gray-400 px-3 py-2">Loading...</p>
-				{:else}
-					{#each buildVisibilityMenu(result.is_hidden, visibilityRowsByWord[result.word] ?? []) as action}
-						<button
-							onclick={() => applyVisibilityAction(result.word, action)}
-							disabled={togglingVisibilityAction === result.word}
-							class="w-full text-left px-3 py-1.5 text-sm hover:bg-gray-50 disabled:opacity-50 {action.kind === 'remove' ? 'text-red-500' : 'text-gray-700'}"
-						>
-							{action.label}
-						</button>
-					{/each}
-				{/if}
+				{@render visibilityMenuItems(result)}
+			</div>
+
+			<!-- below sm: bottom sheet, its own dimmed backdrop. -->
+			<div class="sm:hidden fixed inset-0 z-40 bg-black/30" onclick={() => visibilityMenuOpenFor = null} role="presentation"></div>
+			<div
+				class="sm:hidden fixed inset-x-0 bottom-0 z-50 bg-white rounded-t-2xl shadow-sm p-4 max-h-[70vh] overflow-y-auto"
+				onclick={(e) => e.stopPropagation()}
+				role="presentation"
+			>
+				<div class="flex items-center justify-between mb-2">
+					<p class="text-sm font-medium text-gray-700">{result.word}</p>
+					<button onclick={() => visibilityMenuOpenFor = null} class="text-sm text-blue-600 hover:text-blue-800">Close</button>
+				</div>
+				{@render visibilityMenuItems(result)}
 			</div>
 		{/if}
 	</div>
 {/snippet}
 
+<!-- Menu-items list shared by userWordAction's two containers below (the
+     sm+ dropdown and the below-sm bottom sheet) - written once, rendered
+     from both, rather than duplicated. -->
+{#snippet userWordMenuItems(result: WordResult)}
+	{#if loadingUserWordFor.has(result.word)}
+		<p class="text-xs text-gray-400 px-3 py-2">Loading...</p>
+	{:else}
+		{#each buildUserWordMenu(userWordRowsByWord[result.word] ?? []) as item}
+			{#if item.kind === 'entry'}
+				<div class="px-3 py-1.5 flex items-center justify-between gap-2">
+					<div class="min-w-0">
+						<p class="text-sm text-gray-700 truncate">{item.label}</p>
+						<p class="text-xs text-gray-400 truncate">{item.sublabel}</p>
+					</div>
+					<button
+						onclick={() => removeUserWordEntry(result.word, item.entry!)}
+						disabled={togglingUserWordAction === result.word}
+						class="text-xs text-red-400 hover:text-red-600 disabled:opacity-50 shrink-0"
+					>
+						Remove
+					</button>
+				</div>
+			{:else if item.kind === 'add'}
+				<button
+					onclick={() => addUserWordAtScope(result.word, item.scope!)}
+					disabled={togglingUserWordAction === result.word}
+					class="w-full text-left px-3 py-1.5 text-sm text-blue-600 hover:bg-gray-50 disabled:opacity-50"
+				>
+					{item.label}
+				</button>
+			{:else}
+				<button
+					onclick={() => { userWordMenuOpenFor = null; openWordDetail(result.word); }}
+					class="w-full text-left px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50 border-t border-gray-100 mt-1"
+				>
+					{item.label}
+				</button>
+			{/if}
+		{/each}
+	{/if}
+{/snippet}
+
 <!-- UserWord quick-action, reused by both the desktop table row and the
      mobile card - structured exactly like visibilityAction above (relative
-     wrapper, backdrop-click-to-close popover), but unlike Visibility's
-     single resolved value, UserWord entries coexist across up to 3 scopes
-     at once (see UserWord's docstring, models.py), so this can't be a
-     single toggle: filled state is userword_scopes.length > 0 (the actual
-     bug this popover originally fixed - previously this only ever
-     reflected a GLOBAL-only Set, see CLAUDE.md). The icon itself is
+     wrapper, backdrop-click-to-close popover, sm+ dropdown vs. below-sm
+     bottom sheet - see visibilityAction's own comment for why), but unlike
+     Visibility's single resolved value, UserWord entries coexist across up
+     to 3 scopes at once (see UserWord's docstring, models.py), so this
+     can't be a single toggle: filled state is userword_scopes.length > 0
+     (the actual bug this popover originally fixed - previously this only
+     ever reflected a GLOBAL-only Set, see CLAUDE.md). The icon itself is
      existence-only (slate when present, gray when not - same neutral
      treatment visibilityAction's own icon uses) rather than colored by the
      resolved affects_dag - showing only the resolved winner's color there
@@ -1256,48 +1349,28 @@
 		</button>
 		{@render userWordScopeBadges(result.userword_scopes, result.userword_scope_affects_dag)}
 		{#if userWordMenuOpenFor === result.word}
-			<div class="fixed inset-0 z-40" onclick={() => userWordMenuOpenFor = null} role="presentation"></div>
+			<!-- sm and up: unchanged dropdown, invisible click-catcher backdrop. -->
+			<div class="hidden sm:block fixed inset-0 z-40" onclick={() => userWordMenuOpenFor = null} role="presentation"></div>
 			<div
-				class="absolute right-0 top-full mt-1 z-50 w-60 bg-white rounded-lg shadow-lg border border-gray-100 py-1"
+				class="hidden sm:block absolute right-0 top-full mt-1 z-50 w-60 bg-white rounded-lg shadow-lg border border-gray-100 py-1"
 				onclick={(e) => e.stopPropagation()}
 				role="presentation"
 			>
-				{#if loadingUserWordFor.has(result.word)}
-					<p class="text-xs text-gray-400 px-3 py-2">Loading...</p>
-				{:else}
-					{#each buildUserWordMenu(userWordRowsByWord[result.word] ?? []) as item}
-						{#if item.kind === 'entry'}
-							<div class="px-3 py-1.5 flex items-center justify-between gap-2">
-								<div class="min-w-0">
-									<p class="text-sm text-gray-700 truncate">{item.label}</p>
-									<p class="text-xs text-gray-400 truncate">{item.sublabel}</p>
-								</div>
-								<button
-									onclick={() => removeUserWordEntry(result.word, item.entry!)}
-									disabled={togglingUserWordAction === result.word}
-									class="text-xs text-red-400 hover:text-red-600 disabled:opacity-50 shrink-0"
-								>
-									Remove
-								</button>
-							</div>
-						{:else if item.kind === 'add'}
-							<button
-								onclick={() => addUserWordAtScope(result.word, item.scope!)}
-								disabled={togglingUserWordAction === result.word}
-								class="w-full text-left px-3 py-1.5 text-sm text-blue-600 hover:bg-gray-50 disabled:opacity-50"
-							>
-								{item.label}
-							</button>
-						{:else}
-							<button
-								onclick={() => { userWordMenuOpenFor = null; openWordDetail(result.word); }}
-								class="w-full text-left px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50 border-t border-gray-100 mt-1"
-							>
-								{item.label}
-							</button>
-						{/if}
-					{/each}
-				{/if}
+				{@render userWordMenuItems(result)}
+			</div>
+
+			<!-- below sm: bottom sheet, its own dimmed backdrop. -->
+			<div class="sm:hidden fixed inset-0 z-40 bg-black/30" onclick={() => userWordMenuOpenFor = null} role="presentation"></div>
+			<div
+				class="sm:hidden fixed inset-x-0 bottom-0 z-50 bg-white rounded-t-2xl shadow-sm p-4 max-h-[70vh] overflow-y-auto"
+				onclick={(e) => e.stopPropagation()}
+				role="presentation"
+			>
+				<div class="flex items-center justify-between mb-2">
+					<p class="text-sm font-medium text-gray-700">{result.word}</p>
+					<button onclick={() => userWordMenuOpenFor = null} class="text-sm text-blue-600 hover:text-blue-800">Close</button>
+				</div>
+				{@render userWordMenuItems(result)}
 			</div>
 		{/if}
 	</div>
@@ -1488,6 +1561,7 @@
 								<th class="text-left px-4 py-3 text-sm font-medium text-gray-700">{@render sortHeader('Familiarity', 'familiarity')}</th>
 								<th class="text-left px-4 py-3 text-sm font-medium text-gray-700">Mark as</th>
 								<th class="text-left px-4 py-3 text-sm font-medium text-gray-700">Actions</th>
+								<th class="px-2 py-3"><span class="sr-only">Open details</span></th>
 							</tr>
 						</thead>
 						<tbody class="divide-y divide-gray-100">
@@ -1495,7 +1569,7 @@
 								<tr
 									data-word={result.word}
 									onclick={(e) => handleRowClick(e, result.word)}
-									class="cursor-pointer hover:bg-gray-50 {result.source === 'longest_match_only' ? 'bg-amber-50/40' : ''} {garbageWords.has(result.word) ? 'bg-red-50/40' : ''} {selectedWordForPanel === result.word ? '!bg-blue-50 ring-1 ring-inset ring-blue-200' : ''}"
+									class="group cursor-pointer hover:bg-gray-50 {result.source === 'longest_match_only' ? 'bg-amber-50/40' : ''} {garbageWords.has(result.word) ? 'bg-red-50/40' : ''} {selectedWordForPanel === result.word ? '!bg-blue-50 ring-1 ring-inset ring-blue-200' : ''}"
 								>
 									<td class="px-4 py-3 text-lg font-medium">
 										<div class="flex items-center gap-1.5">
@@ -1525,9 +1599,11 @@
 										</span>
 									</td>
 									<td class="px-4 py-3">
-										<span class="text-xs px-2 py-1 rounded-full {familiarityColor(currentFamiliarity(result))}">
-											{familiarityLabel(currentFamiliarity(result))}
-										</span>
+										<div class="flex gap-1" title={familiarityLabel(currentFamiliarity(result))} aria-label={familiarityLabel(currentFamiliarity(result))}>
+											{#each [1, 2, 3, 4, 5] as score}
+												<span class="w-2 h-2 rounded-full {currentFamiliarity(result) !== null && score <= currentFamiliarity(result)! ? familiarityDotColor(score) : 'bg-gray-200'}"></span>
+											{/each}
+										</div>
 									</td>
 									<td class="px-4 py-3">
 										<div class="flex flex-wrap gap-1">
@@ -1556,14 +1632,6 @@
 									</td>
 									<td class="px-4 py-3">
 										<div class="flex flex-wrap gap-0.5 items-center">
-											<button
-												onclick={() => openWordDetail(result.word)}
-												class="p-1.5 rounded text-gray-400 hover:text-blue-600 hover:bg-blue-50"
-												title="View details"
-												aria-label="View details"
-											>
-												{@render iconInfo()}
-											</button>
 											{@render visibilityAction(result)}
 											{@render userWordAction(result)}
 											{#if starredWords.has(result.word)}
@@ -1610,10 +1678,23 @@
 											{/if}
 										</div>
 									</td>
+									<td class="px-2 py-3">
+										<div class="flex justify-end">
+											<button
+												onclick={() => openWordDetail(result.word)}
+												class="p-1 rounded text-gray-300 hover:text-blue-600 group-hover:text-gray-400"
+												aria-label="View details for {result.word}"
+											>
+												<svg class="w-4 h-4" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+													<path d="M7.5 5l5.5 5-5.5 5" />
+												</svg>
+											</button>
+										</div>
+									</td>
 								</tr>
 								{#if expandedContext.has(result.word)}
 									<tr class="bg-gray-50">
-										<td colspan="6" class="px-4 py-3 border-t border-gray-100">
+										<td colspan="8" class="px-4 py-3 border-t border-gray-100">
 											{@render contextList(result.word)}
 										</td>
 									</tr>
@@ -1634,7 +1715,13 @@
 					<p class="text-gray-500 p-4">Loading...</p>
 				{:else if analysis}
 					{#each filteredResults() as result}
-						<div class="{result.source === 'longest_match_only' ? 'bg-amber-50/40' : ''} {garbageWords.has(result.word) ? 'bg-red-50/40' : ''}">
+						<div
+							role="button"
+							tabindex="0"
+							onclick={(e) => handleRowClick(e, result.word)}
+							onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleRowClick(e, result.word); } }}
+							class="{result.source === 'longest_match_only' ? 'bg-amber-50/40' : ''} {garbageWords.has(result.word) ? 'bg-red-50/40' : ''}"
+						>
 							<div class="flex items-center justify-between gap-2 px-4 py-3">
 								<span class="text-lg font-medium truncate">{result.word}</span>
 								<div class="flex items-center gap-0.5 shrink-0">
@@ -1705,14 +1792,6 @@
 										{/if}
 									</div>
 									<div class="flex flex-wrap items-center gap-0.5">
-										<button
-											onclick={() => openWordDetail(result.word)}
-											class="p-1.5 rounded text-gray-400 hover:text-blue-600 hover:bg-blue-50"
-											title="View details"
-											aria-label="View details"
-										>
-											{@render iconInfo()}
-										</button>
 										{@render visibilityAction(result)}
 										{@render userWordAction(result)}
 										{#if starredWords.has(result.word)}
@@ -1765,9 +1844,9 @@
 				{/if}
 			</div>
 
-			<!-- Word detail panel - below `lg`, this is a fixed bottom-sheet
-			     overlay (with a dismiss backdrop) instead of a block in normal
-			     document flow. Two separate reasons this needs to stay an
+			<!-- Word detail panel - below `lg`, WordDetailModal presents this as
+			     a fixed bottom-sheet overlay rather than a block in normal
+			     document flow. Two separate reasons this page needs that
 			     overlay all the way up to `lg`, not just on mobile: below
 			     `sm` the card list above it can be very long, so a
 			     normal-flow panel would render off-screen at the bottom,
@@ -1778,30 +1857,17 @@
 			     next to it without squeezing "Mark as"/"Actions" into
 			     unreadable overlap - so the panel keeps overlaying instead of
 			     joining the flex row until there's actually room (`lg`,
-			     1024px) for both side by side. lg:contents removes the
-			     backdrop wrapper's own box once that's true, so it doesn't
-			     affect the side-by-side layout there. -->
-			{#if selectedWordForPanel}
-				<div
-					class="fixed inset-0 z-40 flex items-end justify-center bg-black/30 lg:contents"
-					onclick={() => selectedWordForPanel = null}
-					role="presentation"
-				>
-				<div
-					class="self-start lg:sticky lg:top-4"
-					onclick={(e) => e.stopPropagation()}
-					role="presentation"
-				>
-					<WordDetailPanel
-						word={selectedWordForPanel}
-						context={panelContext}
-						onClose={() => selectedWordForPanel = null}
-						onUserWordEntriesChanged={(entries) => handleUserWordEntriesChanged(selectedWordForPanel!, entries)}
-						onVisibilityEntriesChanged={(entries) => handleVisibilityEntriesChanged(selectedWordForPanel!, entries)}
-					/>
-				</div>
-				</div>
-			{/if}
+			     1024px) for both side by side. See WordDetailModal.svelte for
+			     the shared mechanism (lg:contents, the width-fix wrapper). -->
+			<WordDetailModal
+				word={selectedWordForPanel}
+				context={panelContext}
+				onClose={() => selectedWordForPanel = null}
+				onUserWordEntriesChanged={(entries) => handleUserWordEntriesChanged(selectedWordForPanel!, entries)}
+				onVisibilityEntriesChanged={(entries) => handleVisibilityEntriesChanged(selectedWordForPanel!, entries)}
+				onFamiliarityChanged={(familiarity) => handleFamiliarityChanged(selectedWordForPanel!, familiarity)}
+				onGarbageMarked={() => handleGarbageMarked(selectedWordForPanel!)}
+			/>
 		</div>
 		{/if}
 	</main>

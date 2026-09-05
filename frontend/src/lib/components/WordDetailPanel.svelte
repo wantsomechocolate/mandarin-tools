@@ -24,8 +24,10 @@
 
 	// Both UserWordEntry/VisibilityEntry satisfy ScopedEntry (see
 	// wordDetailContext.ts) structurally - no adapter needed for
-	// isEntryEditable.
-	interface UserWordEntry {
+	// isEntryEditable. Exported so WordDetailModal.svelte (the shared
+	// wrapper around this component) can mirror these callback param types
+	// exactly rather than re-declaring them by hand.
+	export interface UserWordEntry {
 		id: number;
 		scope: 'global' | 'text' | 'analysis';
 		text_id: number | null;
@@ -38,7 +40,7 @@
 		affects_dag: boolean | null;
 	}
 
-	interface VisibilityEntry {
+	export interface VisibilityEntry {
 		id: number;
 		scope: 'global' | 'text' | 'analysis';
 		text_id: number | null;

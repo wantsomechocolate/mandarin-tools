@@ -3,7 +3,7 @@
 	import { isLoggedIn } from '$lib/auth';
 	import * as api from '$lib/api';
 	import { goto } from '$app/navigation';
-	import WordDetailPanel from '$lib/components/WordDetailPanel.svelte';
+	import WordDetailModal from '$lib/components/WordDetailModal.svelte';
 	import type { WordDetailContext } from '$lib/wordDetailContext';
 
 	// Global list page - see the matching comment in known-words/+page.svelte.
@@ -210,23 +210,13 @@
 	{/if}
 </div>
 
-{#if selectedWordForPanel}
-	<div
-		class="fixed inset-0 z-40 flex items-end justify-center bg-black/30 lg:contents"
-		onclick={() => selectedWordForPanel = null}
-		role="presentation"
-	>
-		<div class="self-start lg:sticky lg:top-4" onclick={(e) => e.stopPropagation()} role="presentation">
-			<WordDetailPanel
-				word={selectedWordForPanel}
-				context={panelContext}
-				onClose={() => selectedWordForPanel = null}
-				onGarbageMarked={() => {
-					if (!selectedWordForPanel) return;
-					rows = rows.filter((r) => r.word !== selectedWordForPanel);
-				}}
-			/>
-		</div>
-	</div>
-{/if}
+	<WordDetailModal
+		word={selectedWordForPanel}
+		context={panelContext}
+		onClose={() => selectedWordForPanel = null}
+		onGarbageMarked={() => {
+			if (!selectedWordForPanel) return;
+			rows = rows.filter((r) => r.word !== selectedWordForPanel);
+		}}
+	/>
 </div>

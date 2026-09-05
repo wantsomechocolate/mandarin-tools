@@ -1,7 +1,7 @@
 <script lang="ts">
 	import * as api from '$lib/api';
 	import { evidenceTierColor, rarityColor, familiarityColor } from '$lib/wordDisplay';
-	import WordDetailPanel from './WordDetailPanel.svelte';
+	import WordDetailModal from './WordDetailModal.svelte';
 	import type { WordDetailContext } from '$lib/wordDetailContext';
 
 	// Read-only foundation for the reading view - renders the source text
@@ -174,24 +174,14 @@
 	{/if}
 </div>
 
-{#if selectedWordForPanel}
-	<div
-		class="fixed inset-0 z-40 flex items-end justify-center bg-black/30 lg:contents"
-		onclick={() => selectedWordForPanel = null}
-		role="presentation"
-	>
-		<div class="self-start lg:sticky lg:top-4" onclick={(e) => e.stopPropagation()} role="presentation">
-			<WordDetailPanel
-				word={selectedWordForPanel}
-				context={panelContext}
-				onClose={() => selectedWordForPanel = null}
-				onFamiliarityChanged={(familiarity) => {
-					const word = selectedWordForPanel;
-					if (!word) return;
-					spans = spans.map((s) => s.type === 'word' && s.word === word ? { ...s, familiarity } : s);
-				}}
-			/>
-		</div>
-	</div>
-{/if}
+	<WordDetailModal
+		word={selectedWordForPanel}
+		context={panelContext}
+		onClose={() => selectedWordForPanel = null}
+		onFamiliarityChanged={(familiarity) => {
+			const word = selectedWordForPanel;
+			if (!word) return;
+			spans = spans.map((s) => s.type === 'word' && s.word === word ? { ...s, familiarity } : s);
+		}}
+	/>
 </div>
