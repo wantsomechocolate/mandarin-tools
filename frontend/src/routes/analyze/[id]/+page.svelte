@@ -1249,8 +1249,13 @@
 		</button>
 		{@render scopeBadge(result.hidden_governing_scope)}
 		{#if visibilityMenuOpenFor === result.word}
-			<!-- sm and up: unchanged dropdown, invisible click-catcher backdrop. -->
-			<div class="hidden sm:block fixed inset-0 z-40" onclick={() => visibilityMenuOpenFor = null} role="presentation"></div>
+			<!-- sm and up: unchanged dropdown, invisible click-catcher backdrop.
+			     stopPropagation - without it this click bubbles up through the
+			     enclosing row/card's own onclick (position:fixed only affects
+			     paint, not DOM position - this div is still a descendant of the
+			     row), which would immediately reopen the word-detail panel
+			     right after the popover closes. -->
+			<div class="hidden sm:block fixed inset-0 z-40" onclick={(e) => { e.stopPropagation(); visibilityMenuOpenFor = null; }} role="presentation"></div>
 			<div
 				class="hidden sm:block absolute right-0 top-full mt-1 z-50 w-56 bg-white rounded-lg shadow-lg border border-gray-100 py-1"
 				onclick={(e) => e.stopPropagation()}
@@ -1259,8 +1264,9 @@
 				{@render visibilityMenuItems(result)}
 			</div>
 
-			<!-- below sm: bottom sheet, its own dimmed backdrop. -->
-			<div class="sm:hidden fixed inset-0 z-40 bg-black/30" onclick={() => visibilityMenuOpenFor = null} role="presentation"></div>
+			<!-- below sm: bottom sheet, its own dimmed backdrop - same
+			     stopPropagation reasoning as the dropdown backdrop above. -->
+			<div class="sm:hidden fixed inset-0 z-40 bg-black/30" onclick={(e) => { e.stopPropagation(); visibilityMenuOpenFor = null; }} role="presentation"></div>
 			<div
 				class="sm:hidden fixed inset-x-0 bottom-0 z-50 bg-white rounded-t-2xl shadow-sm p-4 max-h-[70vh] overflow-y-auto"
 				onclick={(e) => e.stopPropagation()}
@@ -1349,8 +1355,12 @@
 		</button>
 		{@render userWordScopeBadges(result.userword_scopes, result.userword_scope_affects_dag)}
 		{#if userWordMenuOpenFor === result.word}
-			<!-- sm and up: unchanged dropdown, invisible click-catcher backdrop. -->
-			<div class="hidden sm:block fixed inset-0 z-40" onclick={() => userWordMenuOpenFor = null} role="presentation"></div>
+			<!-- sm and up: unchanged dropdown, invisible click-catcher backdrop.
+			     stopPropagation - see visibilityAction's matching backdrop
+			     comment for why (this div is still a DOM descendant of the
+			     row/card despite position:fixed, so an unguarded click bubbles
+			     up into the row's own onclick and reopens the detail panel). -->
+			<div class="hidden sm:block fixed inset-0 z-40" onclick={(e) => { e.stopPropagation(); userWordMenuOpenFor = null; }} role="presentation"></div>
 			<div
 				class="hidden sm:block absolute right-0 top-full mt-1 z-50 w-60 bg-white rounded-lg shadow-lg border border-gray-100 py-1"
 				onclick={(e) => e.stopPropagation()}
@@ -1359,8 +1369,9 @@
 				{@render userWordMenuItems(result)}
 			</div>
 
-			<!-- below sm: bottom sheet, its own dimmed backdrop. -->
-			<div class="sm:hidden fixed inset-0 z-40 bg-black/30" onclick={() => userWordMenuOpenFor = null} role="presentation"></div>
+			<!-- below sm: bottom sheet, its own dimmed backdrop - same
+			     stopPropagation reasoning as the dropdown backdrop above. -->
+			<div class="sm:hidden fixed inset-0 z-40 bg-black/30" onclick={(e) => { e.stopPropagation(); userWordMenuOpenFor = null; }} role="presentation"></div>
 			<div
 				class="sm:hidden fixed inset-x-0 bottom-0 z-50 bg-white rounded-t-2xl shadow-sm p-4 max-h-[70vh] overflow-y-auto"
 				onclick={(e) => e.stopPropagation()}
@@ -1559,7 +1570,6 @@
 								<th class="text-left px-4 py-3 text-sm font-medium text-gray-700">Bucket</th>
 								<th class="text-left px-4 py-3 text-sm font-medium text-gray-700">{@render sortHeader('Source', 'source')}</th>
 								<th class="text-left px-4 py-3 text-sm font-medium text-gray-700">{@render sortHeader('Familiarity', 'familiarity')}</th>
-								<th class="text-left px-4 py-3 text-sm font-medium text-gray-700">Mark as</th>
 								<th class="text-left px-4 py-3 text-sm font-medium text-gray-700">Actions</th>
 								<th class="px-2 py-3"><span class="sr-only">Open details</span></th>
 							</tr>
@@ -1599,33 +1609,28 @@
 										</span>
 									</td>
 									<td class="px-4 py-3">
-										<div class="flex gap-1" title={familiarityLabel(currentFamiliarity(result))} aria-label={familiarityLabel(currentFamiliarity(result))}>
-											{#each [1, 2, 3, 4, 5] as score}
-												<span class="w-2 h-2 rounded-full {currentFamiliarity(result) !== null && score <= currentFamiliarity(result)! ? familiarityDotColor(score) : 'bg-gray-200'}"></span>
-											{/each}
-										</div>
-									</td>
-									<td class="px-4 py-3">
-										<div class="flex flex-wrap gap-1">
+										<div class="flex items-center gap-0.5">
 											{#each [1, 2, 3, 4, 5] as score}
 												<button
 													onclick={() => setFamiliarity(result.word, score)}
 													disabled={updatingWord === result.word}
-													class="w-7 h-7 rounded text-xs font-medium disabled:opacity-50
-													{currentFamiliarity(result) === score
-														? 'bg-blue-600 text-white'
-														: 'bg-gray-100 text-gray-600 hover:bg-gray-200'}"
+													class="p-1 rounded hover:bg-gray-100 disabled:opacity-50"
+													title={familiarityLabel(score)}
+													aria-label={familiarityLabel(score)}
+													aria-pressed={currentFamiliarity(result) === score}
 												>
-													{score}
+													<span class="block w-2 h-2 rounded-full {currentFamiliarity(result) !== null && score <= currentFamiliarity(result)! ? familiarityDotColor(score) : 'bg-gray-200'}"></span>
 												</button>
 											{/each}
 											{#if currentFamiliarity(result) !== null}
 												<button
 													onclick={() => setFamiliarity(result.word, null)}
 													disabled={updatingWord === result.word}
-													class="w-7 h-7 rounded text-xs font-medium bg-gray-100 text-gray-400 hover:bg-gray-200 disabled:opacity-50"
+													class="p-1 rounded hover:bg-gray-100 disabled:opacity-50 text-gray-400 hover:text-gray-600 ml-0.5"
+													title="Clear familiarity"
+													aria-label="Clear familiarity"
 												>
-													✕
+													<span class="text-[10px] leading-none">✕</span>
 												</button>
 											{/if}
 										</div>
@@ -1694,7 +1699,7 @@
 								</tr>
 								{#if expandedContext.has(result.word)}
 									<tr class="bg-gray-50">
-										<td colspan="8" class="px-4 py-3 border-t border-gray-100">
+										<td colspan="7" class="px-4 py-3 border-t border-gray-100">
 											{@render contextList(result.word)}
 										</td>
 									</tr>
@@ -1854,7 +1859,7 @@
 			     `lg`, the desktop *table* is already showing (it only needs
 			     ~640px to look fine on its own), but a table narrow enough to
 			     fit there has no room left to also fit a 288px side panel
-			     next to it without squeezing "Mark as"/"Actions" into
+			     next to it without squeezing "Familiarity"/"Actions" into
 			     unreadable overlap - so the panel keeps overlaying instead of
 			     joining the flex row until there's actually room (`lg`,
 			     1024px) for both side by side. See WordDetailModal.svelte for
