@@ -748,9 +748,9 @@
 						</div>
 					{:else}
 						<div class="space-y-1">
-							{#if entry.pronunciation}<p class="text-sm text-blue-600">{entry.pronunciation}</p>{/if}
-							{#if entry.meaning}<p class="text-sm text-gray-700">{entry.meaning}</p>{/if}
-							{#if entry.notes}<p class="text-xs text-gray-500 italic">{entry.notes}</p>{/if}
+							{#if entry.pronunciation}<p class="text-sm text-blue-600 break-words">{entry.pronunciation}</p>{/if}
+							{#if entry.meaning}<p class="text-sm text-gray-700 break-words">{entry.meaning}</p>{/if}
+							{#if entry.notes}<p class="text-xs text-gray-500 italic break-words">{entry.notes}</p>{/if}
 							{#if !entry.pronunciation && !entry.meaning && !entry.notes}<p class="text-sm text-gray-400">No details added yet.</p>{/if}
 							{#if entry.scope !== 'analysis' && entry.affects_dag === false}
 								<span class="inline-block text-xs px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">Excluded from segmentation</span>
@@ -856,7 +856,7 @@
 				<ul class="space-y-1.5 mb-2">
 					{#each detail.sample_sentences as s (s.id)}
 						<li class="flex items-start justify-between gap-2">
-							<p class="text-sm text-gray-700">{s.sentence}</p>
+							<p class="text-sm text-gray-700 min-w-0 break-words">{s.sentence}</p>
 							<button onclick={() => removeSampleSentence(s.id)} disabled={deletingSentenceId === s.id} class="text-gray-300 hover:text-red-600 disabled:opacity-50 shrink-0" title="Remove sample sentence" aria-label="Remove sample sentence">✕</button>
 						</li>
 					{/each}
