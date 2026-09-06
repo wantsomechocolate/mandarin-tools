@@ -1563,7 +1563,7 @@
 					<p class="text-gray-500 p-4">Loading...</p>
 				{:else if analysis}
 					<div class="overflow-x-auto">
-					<table class="w-full min-w-[640px]">
+					<table class="w-full">
 						<thead class="bg-gray-50 border-b border-gray-200">
 							<tr>
 								<th class="text-left px-4 py-3 text-sm font-medium text-gray-700">{@render sortHeader('Word', 'word')}</th>
@@ -1598,14 +1598,14 @@
 									<td class="px-4 py-3 text-gray-600">{result.count}</td>
 									<td class="px-4 py-3">
 										<span
-											class="inline-block text-xs px-2 py-1 rounded-full {bucketColor(result.source)}"
+											class="inline-block text-center text-xs px-2 py-1 rounded-full {bucketColor(result.source)}"
 											title={result.source === 'longest_match_only' ? 'Found only by the legacy longest-matching pass — not confirmed by the main segmenter. Likely a dictionary gap; review before trusting it.' : ''}
 										>
 											{bucketLabel(result.source)}
 										</span>
 									</td>
 									<td class="px-4 py-3">
-										<span class="inline-block text-xs px-2 py-1 rounded-full {evidenceTierColor(result.evidence_tier)}">
+										<span class="inline-block text-center text-xs px-2 py-1 rounded-full {evidenceTierColor(result.evidence_tier)}">
 											{evidenceTierLabel(result.evidence_tier)}
 										</span>
 									</td>
@@ -1755,12 +1755,12 @@
 								<div class="flex flex-wrap items-center gap-2 border-t border-gray-50 px-4 pt-2 pb-3 text-sm">
 									<span class="text-gray-600">Count: {result.count}</span>
 									<span
-										class="inline-block text-xs px-2 py-1 rounded-full {bucketColor(result.source)}"
+										class="inline-block text-center text-xs px-2 py-1 rounded-full {bucketColor(result.source)}"
 										title={result.source === 'longest_match_only' ? 'Found only by the legacy longest-matching pass — not confirmed by the main segmenter. Likely a dictionary gap; review before trusting it.' : ''}
 									>
 										{bucketLabel(result.source)}
 									</span>
-									<span class="inline-block text-xs px-2 py-1 rounded-full {evidenceTierColor(result.evidence_tier)}">
+									<span class="inline-block text-center text-xs px-2 py-1 rounded-full {evidenceTierColor(result.evidence_tier)}">
 										{evidenceTierLabel(result.evidence_tier)}
 									</span>
 									<span class="text-xs px-2 py-1 rounded-full {familiarityColor(currentFamiliarity(result))}">
