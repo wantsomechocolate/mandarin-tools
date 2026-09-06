@@ -340,6 +340,25 @@
 		BUCKETS.filter((b) => bucketState[b.id] !== (b.defaultHide ? 'hide' : 'show')).length
 	);
 
+	// Header stats (unique words / total occurrences) reflect Main
+	// segmentation only - Extra matches and Repeated sequences are
+	// supplemental annotations layered on top, not part of the primary
+	// segmentation, so counting them here would overstate what the text
+	// actually segments into. Reuses the same 'mainSegmentation' bucket
+	// test the Bucket filter chip already uses, rather than re-deriving
+	// the source set a second time. The backend response's own
+	// unique_words/total_words fields are untouched (still every result,
+	// every source) - this is a display-only narrowing, computed from the
+	// full analysis.results already on the page, in case those fuller
+	// numbers get their own breakdown elsewhere later.
+	const mainSegResults = $derived.by(() => {
+		if (!analysis) return [];
+		const test = BUCKETS.find((b) => b.id === 'mainSegmentation')!.test;
+		return analysis.results.filter(test);
+	});
+	const mainSegUniqueWords = $derived(mainSegResults.length);
+	const mainSegTotalWords = $derived(mainSegResults.reduce((sum, r) => sum + r.count, 0));
+
 	function bucketCount(bucket: Bucket): number {
 		// Always against the FULL unfiltered result set, not filteredResults
 		// - the point is showing "Garbage (8)" regardless of what other
@@ -1074,6 +1093,13 @@
 	{/if}
 {/snippet}
 
+{#snippet iconBook()}
+	<svg class="w-4 h-4" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+		<path d="M10 5.75c-1.3-1-3.1-1.5-5.25-1.5a.75.75 0 0 0-.75.75v9.5c0 .41.34.75.75.75 2.15 0 3.95.5 5.25 1.5 1.3-1 3.1-1.5 5.25-1.5.41 0 .75-.34.75-.75V5c0-.41-.34-.75-.75-.75-2.15 0-3.95.5-5.25 1.5Z" />
+		<path d="M10 5.75v11" />
+	</svg>
+{/snippet}
+
 {#snippet iconBookmark(filled: boolean)}
 	<svg class="w-4 h-4" viewBox="0 0 20 20" fill={filled ? 'currentColor' : 'none'} stroke="currentColor" stroke-width="1.3">
 		<path d="M5 3.5A1.5 1.5 0 0 1 6.5 2h7A1.5 1.5 0 0 1 15 3.5v13l-5-3-5 3v-13Z" stroke-linejoin="round" />
@@ -1400,29 +1426,36 @@
 	     title from wrapping one character per line. -->
 	<nav class="bg-white shadow-sm px-6 py-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 sm:gap-0">
 		<div class="flex flex-wrap items-center gap-4 min-w-0">
-			<a href="/" class="text-gray-600 hover:text-gray-800 text-sm shrink-0">← Back</a>
+			<a href="/" class="text-gray-600 hover:text-gray-800 shrink-0" aria-label="Back to your texts">←</a>
 			<h1 class="text-xl font-bold text-gray-800 min-w-0 truncate" title={analysis?.title ?? 'Analysis Results'}>
 				{analysis?.title ?? 'Analysis Results'}
 			</h1>
 			{#if analysis}
 				<a
 					href="/input-texts/{analysis.input_text_id}"
-					class="text-sm text-blue-600 hover:text-blue-800 shrink-0"
+					class="text-gray-400 hover:text-blue-600 shrink-0"
+					title="View source text"
+					aria-label="View source text"
 				>
-					View source text
+					{@render iconBook()}
 				</a>
 			{/if}
 		</div>
 		{#if analysis}
 			<div class="flex flex-wrap items-center gap-4">
-				<label class="flex items-center gap-1.5 text-sm text-gray-700 cursor-pointer shrink-0">
-					<input type="checkbox" bind:checked={readingViewOn} class="rounded" />
-					Reading view
-				</label>
 				<div class="text-sm text-gray-500 flex flex-wrap gap-4">
-					<span>{analysis.unique_words} unique words</span>
-					<span>{analysis.total_words} total occurrences</span>
+					<span>{mainSegUniqueWords} unique words</span>
+					<span>{mainSegTotalWords} total occurrences</span>
 				</div>
+				<button
+					type="button"
+					onclick={() => readingViewOn = !readingViewOn}
+					aria-pressed={readingViewOn}
+					class="text-sm px-3 py-1.5 rounded-full border shrink-0 transition-colors
+					{readingViewOn ? 'bg-blue-100 border-blue-300 text-blue-700' : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-100'}"
+				>
+					Reading view
+				</button>
 			</div>
 		{/if}
 	</nav>
