@@ -1719,13 +1719,15 @@
 				{:else if analysis}
 					{#each filteredResults() as result}
 						<div
-							role="button"
-							tabindex="0"
-							onclick={(e) => handleRowClick(e, result.word)}
-							onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleRowClick(e, result.word); } }}
 							class="{result.source === 'longest_match_only' ? 'bg-amber-50/40' : ''} {garbageWords.has(result.word) ? 'bg-red-50/40' : ''}"
 						>
-							<div class="flex items-center justify-between gap-2 px-4 py-3">
+							<div
+								role="button"
+								tabindex="0"
+								onclick={(e) => handleRowClick(e, result.word)}
+								onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleRowClick(e, result.word); } }}
+								class="flex items-center justify-between gap-2 px-4 py-3 cursor-pointer"
+							>
 								<span class="text-lg font-medium truncate">{result.word}</span>
 								<div class="flex items-center gap-0.5 shrink-0">
 									<button
