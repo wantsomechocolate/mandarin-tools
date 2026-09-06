@@ -207,7 +207,7 @@
 	let userWordMenuOpenFor: string | null = $state(null);
 	let togglingUserWordAction: string | null = $state(null);
 	// Mobile card list only - independent per-row accordion toggles (see
-	// snippets iconPlusMinus/iconHamburger and the sm:hidden card block).
+	// snippets iconPlusMinus/iconHamburger and the min-[700px]:hidden card block).
 	let expandedInfo = $state(new Set<string>());
 	let expandedActions = $state(new Set<string>());
 	// The word currently shown in WordDetailPanel.svelte, or null when
@@ -1012,7 +1012,7 @@
 		} else {
 			next.add(word);
 			// Context is folded into this same accordion section on mobile
-			// (see the sm:hidden card list) rather than a separate toggle.
+			// (see the min-[700px]:hidden card list) rather than a separate toggle.
 			ensureContextLoaded(word);
 		}
 		expandedInfo = next;
@@ -1042,7 +1042,7 @@
 {#snippet sortHeader(label: string, column: 'word' | 'count' | 'source' | 'familiarity')}
 	<button
 		onclick={() => toggleSort(column)}
-		class="flex items-center gap-1 hover:text-blue-600 {sortColumn === column ? 'text-blue-600' : ''}"
+		class="w-full flex items-center justify-center gap-1 hover:text-blue-600 {sortColumn === column ? 'text-blue-600' : ''}"
 		title="Sort by {label}"
 	>
 		{label}
@@ -1231,9 +1231,9 @@
      toggleVisibilityMenu).
 
      Two sibling containers, gated by the same open/close state, split by
-     breakpoint via CSS (hidden sm:block / sm:hidden) rather than JS - the
-     sm+ dropdown positions absolute right-0, fine when the trigger sits
-     near a wide row's right edge; below sm the same trigger sits near the
+     breakpoint via CSS (hidden min-[700px]:block / min-[700px]:hidden) rather than JS - the
+     700px+ dropdown positions absolute right-0, fine when the trigger sits
+     near a wide row's right edge; below 700px the same trigger sits near the
      LEFT of a narrow card, where that same dropdown would overflow off the
      left edge of the screen, so it becomes a bottom sheet instead (same
      treatment WordDetailPanel's own modal uses, for visual consistency). -->
@@ -1255,20 +1255,20 @@
 			     paint, not DOM position - this div is still a descendant of the
 			     row), which would immediately reopen the word-detail panel
 			     right after the popover closes. -->
-			<div class="hidden sm:block fixed inset-0 z-40" onclick={(e) => { e.stopPropagation(); visibilityMenuOpenFor = null; }} role="presentation"></div>
+			<div class="hidden min-[700px]:block fixed inset-0 z-40" onclick={(e) => { e.stopPropagation(); visibilityMenuOpenFor = null; }} role="presentation"></div>
 			<div
-				class="hidden sm:block absolute right-0 top-full mt-1 z-50 w-56 bg-white rounded-lg shadow-lg border border-gray-100 py-1"
+				class="hidden min-[700px]:block absolute right-0 top-full mt-1 z-50 w-56 bg-white rounded-lg shadow-lg border border-gray-100 py-1"
 				onclick={(e) => e.stopPropagation()}
 				role="presentation"
 			>
 				{@render visibilityMenuItems(result)}
 			</div>
 
-			<!-- below sm: bottom sheet, its own dimmed backdrop - same
+			<!-- below 700px: bottom sheet, its own dimmed backdrop - same
 			     stopPropagation reasoning as the dropdown backdrop above. -->
-			<div class="sm:hidden fixed inset-0 z-40 bg-black/30" onclick={(e) => { e.stopPropagation(); visibilityMenuOpenFor = null; }} role="presentation"></div>
+			<div class="min-[700px]:hidden fixed inset-0 z-40 bg-black/30" onclick={(e) => { e.stopPropagation(); visibilityMenuOpenFor = null; }} role="presentation"></div>
 			<div
-				class="sm:hidden fixed inset-x-0 bottom-0 z-50 bg-white rounded-t-2xl shadow-sm p-4 max-h-[70vh] overflow-y-auto"
+				class="min-[700px]:hidden fixed inset-x-0 bottom-0 z-50 bg-white rounded-t-2xl shadow-sm p-4 max-h-[70vh] overflow-y-auto"
 				onclick={(e) => e.stopPropagation()}
 				role="presentation"
 			>
@@ -1360,20 +1360,20 @@
 			     comment for why (this div is still a DOM descendant of the
 			     row/card despite position:fixed, so an unguarded click bubbles
 			     up into the row's own onclick and reopens the detail panel). -->
-			<div class="hidden sm:block fixed inset-0 z-40" onclick={(e) => { e.stopPropagation(); userWordMenuOpenFor = null; }} role="presentation"></div>
+			<div class="hidden min-[700px]:block fixed inset-0 z-40" onclick={(e) => { e.stopPropagation(); userWordMenuOpenFor = null; }} role="presentation"></div>
 			<div
-				class="hidden sm:block absolute right-0 top-full mt-1 z-50 w-60 bg-white rounded-lg shadow-lg border border-gray-100 py-1"
+				class="hidden min-[700px]:block absolute right-0 top-full mt-1 z-50 w-60 bg-white rounded-lg shadow-lg border border-gray-100 py-1"
 				onclick={(e) => e.stopPropagation()}
 				role="presentation"
 			>
 				{@render userWordMenuItems(result)}
 			</div>
 
-			<!-- below sm: bottom sheet, its own dimmed backdrop - same
+			<!-- below 700px: bottom sheet, its own dimmed backdrop - same
 			     stopPropagation reasoning as the dropdown backdrop above. -->
-			<div class="sm:hidden fixed inset-0 z-40 bg-black/30" onclick={(e) => { e.stopPropagation(); userWordMenuOpenFor = null; }} role="presentation"></div>
+			<div class="min-[700px]:hidden fixed inset-0 z-40 bg-black/30" onclick={(e) => { e.stopPropagation(); userWordMenuOpenFor = null; }} role="presentation"></div>
 			<div
-				class="sm:hidden fixed inset-x-0 bottom-0 z-50 bg-white rounded-t-2xl shadow-sm p-4 max-h-[70vh] overflow-y-auto"
+				class="min-[700px]:hidden fixed inset-x-0 bottom-0 z-50 bg-white rounded-t-2xl shadow-sm p-4 max-h-[70vh] overflow-y-auto"
 				onclick={(e) => e.stopPropagation()}
 				role="presentation"
 			>
@@ -1388,9 +1388,10 @@
 {/snippet}
 
 <div class="min-h-screen bg-gray-50">
-	<!-- Below sm (640px, this page's own desktop-table/mobile-card
-	     breakpoint - see the hidden sm:block / sm:hidden pair on the results
-	     list): the title cluster and the reading-view/counts cluster stack
+	<!-- Below sm (640px - Tailwind's own breakpoint, unrelated to this
+	     page's desktop-table/mobile-card swap, which now happens at 700px;
+	     see the hidden min-[700px]:block / min-[700px]:hidden pair on the
+	     results list): the title cluster and the reading-view/counts cluster stack
 	     as two full-width rows instead of sharing one - at sm+, unchanged
 	     single-row layout. The title itself gets min-w-0 + truncate (plus a
 	     title= attribute for the full value) so it's protected from being
@@ -1556,9 +1557,9 @@
 			{/if}
 		</div>
 
-		<div class="flex flex-col sm:flex-row gap-4">
+		<div class="flex flex-col min-[700px]:flex-row gap-4">
 			<!-- Results table (sm and up - see the mobile card list below for < sm) -->
-			<div class="hidden sm:block flex-1 min-w-0 bg-white rounded-lg shadow-sm overflow-hidden">
+			<div class="hidden min-[700px]:block flex-1 min-w-0 bg-white rounded-lg shadow-sm overflow-hidden">
 				{#if loading}
 					<p class="text-gray-500 p-4">Loading...</p>
 				{:else if analysis}
@@ -1566,12 +1567,12 @@
 					<table class="w-full">
 						<thead class="bg-gray-50 border-b border-gray-200">
 							<tr>
-								<th class="text-left px-4 py-3 text-sm font-medium text-gray-700">{@render sortHeader('Word', 'word')}</th>
-								<th class="text-left px-4 py-3 text-sm font-medium text-gray-700">{@render sortHeader('Count', 'count')}</th>
-								<th class="text-left px-4 py-3 text-sm font-medium text-gray-700">Bucket</th>
-								<th class="text-left px-4 py-3 text-sm font-medium text-gray-700">{@render sortHeader('Source', 'source')}</th>
-								<th class="text-left px-4 py-3 text-sm font-medium text-gray-700">{@render sortHeader('Familiarity', 'familiarity')}</th>
-								<th class="text-left px-4 py-3 text-sm font-medium text-gray-700">Actions</th>
+								<th class="text-center px-4 py-3 text-sm font-medium text-gray-700">{@render sortHeader('Word', 'word')}</th>
+								<th class="text-center px-4 py-3 text-sm font-medium text-gray-700">{@render sortHeader('Count', 'count')}</th>
+								<th class="text-center px-4 py-3 text-sm font-medium text-gray-700">Bucket</th>
+								<th class="text-center px-4 py-3 text-sm font-medium text-gray-700">{@render sortHeader('Source', 'source')}</th>
+								<th class="text-center px-4 py-3 text-sm font-medium text-gray-700">{@render sortHeader('Familiarity', 'familiarity')}</th>
+								<th class="text-center px-4 py-3 text-sm font-medium text-gray-700">Actions</th>
 								<th class="px-2 py-3"><span class="sr-only">Open details</span></th>
 							</tr>
 						</thead>
@@ -1583,7 +1584,7 @@
 									class="group cursor-pointer hover:bg-gray-50 {result.source === 'longest_match_only' ? 'bg-amber-50/40' : ''} {garbageWords.has(result.word) ? 'bg-red-50/40' : ''} {selectedWordForPanel === result.word ? '!bg-blue-50 ring-1 ring-inset ring-blue-200' : ''}"
 								>
 									<td class="px-4 py-3 text-lg font-medium">
-										<div class="flex items-center gap-1.5">
+										<div class="flex items-center justify-center gap-1.5">
 											<button
 												onclick={() => toggleContext(result.word)}
 												class="p-0.5 rounded text-gray-400 hover:text-blue-600 hover:bg-blue-50 shrink-0"
@@ -1595,8 +1596,8 @@
 											{result.word}
 										</div>
 									</td>
-									<td class="px-4 py-3 text-gray-600">{result.count}</td>
-									<td class="px-4 py-3">
+									<td class="px-4 py-3 text-gray-600 text-center">{result.count}</td>
+									<td class="px-4 py-3 text-center">
 										<span
 											class="inline-block text-center text-xs px-2 py-1 rounded-full {bucketColor(result.source)}"
 											title={result.source === 'longest_match_only' ? 'Found only by the legacy longest-matching pass — not confirmed by the main segmenter. Likely a dictionary gap; review before trusting it.' : ''}
@@ -1604,13 +1605,13 @@
 											{bucketLabel(result.source)}
 										</span>
 									</td>
-									<td class="px-4 py-3">
+									<td class="px-4 py-3 text-center">
 										<span class="inline-block text-center text-xs px-2 py-1 rounded-full {evidenceTierColor(result.evidence_tier)}">
 											{evidenceTierLabel(result.evidence_tier)}
 										</span>
 									</td>
-									<td class="px-4 py-3">
-										<div class="flex items-center gap-0.5">
+									<td class="px-4 py-3 text-center">
+										<div class="flex items-center justify-center gap-0.5">
 											{#each [1, 2, 3, 4, 5] as score}
 												<button
 													onclick={() => setFamiliarity(result.word, score)}
@@ -1634,8 +1635,8 @@
 											</button>
 										</div>
 									</td>
-									<td class="px-4 py-3">
-										<div class="flex flex-wrap gap-0.5 items-center">
+									<td class="px-4 py-3 min-w-[92px]">
+										<div class="flex flex-wrap justify-center gap-0.5 items-center">
 											{@render visibilityAction(result)}
 											{@render userWordAction(result)}
 											{#if starredWords.has(result.word)}
@@ -1715,7 +1716,7 @@
 			     controls. Independent per-word toggles (expandedInfo/expandedActions),
 			     everything below reuses the exact same handlers/derived helpers
 			     and icon snippets the desktop table above uses. -->
-			<div class="sm:hidden bg-white rounded-lg shadow-sm overflow-hidden divide-y divide-gray-100">
+			<div class="min-[700px]:hidden bg-white rounded-lg shadow-sm overflow-hidden divide-y divide-gray-100">
 				{#if loading}
 					<p class="text-gray-500 p-4">Loading...</p>
 				{:else if analysis}
