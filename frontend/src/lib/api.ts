@@ -106,6 +106,21 @@ export async function register(email: string, username: string, password: string
     return request('POST', '/auth/register', { email, username, password });
 }
 
+// The Account page (routes/profile/+page.svelte - not routes/word-lists,
+// which is the vocabulary-management section this app used to call
+// "Profile" before the two were split apart).
+export async function getCurrentUser() {
+    return request('GET', '/auth/me');
+}
+
+export async function changePassword(currentPassword: string, newPassword: string) {
+    return request('PUT', '/auth/me/password', { current_password: currentPassword, new_password: newPassword });
+}
+
+export async function deleteAccount(password: string) {
+    return request('DELETE', '/auth/me', { password });
+}
+
 // Analysis
 export async function analyzeText(title: string | null, body: string) {
     return request('POST', '/known-words/analyze', { title, body });
@@ -287,6 +302,16 @@ export async function deleteWordNote(word: string) {
 }
 
 // Stopwords
+// The code-level DEFAULT_STOPWORDS set (service.py) - punctuation/
+// whitespace applied for every user unconditionally, not stored as its own
+// DB rows (see list_default_stopwords' docstring, router.py). Separate from
+// listStopwords, which only ever returned DB rows - this is what lets the
+// profile page show what's already covered by default and warn before
+// re-adding one of these as if it weren't already a stopword.
+export async function listDefaultStopwords() {
+    return request('GET', '/known-words/stopwords/defaults');
+}
+
 export async function listStopwords() {
     return request('GET', '/known-words/stopwords');
 }

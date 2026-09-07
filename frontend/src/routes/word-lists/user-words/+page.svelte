@@ -187,12 +187,32 @@
 		}
 	}
 
+	// Specifically a *global* entry, not "this word appears anywhere in
+	// words()" - a word with only a text/analysis-scoped entry has no global
+	// row yet, and adding one here is a legitimate, additive action (a
+	// distinct DB row - see upsert_user_word_detail's docstring, router.py),
+	// not a duplicate. Only an existing *global* entry makes this a repeat.
+	const existingGlobalUserWord = $derived(
+		rawRows.find((r) => r.word === newWord.trim() && r.scope_analysis_id == null && r.scope_input_text_id == null) ?? null
+	);
+
 	// Always global - a new entry from this page has no "current text/
 	// analysis" to scope to. Text/analysis-scoped entries are added from
 	// within that specific analysis's word-detail panel instead.
+	//
+	// Unlike Known Words, this can't safely turn a re-add into an update:
+	// this form only ever collects a bare word, so proceeding would call
+	// upsertUserWordDetail(word, { affects_dag: true }, ...) against an
+	// existing row - and since that endpoint only touches fields explicitly
+	// present in the request (exclude_unset - see its docstring), affects_dag
+	// would get silently forced back to true even if the existing entry had
+	// deliberately been set to false ("excluded from segmentation"). There's
+	// no value in this form to safely "update" to, so a genuine global
+	// duplicate stays blocked - the warning below points at the panel, which
+	// is the one place that data can be seen and changed intentionally.
 	async function addWord() {
 		const word = newWord.trim();
-		if (!word || words().some((w) => w.word === word)) return;
+		if (!word || existingGlobalUserWord) return;
 		adding = true;
 		try {
 			const created = await api.upsertUserWordDetail(word, { affects_dag: true }, { scope: 'global' }) as UserWordRawRow;
@@ -263,12 +283,24 @@
 		/>
 		<button
 			onclick={addWord}
-			disabled={!newWord.trim() || adding}
+			disabled={!newWord.trim() || adding || !!existingGlobalUserWord}
 			class="text-sm px-3 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50"
 		>
-			{adding ? 'Adding...' : 'Add'}
+			{adding ? 'Adding...' : existingGlobalUserWord ? 'Already added' : 'Add'}
 		</button>
 	</div>
+	{#if existingGlobalUserWord}
+		<p class="text-xs text-amber-600 mt-2">
+			"{existingGlobalUserWord.word}" already has a global entry.
+			<button
+				onclick={() => selectedWordForPanel = existingGlobalUserWord.word}
+				class="underline hover:text-amber-800"
+			>
+				Open it below
+			</button>
+			to edit its pronunciation, meaning, notes, or segmentation weight.
+		</p>
+	{/if}
 </div>
 
 <div class="flex items-center justify-between mb-3 gap-3 flex-wrap">

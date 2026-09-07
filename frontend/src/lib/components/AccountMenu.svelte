@@ -1,8 +1,8 @@
 <script lang="ts">
 	import { logout } from '$lib/auth';
 
-	// Account-menu trigger - a single icon + dropdown (Profile / Sign out)
-	// shared across every page's header bar, rather than each page carrying
+	// Account-menu trigger - a single icon + dropdown (Word Lists / Account /
+	// Sign out) shared across every page's header bar, rather than each page carrying
 	// its own copy of the open/close state and dropdown markup (unlike the
 	// plain, stateless icon snippets - iconHome/iconBook/etc. - that stay
 	// duplicated per-file by this codebase's convention, this one has real
@@ -37,11 +37,18 @@
 		<div class="fixed inset-0 z-40" onclick={(e) => { e.stopPropagation(); open = false; }} role="presentation"></div>
 		<div class="absolute right-0 top-full mt-1 z-50 w-40 bg-white rounded-lg shadow-lg border border-gray-100 py-1">
 			<a
+				href="/word-lists"
+				class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
+				onclick={() => open = false}
+			>
+				Word Lists
+			</a>
+			<a
 				href="/profile"
 				class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
 				onclick={() => open = false}
 			>
-				Profile
+				Account
 			</a>
 			<button
 				onclick={() => { open = false; logout(); }}

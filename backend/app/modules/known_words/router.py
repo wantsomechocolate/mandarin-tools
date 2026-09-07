@@ -1222,6 +1222,24 @@ def delete_input_text(
 
 
 # Stopwords
+@router.get("/stopwords/defaults", response_model=list[str])
+def list_default_stopwords(current_user: User = Depends(get_current_user)):
+    """
+    The code-level DEFAULT_STOPWORDS set (service.py) - punctuation/
+    whitespace, not stored as DB rows and not user- or system-row-editable
+    (see Stopword's docstring, models.py, for why: these apply to every
+    user unconditionally, same as the "system default" DB rows do, but
+    they're a fixed code constant rather than data). Identical for every
+    user (current_user is only required for auth consistency with every
+    other endpoint here, not to scope the result). Exists so the frontend
+    can show what's already covered by default (previously invisible
+    entirely - see the Stopwords profile page's own docstring) and warn
+    before a user tries to "add" a word that's already one of these, rather
+    than silently creating a redundant row.
+    """
+    return sorted(service.DEFAULT_STOPWORDS)
+
+
 @router.get("/stopwords", response_model=list[StopwordResponse])
 def list_stopwords(
     db: Session = Depends(get_db),

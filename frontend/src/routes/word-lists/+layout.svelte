@@ -13,12 +13,12 @@
 	// then Stopwords/Garbage last (maintenance/cleanup lists, touched less
 	// often).
 	const tabs = [
-		{ href: '/profile/starred-words', label: 'Starred Words' },
-		{ href: '/profile/known-words', label: 'Known Words' },
-		{ href: '/profile/user-words', label: 'User Words' },
-		{ href: '/profile/notes', label: 'Notes' },
-		{ href: '/profile/stopwords', label: 'Stopwords' },
-		{ href: '/profile/garbage-words', label: 'Garbage Words' },
+		{ href: '/word-lists/starred-words', label: 'Starred Words' },
+		{ href: '/word-lists/known-words', label: 'Known Words' },
+		{ href: '/word-lists/user-words', label: 'User Words' },
+		{ href: '/word-lists/notes', label: 'Notes' },
+		{ href: '/word-lists/stopwords', label: 'Stopwords' },
+		{ href: '/word-lists/garbage-words', label: 'Garbage Words' },
 	];
 </script>
 
@@ -34,7 +34,7 @@
 {/snippet}
 
 <div class="min-h-screen bg-gray-50">
-	<!-- No mobile-stacking fix needed: "Profile" is a fixed, short English
+	<!-- No mobile-stacking fix needed: "Word Lists" is a fixed, short English
 	     string with no competing right-side content, same reasoning as
 	     analyze/+page.svelte's header. The tab bar below (overflow-x-auto +
 	     whitespace-nowrap) is a deliberate, separate exception to "stack
@@ -44,7 +44,7 @@
 			<a href="/" class="text-gray-400 hover:text-blue-600" aria-label="Home" title="Home">
 				{@render iconHome()}
 			</a>
-			<h1 class="text-xl font-bold text-gray-800">Profile</h1>
+			<h1 class="text-xl font-bold text-gray-800">Word Lists</h1>
 		</div>
 		<AccountMenu />
 	</nav>

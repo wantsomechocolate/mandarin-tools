@@ -143,11 +143,36 @@
 		selectedWordForPanel = word;
 	}
 
+	// unmark_garbage_word (router.py) does one of two different things
+	// server-side depending on what's already there: deletes the user's own
+	// plain row if they have one, or - only when the word is garbage purely
+	// via a system default - adds a *new* override row instead. The old
+	// blanket `raw.filter(word matches && !is_override)` patch assumed only
+	// one non-override row could ever exist per word, which is true right
+	// after a fresh unmark - but a word can end up with BOTH a system-
+	// default row (is_override:false, user_id:null) AND this user's own
+	// flipped-back row (is_override:false, user_id:theirs) at once, via the
+	// "Re-mark as garbage" flow below (or the same flip reachable from the
+	// add form above) - found live while testing that flow. In that state
+	// the blanket filter deleted the system-default row too, even though
+	// only the user's own row was actually removed server-side, making the
+	// word vanish from the list entirely instead of falling back to "still
+	// garbage via the system default."
 	async function unmark(word: string) {
 		updating = word;
 		try {
 			await api.unmarkGarbageWord(word);
-			raw = raw.filter((g) => !(g.word === word && !g.is_override));
+			const ownPlainRow = raw.find((g) => g.word === word && !g.is_override && g.user_id !== null);
+			if (ownPlainRow) {
+				// Backend's first branch: that exact row was deleted.
+				raw = raw.filter((g) => g.id !== ownPlainRow.id);
+			} else {
+				// Backend's second branch: a new override row was created,
+				// server-side, with an id this response doesn't hand back -
+				// simplest correct fix is just re-fetching rather than
+				// fabricating a row.
+				raw = await api.listGarbageWords() as GarbageWordRow[];
+			}
 		} catch (e: unknown) {
 			error = e instanceof Error ? e.message : 'Failed to un-mark';
 		} finally {
@@ -170,13 +195,37 @@
 		}
 	}
 
+	// Two different situations, not one - see the template's two separate
+	// messages. A word already *actively* garbage has nothing useful left
+	// for this form to do (blocked). A word that's currently *excluded*
+	// (an override row cancelling out a marking - see GarbageWord.is_override,
+	// models.py) is a different case: re-adding it here is the same
+	// legitimate "mark it again" flip create_garbage_word already supports
+	// server-side (see its docstring, router.py) - the same action as this
+	// page's own "Re-mark as garbage" button below, just reachable from the
+	// add form too. Not blocked - only flagged, so the user knows what it'll
+	// do. The two are mutually exclusive by construction (resolvedGarbage
+	// already excludes override rows), so only one message can show.
+	const existingActiveGarbage = $derived(resolvedGarbage().find((g) => g.word === newWord.trim()) ?? null);
+	const isCurrentlyExcluded = $derived(excluded().includes(newWord.trim()));
+
 	async function addWord() {
 		const word = newWord.trim();
-		if (!word) return;
+		if (!word || existingActiveGarbage) return;
 		adding = true;
 		try {
 			const created = await api.createGarbageWord(word, false) as GarbageWordRow;
-			raw = [created, ...raw];
+			// The "re-mark an excluded word" case (isCurrentlyExcluded above)
+			// returns the SAME row, flipped (create_garbage_word's docstring,
+			// router.py) - same id, is_override now false. Naively prepending
+			// left the old (stale, still is_override:true) copy of that same
+			// row sitting in `raw` too, and resolvedGarbage's own "any override
+			// row for this word means excluded" rule (see its comment above)
+			// then kept treating the word as excluded even after the flip -
+			// found live while testing this exact flow. Dropping any existing
+			// row with the same id first fixes both this case and is a no-op
+			// for a genuinely new word (nothing to drop).
+			raw = [created, ...raw.filter((g) => g.id !== created.id)];
 			newWord = '';
 		} catch (e: unknown) {
 			error = e instanceof Error ? e.message : 'Failed to add';
@@ -235,12 +284,21 @@
 		/>
 		<button
 			onclick={addWord}
-			disabled={!newWord.trim() || adding}
+			disabled={!newWord.trim() || adding || !!existingActiveGarbage}
 			class="text-sm px-3 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50"
 		>
-			{adding ? 'Adding...' : 'Add'}
+			{adding ? 'Adding...' : existingActiveGarbage ? 'Already marked' : isCurrentlyExcluded ? 'Re-mark as garbage' : 'Add'}
 		</button>
 	</div>
+	{#if existingActiveGarbage}
+		<p class="text-xs text-amber-600 mt-2">
+			"{existingActiveGarbage.word}" is already marked as garbage.
+		</p>
+	{:else if isCurrentlyExcluded}
+		<p class="text-xs text-blue-600 mt-2">
+			"{newWord.trim()}" is currently excluded from garbage - adding it here will re-mark it as garbage (same as "Re-mark as garbage" below).
+		</p>
+	{/if}
 </div>
 
 <div class="flex items-center justify-between mb-3 gap-3 flex-wrap">

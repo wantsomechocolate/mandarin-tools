@@ -36,7 +36,7 @@ done
 
 if $NETWORK; then
     FRONTEND_CMD="npm run dev -- --host 0.0.0.0"
-    BACKEND_CMD="c"
+    BACKEND_CMD="uv run uvicorn app.main:app --host 0.0.0.0 --reload"
     echo "Starting in NETWORK mode - reachable from other devices on this wifi."
     # Best-effort LAN IP guess for convenience - ignores loopback/link-local
     # addresses; if you're on multiple networks (VPN, etc.) this may pick

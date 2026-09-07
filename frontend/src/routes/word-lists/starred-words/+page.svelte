@@ -132,9 +132,16 @@
 		}
 	}
 
+	// Reactive so the form can warn before submission, same as the other
+	// profile tabs' add-forms now do - see notes/+page.svelte's addNote for
+	// the original version of this pattern. Nothing to "update" here (star
+	// status is a plain boolean, not a value like Known Words' familiarity),
+	// so a duplicate stays blocked - the warning just explains why.
+	const existingStarredWord = $derived(rows.find((r) => r.word === newWord.trim()) ?? null);
+
 	async function addWord() {
 		const word = newWord.trim();
-		if (!word || rows.some((r) => r.word === word)) return;
+		if (!word || existingStarredWord) return;
 		adding = true;
 		try {
 			const created = await api.createStarredWord(word) as StarredWordRow;
@@ -193,12 +200,17 @@
 		/>
 		<button
 			onclick={addWord}
-			disabled={!newWord.trim() || adding}
+			disabled={!newWord.trim() || adding || !!existingStarredWord}
 			class="text-sm px-3 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50"
 		>
-			{adding ? 'Adding...' : 'Add'}
+			{adding ? 'Adding...' : existingStarredWord ? 'Already starred' : 'Add'}
 		</button>
 	</div>
+	{#if existingStarredWord}
+		<p class="text-xs text-amber-600 mt-2">
+			"{existingStarredWord.word}" is already starred.
+		</p>
+	{/if}
 </div>
 
 <div class="flex items-center justify-between mb-3 gap-3 flex-wrap">

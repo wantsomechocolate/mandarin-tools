@@ -160,7 +160,7 @@
 </script>
 
 <!-- Shared flex row with the panel below (lg and up) - same mechanism as
-     the analysis results table/profile list pages: the panel's own
+     the analysis results table/word-list pages: the panel's own
      backdrop wrapper collapses to `display: contents` at `lg`, so its
      child joins this row as a sticky-positioned sibling instead of
      floating as a modal. -->

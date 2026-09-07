@@ -169,13 +169,29 @@
 		selectedWordForPanel = word;
 	}
 
+	// Reactive so the form can warn before submission - see the template's
+	// warning message and button label, both keyed off this.
+	const existingKnownWord = $derived(words.find((w) => w.word === newWord.trim()) ?? null);
+
+	// Used to silently no-op when the word was already known - upsertKnownWord
+	// is itself an upsert (see its docstring, router.py), so the guard was
+	// only ever blocking the *frontend* from calling an endpoint that would
+	// have worked fine; it just never told the user why nothing happened.
+	// Unlike User Words below, there's no other field on this row (just the
+	// one familiarity score, which the form already collects a fresh value
+	// for), so letting this proceed as a real update - with the warning
+	// making the update explicit rather than a surprise - is safe, and is
+	// actually the more useful behavior: re-adding a known word with a
+	// different score in the picker now really does re-score it, matching
+	// what a user would reasonably expect instead of nothing happening.
 	async function addWord() {
 		const word = newWord.trim();
-		if (!word || words.some((w) => w.word === word)) return;
+		if (!word) return;
 		adding = true;
 		try {
 			const created = await api.upsertKnownWord(word, newFamiliarity) as KnownWord;
-			words = [created, ...words];
+			const alreadyListed = words.some((w) => w.word === word);
+			words = alreadyListed ? words.map((w) => w.word === word ? created : w) : [created, ...words];
 			newWord = '';
 		} catch (e: unknown) {
 			error = e instanceof Error ? e.message : 'Failed to add word';
@@ -228,9 +244,14 @@
 			disabled={!newWord.trim() || adding}
 			class="text-sm px-3 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50"
 		>
-			{adding ? 'Adding...' : 'Add'}
+			{adding ? 'Adding...' : existingKnownWord ? 'Update familiarity' : 'Add'}
 		</button>
 	</div>
+	{#if existingKnownWord}
+		<p class="text-xs text-amber-600 mt-2">
+			"{existingKnownWord.word}" is already known ({existingKnownWord.familiarity !== null ? `familiarity: ${familiarityLabel(existingKnownWord.familiarity)}` : 'no score set'}) — adding here will update it to {newFamiliarity} - {familiarityLabel(newFamiliarity)}.
+		</p>
+	{/if}
 </div>
 
 <div class="flex items-center justify-between mb-3 gap-3 flex-wrap">
