@@ -34,10 +34,15 @@
 	const panelContext: WordDetailContext = { type: 'global' };
 	let selectedWordForPanel: string | null = $state(null);
 
+	// No more `note` field - that used to live here (a StarredWord-only
+	// column, with its own "+ Note"/"Edit note" UI on this page), but has
+	// been generalized into its own standalone WordNote concept, editable
+	// from the info pane for any word regardless of starred status, and
+	// browsable on its own "Notes" profile tab. See WordNote's docstring,
+	// models.py.
 	interface StarredWordRow {
 		id: number;
 		word: string;
-		note: string | null;
 	}
 
 	let rows: StarredWordRow[] = $state([]);
@@ -46,17 +51,12 @@
 	let search = $state(storedFilters.search ?? '');
 	let saving: string | null = $state(null);
 
-	let editingWord: string | null = $state(null);
-	let noteDraft = $state('');
-
 	let newWord = $state('');
-	let newNote = $state('');
 	let adding = $state(false);
 
 	// Same tri-state toggle/plain-codepoint-comparison shape as Known/User
-	// Words' identical toggleSort - only "word" is sortable here (note has
-	// no natural sort order worth exposing, and the star column is constant
-	// across every row on this page by definition).
+	// Words' identical toggleSort - only "word" is sortable here (the star
+	// column is constant across every row on this page by definition).
 	type SortColumn = 'word' | null;
 	let sortColumn: SortColumn = $state(storedFilters.sortColumn ?? null);
 	let sortDirection: 'asc' | 'desc' = $state(storedFilters.sortDirection ?? 'asc');
@@ -100,9 +100,7 @@
 
 	const filtered = $derived(() => {
 		const q = search.trim();
-		let list = q
-			? rows.filter((r) => r.word.includes(q) || (r.note?.toLowerCase().includes(q.toLowerCase()) ?? false))
-			: rows;
+		let list = q ? rows.filter((r) => r.word.includes(q)) : rows;
 		if (sortColumn === 'word') {
 			list = [...list].sort((a, b) => {
 				// Plain codepoint comparison, not localeCompare with a 'zh'
@@ -115,30 +113,11 @@
 	});
 
 	// Same click-passthrough pattern as Known/User Words - clicking anywhere
-	// on the row opens the panel, unless the click landed on an actual
-	// interactive element (the note input/Save/Cancel, or the star button).
+	// on the row opens the panel, unless the click landed on the star button.
 	function handleRowClick(event: MouseEvent, word: string) {
 		const target = event.target as HTMLElement;
 		if (target.closest('button, a, input, select, textarea')) return;
 		selectedWordForPanel = word;
-	}
-
-	function startEditing(row: StarredWordRow) {
-		editingWord = row.word;
-		noteDraft = row.note ?? '';
-	}
-
-	async function saveNote(word: string) {
-		saving = word;
-		try {
-			const updated = await api.upsertStarredWord(word, noteDraft || null) as StarredWordRow;
-			rows = rows.map((r) => r.word === word ? updated : r);
-			editingWord = null;
-		} catch (e: unknown) {
-			error = e instanceof Error ? e.message : 'Failed to save note';
-		} finally {
-			saving = null;
-		}
 	}
 
 	async function remove(word: string) {
@@ -158,10 +137,9 @@
 		if (!word || rows.some((r) => r.word === word)) return;
 		adding = true;
 		try {
-			const created = await api.createStarredWord(word, newNote || undefined) as StarredWordRow;
+			const created = await api.createStarredWord(word) as StarredWordRow;
 			rows = [created, ...rows];
 			newWord = '';
-			newNote = '';
 		} catch (e: unknown) {
 			error = e instanceof Error ? e.message : 'Failed to star word';
 		} finally {
@@ -177,6 +155,19 @@
 {#snippet iconStar(filled: boolean)}
 	<svg class="w-4 h-4" viewBox="0 0 20 20" fill={filled ? 'currentColor' : 'none'} stroke="currentColor" stroke-width="1.3" stroke-linejoin="round">
 		<path d="M10 2.5l2.2 4.6 5 .7-3.6 3.6.85 5-4.45-2.4-4.45 2.4.85-5-3.6-3.6 5-.7L10 2.5Z" />
+	</svg>
+{/snippet}
+
+<!-- Same up/down chevron as the results page's own sortHeader (analyze/[id])
+     - rotated = ascending, unrotated = descending - rather than the plain
+     "(asc)"/"(desc)" text this page used before. Kept as its own copy per
+     this codebase's per-file icon-snippet convention. -->
+{#snippet iconChevron(expanded: boolean)}
+	<svg
+		class="w-4 h-4 transition-transform {expanded ? 'rotate-180' : ''}"
+		viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"
+	>
+		<path d="M5 7.5l5 5 5-5" />
 	</svg>
 {/snippet}
 
@@ -198,12 +189,6 @@
 			bind:value={newWord}
 			placeholder="Chinese word..."
 			class="border border-gray-300 rounded px-2 py-1 text-sm w-40"
-		/>
-		<input
-			type="text"
-			bind:value={newNote}
-			placeholder="Note (optional)..."
-			class="border border-gray-300 rounded px-2 py-1 text-sm flex-1 min-w-40"
 			onkeydown={(e) => { if (e.key === 'Enter') addWord(); }}
 		/>
 		<button
@@ -220,7 +205,7 @@
 	<input
 		type="search"
 		bind:value={search}
-		placeholder="Search words or notes..."
+		placeholder="Search words..."
 		class="border border-gray-300 rounded px-2 py-1 text-sm w-56"
 	/>
 	<span class="text-sm text-gray-400">{filtered().length} of {rows.length} words</span>
@@ -243,8 +228,8 @@
 			<thead class="bg-gray-50 border-b border-gray-200">
 				<tr>
 					<th class="text-left px-4 py-3 text-sm font-medium text-gray-700">
-						<button onclick={() => toggleSort('word')} class="hover:text-blue-600 {sortColumn === 'word' ? 'text-blue-600' : ''}">
-							Word {#if sortColumn === 'word'}({sortDirection}){/if}
+						<button onclick={() => toggleSort('word')} class="inline-flex items-center gap-1 hover:text-blue-600 {sortColumn === 'word' ? 'text-blue-600' : ''}">
+							Word {#if sortColumn === 'word'}{@render iconChevron(sortDirection === 'asc')}{/if}
 						</button>
 					</th>
 					<th class="w-px whitespace-nowrap text-center px-4 py-3 text-sm font-medium text-gray-700">Starred</th>
@@ -255,37 +240,6 @@
 					<tr class="cursor-pointer hover:bg-gray-50" onclick={(e) => handleRowClick(e, row.word)}>
 						<td class="px-4 py-3">
 							<p class="text-lg font-medium">{row.word}</p>
-							{#if editingWord === row.word}
-								<div class="flex items-center gap-2 mt-1">
-									<input
-										type="text"
-										bind:value={noteDraft}
-										placeholder="Note..."
-										class="flex-1 border border-gray-300 rounded px-2 py-1 text-sm"
-										onkeydown={(e) => { if (e.key === 'Enter') saveNote(row.word); }}
-									/>
-									<button
-										onclick={() => saveNote(row.word)}
-										disabled={saving === row.word}
-										class="text-xs px-3 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50"
-									>
-										Save
-									</button>
-									<button
-										onclick={() => editingWord = null}
-										class="text-xs text-gray-500 hover:text-gray-700"
-									>
-										Cancel
-									</button>
-								</div>
-							{:else}
-								{#if row.note}
-									<p class="text-sm text-gray-500 mt-0.5">{row.note}</p>
-								{/if}
-								<button onclick={() => startEditing(row)} class="text-xs text-blue-600 hover:text-blue-800 mt-0.5">
-									{row.note ? 'Edit note' : '+ Note'}
-								</button>
-							{/if}
 						</td>
 						<td class="w-px whitespace-nowrap px-4 py-3 text-center">
 							<button

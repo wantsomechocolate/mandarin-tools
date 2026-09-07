@@ -143,9 +143,12 @@ export function sourceDetailLabel(tier: SourceDetailTier): string {
 
 export function sourceDetailColor(tier: SourceDetailTier): string {
     const colors: Record<SourceDetailTier, string> = {
-        // Same indigo as evidenceTierColor's 'user' - same meaning, same
-        // color, just present on a finer scale.
-        user: 'bg-indigo-100 text-indigo-700',
+        // Went through indigo (too close to HSK's blue) and purple (too
+        // close to CC-CEDICT's fuchsia) before landing here - yellow is far
+        // enough from blue, fuchsia, and teal on the color wheel to read as
+        // its own clearly separate color, with nothing else in this
+        // specific scale using it.
+        user: 'bg-yellow-100 text-yellow-700',
         // Same blue as evidenceTierColor's 'dictionary' - HSK is the more
         // curated/pedagogical of the two dictionary sources, so it keeps
         // that scale's existing "real dictionary word" color.

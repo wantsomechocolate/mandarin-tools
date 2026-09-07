@@ -252,21 +252,38 @@ export async function deleteSampleSentence(sentenceId: number) {
 }
 
 // Starred words — a lightweight personal bookmark, global only (no scoping,
-// unlike known/user words - see StarredWord's docstring).
+// unlike known/user words - see StarredWord's docstring). No note field
+// here anymore - see WordNote below, which generalized it to any word.
 export async function listStarredWords() {
     return request('GET', '/known-words/starred-words');
 }
 
-export async function createStarredWord(word: string, note?: string) {
-    return request('POST', '/known-words/starred-words', { word, note });
+export async function createStarredWord(word: string) {
+    return request('POST', '/known-words/starred-words', { word });
 }
 
 export async function deleteStarredWord(word: string) {
     return request('DELETE', `/known-words/starred-words/${encodeURIComponent(word)}`);
 }
 
-export async function upsertStarredWord(word: string, note?: string | null) {
-    return request('PUT', `/known-words/starred-words/${encodeURIComponent(word)}`, { note });
+// Word notes - a single free-text note per word, independent of starred/
+// known/user-word status (see WordNote's docstring, models.py). Global per
+// user+word, no scoping - same shape/reasoning as StarredWord.
+export async function listWordNotes() {
+    return request('GET', '/known-words/word-notes');
+}
+
+// Callers never read the response body - an empty/whitespace-only note
+// deletes the row server-side and returns null (see upsert_word_note's
+// docstring, router.py), so every caller already knows locally whether it
+// just saved or cleared the note from the text it sent, same established
+// pattern upsertKnownWord's own callers already follow.
+export async function upsertWordNote(word: string, note: string) {
+    return request('PUT', `/known-words/word-notes/${encodeURIComponent(word)}`, { note });
+}
+
+export async function deleteWordNote(word: string) {
+    return request('DELETE', `/known-words/word-notes/${encodeURIComponent(word)}`);
 }
 
 // Stopwords

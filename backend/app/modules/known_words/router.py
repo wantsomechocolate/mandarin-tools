@@ -22,6 +22,7 @@ from app.modules.known_words.models import (
     Stopword,
     GarbageWord,
     StarredWord,
+    WordNote,
     DictionaryWord,
     HskEntry,
     HskForm,
@@ -54,7 +55,8 @@ from app.modules.known_words.schemas import (
     GarbageWordResponse,
     StarredWordCreate,
     StarredWordResponse,
-    StarredWordUpsert,
+    WordNoteUpsert,
+    WordNoteResponse,
     HskFormDetail,
     CedictSense,
     WordDetail,
@@ -1401,38 +1403,8 @@ def create_starred_word(
     starred = StarredWord(
         user_id=current_user.id,
         word=starred_in.word,
-        note=starred_in.note,
     )
     db.add(starred)
-    db.commit()
-    db.refresh(starred)
-    return starred
-
-
-@router.put("/starred-words/{word}", response_model=StarredWordResponse)
-def upsert_starred_word(
-    word: str,
-    update: StarredWordUpsert,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """Creates or updates a starred word's note — same upsert pattern as
-    /fragments/{word}."""
-    starred = db.query(StarredWord).filter_by(
-        user_id=current_user.id, word=word
-    ).first()
-
-    if starred:
-        for field, value in update.model_dump(exclude_unset=True).items():
-            setattr(starred, field, value)
-    else:
-        starred = StarredWord(
-            user_id=current_user.id,
-            word=word,
-            **update.model_dump(exclude_unset=True),
-        )
-        db.add(starred)
-
     db.commit()
     db.refresh(starred)
     return starred
@@ -1450,6 +1422,67 @@ def delete_starred_word(
     if not starred:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Starred word not found")
     db.delete(starred)
+    db.commit()
+
+
+# Word notes — a single free-text note per word, independent of starred/
+# known/user-word status (see WordNote's docstring, models.py for why this
+# used to be a StarredWord-only column). Global only, same reasoning as
+# StarredWord.
+@router.get("/word-notes", response_model=list[WordNoteResponse])
+def list_word_notes(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Excludes garbage words - same read-time-filter-only treatment as
+    list_starred_words/list_known_words/list_user_words."""
+    garbage_words = service.get_user_garbage_words(current_user.id, db)
+    rows = db.query(WordNote).filter_by(user_id=current_user.id).all()
+    return [r for r in rows if r.word not in garbage_words]
+
+
+@router.put("/word-notes/{word}", response_model=WordNoteResponse | None)
+def upsert_word_note(
+    word: str,
+    update: WordNoteUpsert,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Creates or updates a word's note. Empty/whitespace-only text deletes
+    the row instead of persisting it - same "this row's only reason to
+    exist" pattern upsert_known_word's familiarity uses (see its docstring)
+    - a WordNote row exists purely to hold note text, so an empty one left
+    behind would be exactly the kind of orphaned row that fix was about."""
+    note_text = update.note.strip()
+    existing = db.query(WordNote).filter_by(user_id=current_user.id, word=word).first()
+
+    if not note_text:
+        if existing:
+            db.delete(existing)
+            db.commit()
+        return None
+
+    if existing:
+        existing.note = note_text
+    else:
+        existing = WordNote(user_id=current_user.id, word=word, note=note_text)
+        db.add(existing)
+
+    db.commit()
+    db.refresh(existing)
+    return existing
+
+
+@router.delete("/word-notes/{word}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_word_note(
+    word: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    note = db.query(WordNote).filter_by(user_id=current_user.id, word=word).first()
+    if not note:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Word note not found")
+    db.delete(note)
     db.commit()
 
 
@@ -1479,6 +1512,7 @@ def get_word_detail(
 
     known_word = db.query(KnownWord).filter_by(user_id=current_user.id, word=word).first()
     starred = db.query(StarredWord).filter_by(user_id=current_user.id, word=word).first()
+    word_note = db.query(WordNote).filter_by(user_id=current_user.id, word=word).first()
     is_garbage = word in service.get_user_garbage_words(current_user.id, db)
 
     dict_word = db.query(DictionaryWord).filter_by(word=word).first()
@@ -1567,6 +1601,7 @@ def get_word_detail(
         user_words=user_words,
         word_visibility=word_visibility,
         sample_sentences=sample_sentences,
+        note=word_note.note if word_note else None,
         user_word_entries=user_word_entries,
         visibility_entries=visibility_entries,
     )

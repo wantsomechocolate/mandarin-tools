@@ -1,13 +1,13 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { isLoggedIn, logout } from '$lib/auth';
+	import { isLoggedIn } from '$lib/auth';
 	import * as api from '$lib/api';
 	import { goto } from '$app/navigation';
+	import AccountMenu from '$lib/components/AccountMenu.svelte';
 
 	let inputTexts: any[] = $state([]);
 	let loading = $state(true);
 	let error = $state('');
-	let profileMenuOpen = $state(false);
 
 	onMount(async () => {
 		if (!isLoggedIn()) {
@@ -33,17 +33,6 @@
 		}
 	}
 </script>
-
-<!-- Account-menu trigger - the nav's own "Profile" text link/"Sign out"
-     button folded into one icon + dropdown, so New Analysis (the actual
-     primary action here) can take over the rightmost slot instead of
-     sitting between two lower-priority account actions. -->
-{#snippet iconUser()}
-	<svg class="w-5 h-5" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
-		<circle cx="10" cy="7" r="3" />
-		<path d="M4 16.5c0-3 2.7-5 6-5s6 2 6 5" />
-	</svg>
-{/snippet}
 
 <!-- Same bar-chart glyph as input-texts/[id]'s own "view latest results"
      link (see its docstring there) - kept as its own copy rather than a
@@ -84,42 +73,10 @@
 	<nav class="bg-white shadow-sm px-6 py-4 flex justify-between items-center flex-wrap gap-3">
 		<h1 class="text-xl font-bold text-gray-800">Mandarin Tools</h1>
 		<div class="flex gap-4 items-center flex-wrap">
-			<!-- Relative wrapper + backdrop-click-to-close, same pattern
-			     analyze/[id]'s own popovers (visibilityAction/userWordAction)
-			     use - stopPropagation on the backdrop is defensive here (this
-			     nav has no row click handler underneath to leak into today)
-			     but costs nothing and matches the established convention. -->
-			<div class="relative">
-				<button
-					onclick={() => profileMenuOpen = !profileMenuOpen}
-					class="w-9 h-9 flex items-center justify-center rounded-full text-gray-600 hover:bg-gray-100 hover:text-gray-800"
-					aria-label="Account menu"
-					aria-expanded={profileMenuOpen}
-				>
-					{@render iconUser()}
-				</button>
-				{#if profileMenuOpen}
-					<div class="fixed inset-0 z-40" onclick={(e) => { e.stopPropagation(); profileMenuOpen = false; }} role="presentation"></div>
-					<div class="absolute right-0 top-full mt-1 z-50 w-40 bg-white rounded-lg shadow-lg border border-gray-100 py-1">
-						<a
-							href="/profile"
-							class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
-							onclick={() => profileMenuOpen = false}
-						>
-							Profile
-						</a>
-						<button
-							onclick={() => { profileMenuOpen = false; logout(); }}
-							class="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
-						>
-							Sign out
-						</button>
-					</div>
-				{/if}
-			</div>
 			<a href="/analyze" class="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700 text-sm font-medium">
 				New Analysis
 			</a>
+			<AccountMenu />
 		</div>
 	</nav>
 

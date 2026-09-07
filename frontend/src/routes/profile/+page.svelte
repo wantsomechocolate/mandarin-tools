@@ -10,6 +10,7 @@
 	let counts: Record<string, number | null> = $state({
 		knownWords: null,
 		userWords: null,
+		notes: null,
 		garbageWords: null,
 		stopwords: null,
 		starredWords: null,
@@ -23,6 +24,7 @@
 		{ key: 'starredWords', href: '/profile/starred-words', label: 'Starred Words', description: 'Words you’ve bookmarked for later.' },
 		{ key: 'knownWords', href: '/profile/known-words', label: 'Known Words', description: 'Familiarity scores for vocabulary you’re studying.' },
 		{ key: 'userWords', href: '/profile/user-words', label: 'User Words', description: 'Your custom dictionary entries, across every text and analysis.' },
+		{ key: 'notes', href: '/profile/notes', label: 'Notes', description: 'Words you’ve written a personal note for.' },
 		{ key: 'stopwords', href: '/profile/stopwords', label: 'Stopwords', description: 'Words excluded from the segmenter’s own algorithms.' },
 		{ key: 'garbageWords', href: '/profile/garbage-words', label: 'Garbage Words', description: 'Numbers, punctuation, and junk excluded from results by default.' },
 	];
@@ -36,6 +38,7 @@
 		// doesn't hold back the others' counts from appearing.
 		api.listKnownWords().then((r: any) => counts = { ...counts, knownWords: r.length }).catch(() => {});
 		api.listAllUserWords().then((r: any) => counts = { ...counts, userWords: r.length }).catch(() => {});
+		api.listWordNotes().then((r: any) => counts = { ...counts, notes: r.length }).catch(() => {});
 		api.listGarbageWords().then((r: any) => counts = { ...counts, garbageWords: r.length }).catch(() => {});
 		api.listStopwords().then((r: any) => counts = { ...counts, stopwords: r.length }).catch(() => {});
 		api.listStarredWords().then((r: any) => counts = { ...counts, starredWords: r.length }).catch(() => {});

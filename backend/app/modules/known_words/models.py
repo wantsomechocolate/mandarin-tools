@@ -114,6 +114,49 @@ class SegmentationAffixExemption(Base):
     note: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
+class WordFrequencyOverride(Base):
+    """
+    Hand-curated frequency for a word that's real (HSK- and/or CEDICT-backed)
+    but has no usable frequency in any of the raw corpus source files
+    (backend/assets/frequencies/*.txt) - so `dictionary_words.frequency`
+    would otherwise be NULL for it, which Segmenter._word_weight scores as
+    if the word were unrecognized (the "unknown floor"). This produces a
+    specific, repeatable bug shape: the DAG's DP is a *global* path
+    optimizer, so a single such gap can make it prefer stranding the
+    character inside an unrelated, rare-but-real neighboring word over
+    paying that unknown-floor penalty for the correctly-segmented path (see
+    scripts/backfill_numeral_frequencies.py's docstring for the concrete
+    case - 森林是一个中文词语 mis-segmenting around 一 - that surfaced this).
+
+    This is system-wide tuning data, not a per-user table, same as
+    SegmentationAffix/SegmentationAffixExemption above - and deliberately a
+    separate table rather than a direct hand-edit of dictionary_words.frequency,
+    so every hand-picked value stays in one auditable place (with its own
+    `reason`) instead of being indistinguishable from a real corpus-derived
+    number once written. segmenter_loader._build_segmenter merges this table
+    into the freq_dict on top of dictionary_words' own frequencies (override
+    always wins), exactly the same "DB row overrides code/corpus default"
+    shape _load_affix_config already uses for affix discounts.
+
+    scripts/backfill_numeral_frequencies.py additionally *syncs* each row's
+    value into dictionary_words.frequency (then re-runs compute_word_rarity.py
+    for just those words) so the word-detail panel's "Corpus frequency"
+    number and rarity badge stay consistent with what the segmenter actually
+    uses, rather than continuing to show blank for a word this table has an
+    answer for. dictionary_words.frequency is treated as a derived cache of
+    this table for these specific words, the same relationship it already
+    has to freq_per_million/rarity_tier - this table, not that column, is
+    the source of truth to edit if a value ever needs revisiting.
+    """
+    __tablename__ = "word_frequency_overrides"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    word: Mapped[str] = mapped_column(String, nullable=False, unique=True, index=True)
+    frequency: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    reason: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
 class DictionaryWord(Base):
     """
     freq_per_million/rarity_tier are both derived, persisted read-cache
@@ -406,21 +449,23 @@ class GarbageWord(Base):
 class StarredWord(Base):
     """
     A word/phrase the user has flagged as interesting or worth remembering -
-    word + optional note, no system-wide/is_override concept (the
-    GarbageWord pattern) - this is purely personal, there's no "starred by
-    default for everyone" notion.
+    no system-wide/is_override concept (the GarbageWord pattern) - this is
+    purely personal, there's no "starred by default for everyone" notion.
 
     Deliberately global only, no scope_analysis_id/scope_input_text_id like
     KnownWord/UserWord have - starring something is a lightweight personal
     bookmark, not tied to segmentation or a particular reading session, so
     scoping it wasn't asked for and isn't built here.
+
+    Used to also carry an optional `note` column - moved out to its own
+    WordNote table (see its docstring below) once it became clear a note
+    was wanted independent of starring, not a starred-word-only feature.
     """
     __tablename__ = "starred_words"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     word: Mapped[str] = mapped_column(String, nullable=False)
-    note: Mapped[str | None] = mapped_column(String, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
@@ -429,6 +474,40 @@ class StarredWord(Base):
 
     __table_args__ = (
         Index("ix_starred_words_user_word", "user_id", "word", unique=True),
+    )
+
+
+class WordNote(Base):
+    """
+    A single free-text note per user+word - originally a StarredWord-only
+    `note` column; generalized into its own standalone table once real use
+    showed a note is wanted independent of whether a word is starred, known,
+    or in the user's dictionary (same reasoning SampleSentence's own
+    independence from UserWord was built on - see its docstring). One row
+    per word (upsert-typed, like StarredWord/KnownWord), not list-typed like
+    SampleSentence - a word has at most one note; an empty note deletes the
+    row rather than persisting empty text (see upsert_word_note's docstring,
+    router.py - same "this row's only reason to exist" pattern KnownWord's
+    familiarity uses).
+
+    Global only, no scope_analysis_id/scope_input_text_id - same reasoning
+    as StarredWord/SampleSentence: a personal annotation, not tied to
+    segmentation or a particular reading session.
+    """
+    __tablename__ = "word_notes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    word: Mapped[str] = mapped_column(String, nullable=False)
+    note: Mapped[str] = mapped_column(String, nullable=False)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    user: Mapped["User"] = relationship("User")
+
+    __table_args__ = (
+        Index("ix_word_notes_user_word", "user_id", "word", unique=True),
     )
 
 

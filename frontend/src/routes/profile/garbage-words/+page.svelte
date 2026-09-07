@@ -197,6 +197,19 @@
 	</svg>
 {/snippet}
 
+<!-- Same up/down chevron as the results page's own sortHeader (analyze/[id])
+     - rotated = ascending, unrotated = descending - rather than the plain
+     "(asc)"/"(desc)" text this page used before. Kept as its own copy per
+     this codebase's per-file icon-snippet convention. -->
+{#snippet iconChevron(expanded: boolean)}
+	<svg
+		class="w-4 h-4 transition-transform {expanded ? 'rotate-180' : ''}"
+		viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"
+	>
+		<path d="M5 7.5l5 5 5-5" />
+	</svg>
+{/snippet}
+
 <svelte:head><title>Garbage Words - Mandarin Tools</title></svelte:head>
 
 {#if error}
@@ -240,7 +253,15 @@
 	<span class="text-sm text-gray-400">{filteredGarbage().length} of {resolvedGarbage().length} words</span>
 </div>
 
-<div class="bg-white rounded-lg shadow-sm overflow-hidden mb-6">
+<!-- Shared flex row with the panel below (lg and up) - same mechanism as
+     the analysis results page: the panel's own backdrop wrapper collapses
+     to `display: contents` at `lg`, so its child joins this row as a
+     sticky-positioned sibling instead of floating as a modal. This page was
+     missing this wrapper (WordDetailModal was still rendered, just as a
+     block child at the bottom of the page instead of the docked panel it's
+     everywhere else - hence rows appearing not to open anything). -->
+<div class="flex flex-col lg:flex-row gap-4">
+<div class="flex-1 min-w-0 bg-white rounded-lg shadow-sm overflow-hidden mb-6">
 	{#if loading}
 		<p class="text-gray-500 p-4">Loading...</p>
 	{:else if resolvedGarbage().length === 0}
@@ -249,8 +270,8 @@
 		<p class="text-gray-500 p-4">No words match.</p>
 	{:else}
 		<div class="bg-gray-50 border-b border-gray-200 px-4 py-3">
-			<button onclick={() => toggleSort('word')} class="text-sm font-medium text-gray-700 hover:text-blue-600 {sortColumn === 'word' ? 'text-blue-600' : ''}">
-				Word {#if sortColumn === 'word'}({sortDirection}){/if}
+			<button onclick={() => toggleSort('word')} class="inline-flex items-center gap-1 text-sm font-medium text-gray-700 hover:text-blue-600 {sortColumn === 'word' ? 'text-blue-600' : ''}">
+				Word {#if sortColumn === 'word'}{@render iconChevron(sortDirection === 'asc')}{/if}
 			</button>
 		</div>
 		<div class="divide-y divide-gray-100">
@@ -283,6 +304,23 @@
 	{/if}
 </div>
 
+	<!-- No onGarbageMarked wired here (unlike analyze/[id]/known-words'-sibling
+	     pages that track garbage state) - it only ever fires on a false->true
+	     transition, and every word opened from this page's own rows is already
+	     true, so it could never meaningfully fire. There's no callback at all
+	     for the reverse (true->false) transition on WordDetailPanel today, so
+	     un-marking a word from deep inside the panel (rather than this row's
+	     own icon button, which does patch `raw` directly) leaves this list
+	     stale until reload - the same accepted, documented trade-off the other
+	     profile list pages already have for edits made outside their own
+	     wired callbacks. -->
+	<WordDetailModal
+		word={selectedWordForPanel}
+		context={panelContext}
+		onClose={() => selectedWordForPanel = null}
+	/>
+</div>
+
 {#if excluded().length > 0}
 	<h2 class="text-sm font-semibold text-gray-600 mb-2">Excluded from garbage</h2>
 	<p class="text-xs text-gray-400 mb-2">
@@ -305,19 +343,3 @@
 		</div>
 	</div>
 {/if}
-
-<!-- No onGarbageMarked wired here (unlike analyze/[id]/known-words'-sibling
-     pages that track garbage state) - it only ever fires on a false->true
-     transition, and every word opened from this page's own rows is already
-     true, so it could never meaningfully fire. There's no callback at all
-     for the reverse (true->false) transition on WordDetailPanel today, so
-     un-marking a word from deep inside the panel (rather than this row's
-     own icon button, which does patch `raw` directly) leaves this list
-     stale until reload - the same accepted, documented trade-off the other
-     profile list pages already have for edits made outside their own
-     wired callbacks. -->
-<WordDetailModal
-	word={selectedWordForPanel}
-	context={panelContext}
-	onClose={() => selectedWordForPanel = null}
-/>

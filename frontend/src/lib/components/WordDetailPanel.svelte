@@ -64,6 +64,10 @@
 		forms: HskForm[];
 		cedict: CedictSense[];
 		sample_sentences: SampleSentence[];
+		// A word's single free-text note, if any - see WordNote's docstring,
+		// models.py. Null means no note exists, not "note is an empty
+		// string" (an empty note is never persisted - see saveNote below).
+		note: string | null;
 		user_word_entries: UserWordEntry[];
 		visibility_entries: VisibilityEntry[];
 	}
@@ -75,6 +79,7 @@
 		onUserWordEntriesChanged,
 		onVisibilityEntriesChanged,
 		onFamiliarityChanged,
+		onNoteChanged,
 		onGarbageMarked,
 	}: {
 		word: string;
@@ -95,6 +100,13 @@
 		// to know the moment a word's score is cleared via the panel, not
 		// just when the panel's own display updates.
 		onFamiliarityChanged?: (familiarity: number | null) => void;
+		// Fired after the note is saved/cleared, with the new value (null if
+		// cleared) - for the profile Notes list specifically, which shows
+		// exactly the words with a note (a word with no WordNote row doesn't
+		// appear there - see WordNote's docstring, models.py) and so needs to
+		// know the moment a note is cleared via the panel, same reasoning as
+		// onFamiliarityChanged above for Known Words.
+		onNoteChanged?: (note: string | null) => void;
 		// Fired when this word transitions to is_garbage=true - garbage now
 		// takes precedence as a read-time filter on the Known/User/Starred
 		// Words listings (see list_known_words/list_user_words/
@@ -122,6 +134,12 @@
 	let newSentenceDraft = $state('');
 	let savingSentence = $state(false);
 	let deletingSentenceId: number | null = $state(null);
+
+	// Note - single free-text field, upsert-typed like Familiarity, not
+	// list-typed like sample sentences above.
+	let editingNote = $state(false);
+	let noteDraft = $state('');
+	let savingNote = $state(false);
 
 	// UserWord section - collapsed-by-default text-/analysis-specific
 	// groups (see the module docstring below the script for the layout
@@ -161,6 +179,8 @@
 		visAddingGlobal = false;
 		visAddingText = false;
 		visAddingAnalysis = false;
+		editingNote = false;
+		noteDraft = '';
 		try {
 			detail = await api.getWordDetail(word) as WordDetail;
 		} catch (e: unknown) {
@@ -460,6 +480,40 @@
 		}
 	}
 
+	// Empty/whitespace-only text deletes the note server-side rather than
+	// persisting empty text (see upsert_word_note's docstring, router.py) -
+	// mirrored here so the panel's own local state matches what the server
+	// actually did without needing to read the response body.
+	async function saveNote() {
+		const trimmed = noteDraft.trim();
+		savingNote = true;
+		try {
+			await api.upsertWordNote(word, trimmed);
+			const nextNote = trimmed || null;
+			if (detail) detail = { ...detail, note: nextNote };
+			onNoteChanged?.(nextNote);
+			editingNote = false;
+		} catch (e: unknown) {
+			error = e instanceof Error ? e.message : 'Failed to save note';
+		} finally {
+			savingNote = false;
+		}
+	}
+
+	async function removeNote() {
+		savingNote = true;
+		try {
+			await api.deleteWordNote(word);
+			if (detail) detail = { ...detail, note: null };
+			onNoteChanged?.(null);
+			editingNote = false;
+			noteDraft = '';
+		} catch (e: unknown) {
+			error = e instanceof Error ? e.message : 'Failed to remove note';
+		} finally {
+			savingNote = false;
+		}
+	}
 </script>
 
 <!--
@@ -877,6 +931,39 @@
 					{savingSentence ? '...' : 'Add'}
 				</button>
 			</div>
+		</div>
+
+		<!-- Note - a single free-text note per word, independent of starred/
+		     known/user-word status (see WordNote's docstring, models.py).
+		     Originally a StarredWord-only field ("+ Note" on the Starred
+		     Words profile page); generalized here so any word can have one. -->
+		<div class="border-t border-gray-100 mt-4 pt-3">
+			<p class="text-xs font-medium text-gray-400 uppercase tracking-wide mb-2">Note</p>
+
+			{#if editingNote}
+				<div class="flex flex-col gap-1.5">
+					<textarea
+						bind:value={noteDraft}
+						rows="3"
+						placeholder="Add a note..."
+						class="border border-gray-300 rounded px-2 py-1 text-sm resize-none"
+					></textarea>
+					<div class="flex items-center gap-2">
+						<button onclick={saveNote} disabled={savingNote} class="text-xs px-3 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50">
+							{savingNote ? 'Saving...' : 'Save'}
+						</button>
+						<button onclick={() => { editingNote = false; noteDraft = detail?.note ?? ''; }} disabled={savingNote} class="text-xs text-gray-500 hover:text-gray-700">Cancel</button>
+						{#if detail.note}
+							<button onclick={removeNote} disabled={savingNote} class="text-xs text-red-500 hover:text-red-700 ml-auto">Delete</button>
+						{/if}
+					</div>
+				</div>
+			{:else if detail.note}
+				<p class="text-sm text-gray-700 whitespace-pre-wrap break-words mb-1.5">{detail.note}</p>
+				<button onclick={() => { editingNote = true; noteDraft = detail?.note ?? ''; }} class="text-xs text-blue-600 hover:text-blue-800">Edit note</button>
+			{:else}
+				<button onclick={() => { editingNote = true; noteDraft = ''; }} class="text-xs text-blue-600 hover:text-blue-800">+ Add note</button>
+			{/if}
 		</div>
 
 		<!-- Visibility ("hide from results") - same layout pattern as Your

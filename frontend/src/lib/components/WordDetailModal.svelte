@@ -14,6 +14,7 @@
 		onUserWordEntriesChanged,
 		onVisibilityEntriesChanged,
 		onFamiliarityChanged,
+		onNoteChanged,
 		onGarbageMarked,
 	}: {
 		word: string | null;
@@ -22,6 +23,7 @@
 		onUserWordEntriesChanged?: (entries: UserWordEntry[]) => void;
 		onVisibilityEntriesChanged?: (entries: VisibilityEntry[]) => void;
 		onFamiliarityChanged?: (familiarity: number | null) => void;
+		onNoteChanged?: (note: string | null) => void;
 		onGarbageMarked?: () => void;
 	} = $props();
 </script>
@@ -45,7 +47,7 @@
 			onclick={(e) => e.stopPropagation()}
 			role="presentation"
 		>
-			<WordDetailPanel {word} {context} {onClose} {onUserWordEntriesChanged} {onVisibilityEntriesChanged} {onFamiliarityChanged} {onGarbageMarked} />
+			<WordDetailPanel {word} {context} {onClose} {onUserWordEntriesChanged} {onVisibilityEntriesChanged} {onFamiliarityChanged} {onNoteChanged} {onGarbageMarked} />
 		</div>
 	</div>
 {/if}

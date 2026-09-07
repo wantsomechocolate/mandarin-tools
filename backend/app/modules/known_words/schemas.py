@@ -374,18 +374,25 @@ class GarbageWordResponse(BaseModel):
 
 class StarredWordCreate(BaseModel):
     word: str
-    note: str | None = None
-
-
-class StarredWordUpsert(BaseModel):
-    """Partial update, same upsert pattern as UserWordUpsert."""
-    note: str | None = None
 
 
 class StarredWordResponse(BaseModel):
     id: int
     word: str
-    note: str | None = None
+
+    model_config = {"from_attributes": True}
+
+
+class WordNoteUpsert(BaseModel):
+    """Creates or updates a word's note - empty/whitespace-only text deletes
+    the row instead (see upsert_word_note's docstring, router.py)."""
+    note: str
+
+
+class WordNoteResponse(BaseModel):
+    id: int
+    word: str
+    note: str
 
     model_config = {"from_attributes": True}
 
@@ -513,6 +520,12 @@ class WordDetail(BaseModel):
     # Independent of user_words (a word doesn't need to be in the user's
     # dictionary to have sample sentences) - see SampleSentence's docstring.
     sample_sentences: list[SampleSentenceResponse] = []
+    # A word's single free-text note, if any - see WordNote's docstring,
+    # models.py, for why this is its own table rather than living on
+    # StarredWord. Null when no WordNote row exists (no note, not "note is
+    # an empty string" - an empty note is never persisted, same as a
+    # cleared KnownWord familiarity).
+    note: str | None = None
     # Every UserWord row that exists for this word, across every scope this
     # user has ever customized it in - unconditional, NOT filtered/resolved
     # against analysis_id/input_text_id the way user_words above is. This is

@@ -52,6 +52,19 @@ def _load_affix_config(db: Session) -> tuple[dict[str, float], dict[str, float],
     return suffixes, prefixes, exemptions
 
 
+def _load_frequency_overrides(db: Session) -> dict[str, int]:
+    """
+    Hand-curated frequencies for words that are real HSK/CEDICT vocabulary
+    but have no usable frequency anywhere in the raw corpus source data -
+    see WordFrequencyOverride's docstring (models.py) for why this is a
+    separate table rather than a direct dictionary_words.frequency edit,
+    and scripts/backfill_numeral_frequencies.py's docstring for how the
+    current rows' values were derived.
+    """
+    rows = db.execute(text("SELECT word, frequency FROM word_frequency_overrides")).fetchall()
+    return {word: freq for word, freq in rows}
+
+
 def _build_segmenter(db: Session) -> Segmenter:
     logger.info("Building DAG segmenter from database...")
 
@@ -63,6 +76,15 @@ def _build_segmenter(db: Session) -> Segmenter:
     freq_dict = {row[0]: row[1] for row in result}
 
     logger.info(f"Loaded {len(freq_dict):,} word frequencies for DAG segmenter.")
+
+    # Overrides always win, same "DB row overrides code/corpus default"
+    # shape _load_affix_config uses below for affix discounts - applied
+    # after the base load so a later-added/edited override row is never
+    # shadowed by a stale dictionary_words value.
+    overrides = _load_frequency_overrides(db)
+    freq_dict.update(overrides)
+    if overrides:
+        logger.info(f"Applied {len(overrides):,} word frequency overrides.")
 
     suffix_discounts, prefix_discounts, exemptions = _load_affix_config(db)
     logger.info(

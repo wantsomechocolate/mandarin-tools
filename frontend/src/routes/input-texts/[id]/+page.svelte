@@ -4,6 +4,7 @@
 	import * as api from '$lib/api';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/stores';
+	import AccountMenu from '$lib/components/AccountMenu.svelte';
 
 	interface AnalysisSummary {
 		id: number;
@@ -87,11 +88,8 @@
 
 <div class="min-h-screen bg-gray-50">
 	<!-- Same dynamic-title risk as analyze/[id] (a Chinese title has no
-	     spaces to wrap on) even though this row has no competing right-side
-	     content today - min-w-0 + truncate + title= protects it now and
-	     keeps it safe if a right-side cluster is ever added here later.
-	     justify-between dropped: this row has only one flex child. -->
-	<nav class="bg-white shadow-sm px-6 py-4 flex items-center">
+	     spaces to wrap on) - min-w-0 + truncate + title= protects it. -->
+	<nav class="bg-white shadow-sm px-6 py-4 flex items-center justify-between gap-4">
 		<div class="flex items-center gap-4 min-w-0">
 			<a href="/" class="text-gray-400 hover:text-blue-600 shrink-0" aria-label="Home" title="Home">
 				{@render iconHome()}
@@ -110,6 +108,7 @@
 				</a>
 			{/if}
 		</div>
+		<AccountMenu />
 	</nav>
 
 	<main class="max-w-3xl mx-auto px-6 py-8">
@@ -162,7 +161,7 @@
 										{new Date(analysis.created_at).toLocaleString()}
 									</p>
 									<p class="text-xs text-gray-500 mt-0.5">
-										{analysis.unique_words} unique words · {analysis.total_words} total occurrences
+										{analysis.unique_words} unique words · {analysis.total_words} total
 									</p>
 								</div>
 								<span class="text-gray-400" title="View results">

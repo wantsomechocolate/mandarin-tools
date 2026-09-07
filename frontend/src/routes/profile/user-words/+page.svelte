@@ -222,6 +222,19 @@
 	}
 </script>
 
+<!-- Same up/down chevron as the results page's own sortHeader (analyze/[id])
+     - rotated = ascending, unrotated = descending - rather than the plain
+     "(asc)"/"(desc)" text this page used before. Kept as its own copy per
+     this codebase's per-file icon-snippet convention. -->
+{#snippet iconChevron(expanded: boolean)}
+	<svg
+		class="w-4 h-4 transition-transform {expanded ? 'rotate-180' : ''}"
+		viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"
+	>
+		<path d="M5 7.5l5 5 5-5" />
+	</svg>
+{/snippet}
+
 <svelte:head><title>User Words - Mandarin Tools</title></svelte:head>
 
 {#if error}
@@ -293,8 +306,8 @@
 			<thead class="bg-gray-50 border-b border-gray-200">
 				<tr>
 					<th class="text-left px-4 py-3 text-sm font-medium text-gray-700">
-						<button onclick={() => toggleSort('word')} class="hover:text-blue-600 {sortColumn === 'word' ? 'text-blue-600' : ''}">
-							Word {#if sortColumn === 'word'}({sortDirection}){/if}
+						<button onclick={() => toggleSort('word')} class="inline-flex items-center gap-1 hover:text-blue-600 {sortColumn === 'word' ? 'text-blue-600' : ''}">
+							Word {#if sortColumn === 'word'}{@render iconChevron(sortDirection === 'asc')}{/if}
 						</button>
 					</th>
 					<!-- w-px + whitespace-nowrap: shrink this column to the dots'
@@ -302,8 +315,8 @@
 					     (and same reasoning) as Known Words' identical column -
 					     see that page's comment for the full explanation. -->
 					<th class="w-px whitespace-nowrap text-center px-4 py-3 text-sm font-medium text-gray-700">
-						<button onclick={() => toggleSort('familiarity')} class="hover:text-blue-600 {sortColumn === 'familiarity' ? 'text-blue-600' : ''}">
-							Familiarity {#if sortColumn === 'familiarity'}({sortDirection}){/if}
+						<button onclick={() => toggleSort('familiarity')} class="inline-flex items-center gap-1 hover:text-blue-600 {sortColumn === 'familiarity' ? 'text-blue-600' : ''}">
+							Familiarity {#if sortColumn === 'familiarity'}{@render iconChevron(sortDirection === 'asc')}{/if}
 						</button>
 					</th>
 				</tr>

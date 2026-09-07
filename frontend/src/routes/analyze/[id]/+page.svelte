@@ -10,6 +10,7 @@
 	import WordDetailModal from '$lib/components/WordDetailModal.svelte';
 	import ReadingView from '$lib/components/ReadingView.svelte';
 	import FamiliarityDots from '$lib/components/FamiliarityDots.svelte';
+	import AccountMenu from '$lib/components/AccountMenu.svelte';
 	import { isEntryEditable, type WordDetailContext } from '$lib/wordDetailContext';
 
 	let { params }: PageProps = $props();
@@ -1407,17 +1408,18 @@
 {/snippet}
 
 <div class="min-h-screen bg-gray-50">
-	<!-- Below sm (640px - Tailwind's own breakpoint, unrelated to this
-	     page's desktop-table/mobile-card swap, which now happens at 700px;
-	     see the hidden min-[700px]:block / min-[700px]:hidden pair on the
-	     results list): the title cluster and the reading-view/counts cluster stack
-	     as two full-width rows instead of sharing one - at sm+, unchanged
-	     single-row layout. The title itself gets min-w-0 + truncate (plus a
-	     title= attribute for the full value) so it's protected from being
-	     squeezed toward zero width even before the stacking kicks in - that
-	     protection, not the stacking, is what stops a spaceless Chinese
-	     title from wrapping one character per line. -->
-	<nav class="bg-white shadow-sm px-6 py-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 sm:gap-0">
+	<!-- Title row: just the title cluster on the left and the account menu
+	     on the right, same simple two-item layout every other page's header
+	     uses - the word-count/Reading-view cluster used to share this row
+	     too, but that pushed the account menu into a cramped third slot
+	     instead of the clean top-right corner it sits in everywhere else,
+	     so it moved to its own row below (see the bar right after this
+	     nav). No flex-col/sm:flex-row stacking needed here anymore either -
+	     with only one variable-width thing (the title, already protected by
+	     min-w-0 + truncate + a title= attribute) competing for space against
+	     one fixed-width thing (the account menu), a single row holds up
+	     fine at any width on its own. -->
+	<nav class="bg-white shadow-sm px-6 py-4 flex items-center justify-between gap-4">
 		<div class="flex flex-wrap items-center gap-4 min-w-0">
 			<a href="/" class="text-gray-400 hover:text-blue-600 shrink-0" aria-label="Home" title="Home">
 				{@render iconHome()}
@@ -1436,24 +1438,26 @@
 				</a>
 			{/if}
 		</div>
-		{#if analysis}
-			<div class="flex flex-wrap items-center gap-4">
-				<div class="text-sm text-gray-500 flex flex-wrap gap-4">
-					<span>{mainSegUniqueWords} unique words</span>
-					<span>{mainSegTotalWords} total occurrences</span>
-				</div>
-				<button
-					type="button"
-					onclick={() => readingViewOn = !readingViewOn}
-					aria-pressed={readingViewOn}
-					class="text-sm px-3 py-1.5 rounded-full border shrink-0 transition-colors
-					{readingViewOn ? 'bg-blue-100 border-blue-300 text-blue-700' : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-100'}"
-				>
-					Reading view
-				</button>
-			</div>
-		{/if}
+		<AccountMenu />
 	</nav>
+
+	{#if analysis}
+		<div class="bg-white border-t border-gray-100 px-6 py-2.5 flex flex-wrap items-center gap-4">
+			<div class="text-sm text-gray-500 flex flex-wrap gap-4">
+				<span>{mainSegUniqueWords} unique words</span>
+				<span>{mainSegTotalWords} total</span>
+			</div>
+			<button
+				type="button"
+				onclick={() => readingViewOn = !readingViewOn}
+				aria-pressed={readingViewOn}
+				class="text-sm px-3 py-1.5 rounded-full border shrink-0 transition-colors
+				{readingViewOn ? 'bg-blue-100 border-blue-300 text-blue-700' : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-100'}"
+			>
+				Reading view
+			</button>
+		</div>
+	{/if}
 
 	<main class="max-w-5xl lg:max-w-6xl 2xl:max-w-7xl mx-auto px-6 py-8">
 		{#if error}

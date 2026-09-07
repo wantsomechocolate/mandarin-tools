@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { page } from '$app/stores';
-	import { logout } from '$lib/auth';
+	import AccountMenu from '$lib/components/AccountMenu.svelte';
 
 	let { children } = $props();
 
@@ -8,12 +8,15 @@
 	// existing "see everything" view before this (see each sub-page's own
 	// docstring for what it shows and why). Starred first (the words you
 	// most actively chose to flag), then Known/User (day-to-day vocabulary
-	// management), then Stopwords/Garbage last (maintenance/cleanup lists,
-	// touched less often).
+	// management), then Notes (words you've annotated, regardless of
+	// starred/known/user-word status - see WordNote's docstring, models.py),
+	// then Stopwords/Garbage last (maintenance/cleanup lists, touched less
+	// often).
 	const tabs = [
 		{ href: '/profile/starred-words', label: 'Starred Words' },
 		{ href: '/profile/known-words', label: 'Known Words' },
 		{ href: '/profile/user-words', label: 'User Words' },
+		{ href: '/profile/notes', label: 'Notes' },
 		{ href: '/profile/stopwords', label: 'Stopwords' },
 		{ href: '/profile/garbage-words', label: 'Garbage Words' },
 	];
@@ -43,9 +46,7 @@
 			</a>
 			<h1 class="text-xl font-bold text-gray-800">Profile</h1>
 		</div>
-		<button onclick={logout} class="text-gray-600 hover:text-gray-800 text-sm font-medium">
-			Sign out
-		</button>
+		<AccountMenu />
 	</nav>
 
 	<div class="bg-white border-b border-gray-200 px-6">
