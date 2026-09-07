@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { page } from '$app/stores';
+	import { logout } from '$lib/auth';
 
 	let { children } = $props();
 
@@ -17,15 +18,33 @@
 	];
 </script>
 
+<!-- Same home glyph as analyze/[id] and input-texts/[id]'s own header
+     icons (see iconHome's docstring there) - kept as its own copy per this
+     codebase's existing per-file icon-snippet convention. -->
+{#snippet iconHome()}
+	<svg class="w-8 h-8" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+		<path d="M3.5 9.5L10 4l6.5 5.5" />
+		<path d="M5 8.5v7a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1v-7" />
+		<path d="M8 16.5v-4a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v4" />
+	</svg>
+{/snippet}
+
 <div class="min-h-screen bg-gray-50">
 	<!-- No mobile-stacking fix needed: "Profile" is a fixed, short English
 	     string with no competing right-side content, same reasoning as
 	     analyze/+page.svelte's header. The tab bar below (overflow-x-auto +
 	     whitespace-nowrap) is a deliberate, separate exception to "stack
 	     instead of squeeze" and is untouched. -->
-	<nav class="bg-white shadow-sm px-6 py-4 flex items-center gap-4">
-		<a href="/" class="text-gray-600 hover:text-gray-800 text-sm">← Back</a>
-		<h1 class="text-xl font-bold text-gray-800">Profile</h1>
+	<nav class="bg-white shadow-sm px-6 py-4 flex items-center justify-between gap-4">
+		<div class="flex items-center gap-4">
+			<a href="/" class="text-gray-400 hover:text-blue-600" aria-label="Home" title="Home">
+				{@render iconHome()}
+			</a>
+			<h1 class="text-xl font-bold text-gray-800">Profile</h1>
+		</div>
+		<button onclick={logout} class="text-gray-600 hover:text-gray-800 text-sm font-medium">
+			Sign out
+		</button>
 	</nav>
 
 	<div class="bg-white border-b border-gray-200 px-6">

@@ -61,19 +61,23 @@
 </script>
 
 {#snippet iconHome()}
-	<svg class="w-5 h-5" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+	<svg class="w-8 h-8" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
 		<path d="M3.5 9.5L10 4l6.5 5.5" />
 		<path d="M5 8.5v7a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1v-7" />
 		<path d="M8 16.5v-4a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v4" />
 	</svg>
 {/snippet}
 
-<!-- "See latest results" link next to the title - a small bar-chart glyph,
-     the counterpart to analyze/[id]'s own book icon (View source text):
-     book = the text, chart = what came out of analyzing it, rather than an
-     app-specific "segmented text" glyph nobody's seen before. -->
-{#snippet iconBarChart()}
-	<svg class="w-5 h-5" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+<!-- Bar-chart glyph for "results" links - the header's "See latest results"
+     next to the title, and each row's own "View results" in the Analyses
+     list below. Same glyph, two sizes (the header one sits at 8x8 like the
+     home icon beside it; each list row is smaller at 7x7), so this takes
+     its size as a parameter rather than being duplicated. The counterpart
+     to analyze/[id]'s own book icon (View source text): book = the text,
+     chart = what came out of analyzing it, rather than an app-specific
+     "segmented text" glyph nobody's seen before. -->
+{#snippet iconBarChart(sizeClass: string)}
+	<svg class={sizeClass} viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
 		<path d="M3.5 16.5h13" />
 		<path d="M6 16.5V11" />
 		<path d="M10 16.5V6.5" />
@@ -89,7 +93,7 @@
 	     justify-between dropped: this row has only one flex child. -->
 	<nav class="bg-white shadow-sm px-6 py-4 flex items-center">
 		<div class="flex items-center gap-4 min-w-0">
-			<a href="/" class="text-gray-600 hover:text-gray-800 shrink-0" aria-label="Home" title="Home">
+			<a href="/" class="text-gray-400 hover:text-blue-600 shrink-0" aria-label="Home" title="Home">
 				{@render iconHome()}
 			</a>
 			<h1 class="text-xl font-bold text-gray-800 min-w-0 truncate" title={inputText?.title ?? 'Untitled'}>
@@ -102,7 +106,7 @@
 					aria-label="View latest results"
 					title="View latest results"
 				>
-					{@render iconBarChart()}
+					{@render iconBarChart('w-8 h-8')}
 				</a>
 			{/if}
 		</div>
@@ -161,7 +165,10 @@
 										{analysis.unique_words} unique words · {analysis.total_words} total occurrences
 									</p>
 								</div>
-								<span class="text-blue-600 text-sm">View results →</span>
+								<span class="text-gray-400" title="View results">
+									{@render iconBarChart('w-7 h-7')}
+									<span class="sr-only">View results</span>
+								</span>
 							</a>
 						{/each}
 					</div>
