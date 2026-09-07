@@ -154,9 +154,12 @@ export async function listKnownWords() {
     return request('GET', '/known-words/known-words');
 }
 
-export async function deleteKnownWord(word: string) {
-    return request('DELETE', `/known-words/known-words/${encodeURIComponent(word)}`);
-}
+// No deleteKnownWord wrapper - clearing familiarity (upsertKnownWord with
+// familiarity: null) already deletes the row server-side (see
+// upsert_known_word's docstring, router.py), so the profile Known Words
+// page's FamiliarityDots clear button covers this; the backend's own
+// DELETE /known-words/known-words/{word} endpoint stays in place, just
+// unused from this frontend today.
 
 // User words
 // affects_dag is always explicitly sent as true here (never omitted) -

@@ -25,6 +25,22 @@ export function familiarityColor(score: number | null | undefined): string {
     return colors[score] ?? 'bg-gray-100 text-gray-600';
 }
 
+// Solid-dot counterpart to familiarityColor's badge, for FamiliarityDots.svelte
+// - same hue per score so it still reads as the same scale, just a
+// different shape (a row of dots is denser than a pill badge, useful in a
+// table column). Unfilled dots are a flat bg-gray-200 regardless of score -
+// only the filled prefix carries color.
+export function familiarityDotColor(score: number): string {
+    const colors: Record<number, string> = {
+        1: 'bg-red-600',
+        2: 'bg-orange-600',
+        3: 'bg-yellow-600',
+        4: 'bg-green-400',
+        5: 'bg-emerald-600',
+    };
+    return colors[score] ?? 'bg-gray-200';
+}
+
 // Bucket label/color mapping - the "which pass produced this row" axis,
 // orthogonal to evidence tier below. Three buckets going forward: best-
 // guess segmentation (dag/overlay/unknown - the DP's single chosen path,

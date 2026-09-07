@@ -6,15 +6,16 @@
 
 	// One tab per manageable list - each a top-level entity with no
 	// existing "see everything" view before this (see each sub-page's own
-	// docstring for what it shows and why). Order matches the review-
-	// workflow ordering already established for the results page's filter
-	// chips (Garbage, then the rest) where these overlap.
+	// docstring for what it shows and why). Starred first (the words you
+	// most actively chose to flag), then Known/User (day-to-day vocabulary
+	// management), then Stopwords/Garbage last (maintenance/cleanup lists,
+	// touched less often).
 	const tabs = [
+		{ href: '/profile/starred-words', label: 'Starred Words' },
 		{ href: '/profile/known-words', label: 'Known Words' },
 		{ href: '/profile/user-words', label: 'User Words' },
-		{ href: '/profile/garbage-words', label: 'Garbage Words' },
 		{ href: '/profile/stopwords', label: 'Stopwords' },
-		{ href: '/profile/starred-words', label: 'Starred Words' },
+		{ href: '/profile/garbage-words', label: 'Garbage Words' },
 	];
 </script>
 

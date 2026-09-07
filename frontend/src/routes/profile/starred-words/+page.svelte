@@ -1,10 +1,34 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { browser } from '$app/environment';
 	import { isLoggedIn } from '$lib/auth';
 	import * as api from '$lib/api';
 	import { goto } from '$app/navigation';
 	import WordDetailModal from '$lib/components/WordDetailModal.svelte';
 	import type { WordDetailContext } from '$lib/wordDetailContext';
+
+	// Persisted filter preferences - see known-words/+page.svelte's own
+	// FILTER_STORAGE_KEY comment for the full pattern and why search is
+	// included here (unlike analyze/[id]'s).
+	const FILTER_STORAGE_KEY = 'mandarin_tools_starred_words_filters';
+
+	interface StoredFilters {
+		search: string;
+		sortColumn: SortColumn;
+		sortDirection: 'asc' | 'desc';
+	}
+
+	function loadStoredFilters(): Partial<StoredFilters> {
+		if (!browser) return {};
+		try {
+			const raw = localStorage.getItem(FILTER_STORAGE_KEY);
+			return raw ? JSON.parse(raw) : {};
+		} catch {
+			return {};
+		}
+	}
+
+	const storedFilters = loadStoredFilters();
 
 	// Global list page - see the matching comment in known-words/+page.svelte.
 	const panelContext: WordDetailContext = { type: 'global' };
@@ -19,7 +43,7 @@
 	let rows: StarredWordRow[] = $state([]);
 	let loading = $state(true);
 	let error = $state('');
-	let search = $state('');
+	let search = $state(storedFilters.search ?? '');
 	let saving: string | null = $state(null);
 
 	let editingWord: string | null = $state(null);
@@ -28,6 +52,37 @@
 	let newWord = $state('');
 	let newNote = $state('');
 	let adding = $state(false);
+
+	// Same tri-state toggle/plain-codepoint-comparison shape as Known/User
+	// Words' identical toggleSort - only "word" is sortable here (note has
+	// no natural sort order worth exposing, and the star column is constant
+	// across every row on this page by definition).
+	type SortColumn = 'word' | null;
+	let sortColumn: SortColumn = $state(storedFilters.sortColumn ?? null);
+	let sortDirection: 'asc' | 'desc' = $state(storedFilters.sortDirection ?? 'asc');
+
+	function toggleSort(column: Exclude<SortColumn, null>) {
+		if (sortColumn !== column) {
+			sortColumn = column;
+			sortDirection = 'asc';
+		} else if (sortDirection === 'asc') {
+			sortDirection = 'desc';
+		} else {
+			sortColumn = null;
+		}
+	}
+
+	// Persist filter preferences on every change - see known-words'
+	// identical effect for the reasoning.
+	$effect(() => {
+		if (!browser) return;
+		try {
+			const toStore: StoredFilters = { search, sortColumn, sortDirection };
+			localStorage.setItem(FILTER_STORAGE_KEY, JSON.stringify(toStore));
+		} catch {
+			// e.g. storage disabled/full - filters just won't persist, no need to surface an error
+		}
+	});
 
 	onMount(async () => {
 		if (!isLoggedIn()) {
@@ -45,10 +100,28 @@
 
 	const filtered = $derived(() => {
 		const q = search.trim();
-		return q
+		let list = q
 			? rows.filter((r) => r.word.includes(q) || (r.note?.toLowerCase().includes(q.toLowerCase()) ?? false))
 			: rows;
+		if (sortColumn === 'word') {
+			list = [...list].sort((a, b) => {
+				// Plain codepoint comparison, not localeCompare with a 'zh'
+				// locale - see the results page's identical reasoning, CLAUDE.md.
+				const cmp = a.word < b.word ? -1 : a.word > b.word ? 1 : 0;
+				return sortDirection === 'desc' ? -cmp : cmp;
+			});
+		}
+		return list;
 	});
+
+	// Same click-passthrough pattern as Known/User Words - clicking anywhere
+	// on the row opens the panel, unless the click landed on an actual
+	// interactive element (the note input/Save/Cancel, or the star button).
+	function handleRowClick(event: MouseEvent, word: string) {
+		const target = event.target as HTMLElement;
+		if (target.closest('button, a, input, select, textarea')) return;
+		selectedWordForPanel = word;
+	}
 
 	function startEditing(row: StarredWordRow) {
 		editingWord = row.word;
@@ -96,6 +169,16 @@
 		}
 	}
 </script>
+
+<!-- Same filled/outline star as analyze/[id]'s own row/card star toggle
+     (see its docstring there) - kept as its own copy per this codebase's
+     per-file icon-snippet convention. Always rendered filled(true) here -
+     every row on this page is, by definition, currently starred. -->
+{#snippet iconStar(filled: boolean)}
+	<svg class="w-4 h-4" viewBox="0 0 20 20" fill={filled ? 'currentColor' : 'none'} stroke="currentColor" stroke-width="1.3" stroke-linejoin="round">
+		<path d="M10 2.5l2.2 4.6 5 .7-3.6 3.6.85 5-4.45-2.4-4.45 2.4.85-5-3.6-3.6 5-.7L10 2.5Z" />
+	</svg>
+{/snippet}
 
 <svelte:head><title>Starred Words - Mandarin Tools</title></svelte:head>
 
@@ -156,57 +239,69 @@
 	{:else if filtered().length === 0}
 		<p class="text-gray-500 p-4">No words match.</p>
 	{:else}
-		<div class="divide-y divide-gray-100">
-			{#each filtered() as row (row.id)}
-				<div class="flex items-start justify-between gap-3 px-4 py-3">
-					<div class="flex-1 min-w-0">
-						<button onclick={() => selectedWordForPanel = row.word} class="text-lg font-medium hover:text-blue-600" title="View details">
-						{row.word}
-					</button>
-						{#if editingWord === row.word}
-							<div class="flex items-center gap-2 mt-1">
-								<input
-									type="text"
-									bind:value={noteDraft}
-									placeholder="Note..."
-									class="flex-1 border border-gray-300 rounded px-2 py-1 text-sm"
-									onkeydown={(e) => { if (e.key === 'Enter') saveNote(row.word); }}
-								/>
-								<button
-									onclick={() => saveNote(row.word)}
-									disabled={saving === row.word}
-									class="text-xs px-3 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50"
-								>
-									Save
-								</button>
-								<button
-									onclick={() => editingWord = null}
-									class="text-xs text-gray-500 hover:text-gray-700"
-								>
-									Cancel
-								</button>
-							</div>
-						{:else if row.note}
-							<p class="text-sm text-gray-500 mt-0.5">{row.note}</p>
-						{/if}
-					</div>
-					<div class="flex gap-2 shrink-0">
-						{#if editingWord !== row.word}
-							<button onclick={() => startEditing(row)} class="text-xs text-blue-600 hover:text-blue-800">
-								{row.note ? 'Edit note' : '+ Note'}
-							</button>
-						{/if}
-						<button
-							onclick={() => remove(row.word)}
-							disabled={saving === row.word}
-							class="text-xs text-red-400 hover:text-red-600 disabled:opacity-50"
-						>
-							Unstar
+		<table class="w-full">
+			<thead class="bg-gray-50 border-b border-gray-200">
+				<tr>
+					<th class="text-left px-4 py-3 text-sm font-medium text-gray-700">
+						<button onclick={() => toggleSort('word')} class="hover:text-blue-600 {sortColumn === 'word' ? 'text-blue-600' : ''}">
+							Word {#if sortColumn === 'word'}({sortDirection}){/if}
 						</button>
-					</div>
-				</div>
-			{/each}
-		</div>
+					</th>
+					<th class="w-px whitespace-nowrap text-center px-4 py-3 text-sm font-medium text-gray-700">Starred</th>
+				</tr>
+			</thead>
+			<tbody class="divide-y divide-gray-100">
+				{#each filtered() as row (row.id)}
+					<tr class="cursor-pointer hover:bg-gray-50" onclick={(e) => handleRowClick(e, row.word)}>
+						<td class="px-4 py-3">
+							<p class="text-lg font-medium">{row.word}</p>
+							{#if editingWord === row.word}
+								<div class="flex items-center gap-2 mt-1">
+									<input
+										type="text"
+										bind:value={noteDraft}
+										placeholder="Note..."
+										class="flex-1 border border-gray-300 rounded px-2 py-1 text-sm"
+										onkeydown={(e) => { if (e.key === 'Enter') saveNote(row.word); }}
+									/>
+									<button
+										onclick={() => saveNote(row.word)}
+										disabled={saving === row.word}
+										class="text-xs px-3 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50"
+									>
+										Save
+									</button>
+									<button
+										onclick={() => editingWord = null}
+										class="text-xs text-gray-500 hover:text-gray-700"
+									>
+										Cancel
+									</button>
+								</div>
+							{:else}
+								{#if row.note}
+									<p class="text-sm text-gray-500 mt-0.5">{row.note}</p>
+								{/if}
+								<button onclick={() => startEditing(row)} class="text-xs text-blue-600 hover:text-blue-800 mt-0.5">
+									{row.note ? 'Edit note' : '+ Note'}
+								</button>
+							{/if}
+						</td>
+						<td class="w-px whitespace-nowrap px-4 py-3 text-center">
+							<button
+								onclick={() => remove(row.word)}
+								disabled={saving === row.word}
+								class="p-1 rounded text-amber-500 hover:text-red-600 hover:bg-red-50 disabled:opacity-50"
+								title="Starred — click to unstar"
+								aria-label="Starred — click to unstar"
+							>
+								{@render iconStar(true)}
+							</button>
+						</td>
+					</tr>
+				{/each}
+			</tbody>
+		</table>
 	{/if}
 </div>
 

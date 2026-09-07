@@ -9,6 +9,7 @@
 	import type { PageProps } from './$types';
 	import WordDetailModal from '$lib/components/WordDetailModal.svelte';
 	import ReadingView from '$lib/components/ReadingView.svelte';
+	import FamiliarityDots from '$lib/components/FamiliarityDots.svelte';
 	import { isEntryEditable, type WordDetailContext } from '$lib/wordDetailContext';
 
 	let { params }: PageProps = $props();
@@ -1008,22 +1009,6 @@
 		return result.familiarity;
 	}
 
-	// Desktop table's Familiarity column renders this as 5 dots rather than
-	// familiarityColor's badge - same hue per score so it still reads as the
-	// same scale, just a different shape (a row of dots is denser than a
-	// pill badge in a table column). Unfilled dots are a flat bg-gray-200
-	// regardless of score - only the filled prefix carries color.
-	function familiarityDotColor(score: number): string {
-		const colors: Record<number, string> = {
-			1: 'bg-red-600',
-			2: 'bg-orange-600',
-			3: 'bg-yellow-600',
-			4: 'bg-green-400',
-			5: 'bg-emerald-600',
-		};
-		return colors[score] ?? 'bg-gray-200';
-	}
-
 	function toggleInfo(word: string) {
 		const next = new Set(expandedInfo);
 		if (next.has(word)) {
@@ -1654,28 +1639,12 @@
 										</span>
 									</td>
 									<td class="px-4 py-3 text-center">
-										<div class="flex items-center justify-center gap-0.5">
-											{#each [1, 2, 3, 4, 5] as score}
-												<button
-													onclick={() => setFamiliarity(result.word, score)}
-													disabled={updatingWord === result.word}
-													class="p-1 rounded hover:bg-gray-100 disabled:opacity-50"
-													title={familiarityLabel(score)}
-													aria-label={familiarityLabel(score)}
-													aria-pressed={currentFamiliarity(result) === score}
-												>
-													<span class="block w-2 h-2 rounded-full {currentFamiliarity(result) !== null && score <= currentFamiliarity(result)! ? familiarityDotColor(currentFamiliarity(result)!) : 'bg-gray-200'}"></span>
-												</button>
-											{/each}
-											<button
-												onclick={() => setFamiliarity(result.word, null)}
-												disabled={updatingWord === result.word || currentFamiliarity(result) === null}
-												class="p-1 rounded hover:bg-gray-100 disabled:opacity-50 text-gray-400 hover:text-gray-600 ml-0.5 {currentFamiliarity(result) === null ? 'invisible' : ''}"
-												title="Clear familiarity"
-												aria-label="Clear familiarity"
-											>
-												<span class="inline-flex items-center justify-center w-2 h-2 text-[10px] leading-none">✕</span>
-											</button>
+										<div class="flex justify-center">
+											<FamiliarityDots
+												familiarity={currentFamiliarity(result)}
+												disabled={updatingWord === result.word}
+												onSetFamiliarity={(score) => setFamiliarity(result.word, score)}
+											/>
 										</div>
 									</td>
 									<td class="px-4 py-3 min-w-[92px]">

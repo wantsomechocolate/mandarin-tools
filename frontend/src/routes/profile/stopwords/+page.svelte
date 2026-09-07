@@ -1,8 +1,31 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { browser } from '$app/environment';
 	import { isLoggedIn } from '$lib/auth';
 	import * as api from '$lib/api';
 	import { goto } from '$app/navigation';
+
+	// Persisted filter preferences - see known-words/+page.svelte's own
+	// FILTER_STORAGE_KEY comment for the full pattern and why search is
+	// included here (unlike analyze/[id]'s). Search is the only filter this
+	// page has - no sortable columns here.
+	const FILTER_STORAGE_KEY = 'mandarin_tools_stopwords_filters';
+
+	interface StoredFilters {
+		search: string;
+	}
+
+	function loadStoredFilters(): Partial<StoredFilters> {
+		if (!browser) return {};
+		try {
+			const raw = localStorage.getItem(FILTER_STORAGE_KEY);
+			return raw ? JSON.parse(raw) : {};
+		} catch {
+			return {};
+		}
+	}
+
+	const storedFilters = loadStoredFilters();
 
 	interface StopwordRow {
 		id: number;
@@ -14,12 +37,24 @@
 	let rows: StopwordRow[] = $state([]);
 	let loading = $state(true);
 	let error = $state('');
-	let search = $state('');
+	let search = $state(storedFilters.search ?? '');
 	let deleting: number | null = $state(null);
 
 	let newWord = $state('');
 	let newIsOverride = $state(false);
 	let adding = $state(false);
+
+	// Persist filter preferences on every change - see known-words'
+	// identical effect for the reasoning.
+	$effect(() => {
+		if (!browser) return;
+		try {
+			const toStore: StoredFilters = { search };
+			localStorage.setItem(FILTER_STORAGE_KEY, JSON.stringify(toStore));
+		} catch {
+			// e.g. storage disabled/full - filters just won't persist, no need to surface an error
+		}
+	});
 
 	onMount(async () => {
 		if (!isLoggedIn()) {

@@ -1,8 +1,38 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { browser } from '$app/environment';
 	import { isLoggedIn } from '$lib/auth';
 	import * as api from '$lib/api';
 	import { goto } from '$app/navigation';
+	import WordDetailModal from '$lib/components/WordDetailModal.svelte';
+	import type { WordDetailContext } from '$lib/wordDetailContext';
+
+	// Persisted filter preferences - see known-words/+page.svelte's own
+	// FILTER_STORAGE_KEY comment for the full pattern and why search is
+	// included here (unlike analyze/[id]'s).
+	const FILTER_STORAGE_KEY = 'mandarin_tools_garbage_words_filters';
+
+	interface StoredFilters {
+		search: string;
+		sortColumn: SortColumn;
+		sortDirection: 'asc' | 'desc';
+	}
+
+	function loadStoredFilters(): Partial<StoredFilters> {
+		if (!browser) return {};
+		try {
+			const raw = localStorage.getItem(FILTER_STORAGE_KEY);
+			return raw ? JSON.parse(raw) : {};
+		} catch {
+			return {};
+		}
+	}
+
+	const storedFilters = loadStoredFilters();
+
+	// Global list page - see the matching comment in known-words/+page.svelte.
+	const panelContext: WordDetailContext = { type: 'global' };
+	let selectedWordForPanel: string | null = $state(null);
 
 	interface GarbageWordRow {
 		id: number;
@@ -14,11 +44,42 @@
 	let raw: GarbageWordRow[] = $state([]);
 	let loading = $state(true);
 	let error = $state('');
-	let search = $state('');
+	let search = $state(storedFilters.search ?? '');
 	let updating: string | null = $state(null);
 
 	let newWord = $state('');
 	let adding = $state(false);
+
+	// Only one sortable column here (unlike Known/User Words' word+familiarity
+	// pair), but the same tri-state toggle/plain-codepoint-comparison shape
+	// as those pages, for consistency - see their identical toggleSort for
+	// why codepoint, not localeCompare.
+	type SortColumn = 'word' | null;
+	let sortColumn: SortColumn = $state(storedFilters.sortColumn ?? null);
+	let sortDirection: 'asc' | 'desc' = $state(storedFilters.sortDirection ?? 'asc');
+
+	function toggleSort(column: Exclude<SortColumn, null>) {
+		if (sortColumn !== column) {
+			sortColumn = column;
+			sortDirection = 'asc';
+		} else if (sortDirection === 'asc') {
+			sortDirection = 'desc';
+		} else {
+			sortColumn = null;
+		}
+	}
+
+	// Persist filter preferences on every change - see known-words'
+	// identical effect for the reasoning.
+	$effect(() => {
+		if (!browser) return;
+		try {
+			const toStore: StoredFilters = { search, sortColumn, sortDirection };
+			localStorage.setItem(FILTER_STORAGE_KEY, JSON.stringify(toStore));
+		} catch {
+			// e.g. storage disabled/full - filters just won't persist, no need to surface an error
+		}
+	});
 
 	onMount(async () => {
 		if (!isLoggedIn()) {
@@ -61,8 +122,26 @@
 
 	const filteredGarbage = $derived(() => {
 		const q = search.trim();
-		return q ? resolvedGarbage().filter((g) => g.word.includes(q)) : resolvedGarbage();
+		let list = q ? resolvedGarbage().filter((g) => g.word.includes(q)) : resolvedGarbage();
+		if (sortColumn === 'word') {
+			list = [...list].sort((a, b) => {
+				// Plain codepoint comparison, not localeCompare with a 'zh'
+				// locale - see the results page's identical reasoning, CLAUDE.md.
+				const cmp = a.word < b.word ? -1 : a.word > b.word ? 1 : 0;
+				return sortDirection === 'desc' ? -cmp : cmp;
+			});
+		}
+		return list;
 	});
+
+	// Same click-passthrough pattern as Known Words/User Words - clicking
+	// anywhere on the row opens the panel, unless the click landed on an
+	// actual interactive element (the un-mark icon button, here).
+	function handleRowClick(event: MouseEvent | KeyboardEvent, word: string) {
+		const target = event.target as HTMLElement;
+		if (target.closest('button, a, input, select, textarea')) return;
+		selectedWordForPanel = word;
+	}
 
 	async function unmark(word: string) {
 		updating = word;
@@ -106,6 +185,17 @@
 		}
 	}
 </script>
+
+<!-- Same circle-with-diagonal-slash "no-entry" glyph as analyze/[id]'s own
+     iconTrash (that name is a misnomer there too - see its docstring) used
+     for the results-table garbage toggle. Kept as its own copy per this
+     codebase's per-file icon-snippet convention. -->
+{#snippet iconGarbage()}
+	<svg class="w-4 h-4" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+		<circle cx="10" cy="10" r="7.25" />
+		<path d="M5.15 14.85l9.7-9.7" />
+	</svg>
+{/snippet}
 
 <svelte:head><title>Garbage Words - Mandarin Tools</title></svelte:head>
 
@@ -158,9 +248,20 @@
 	{:else if filteredGarbage().length === 0}
 		<p class="text-gray-500 p-4">No words match.</p>
 	{:else}
+		<div class="bg-gray-50 border-b border-gray-200 px-4 py-3">
+			<button onclick={() => toggleSort('word')} class="text-sm font-medium text-gray-700 hover:text-blue-600 {sortColumn === 'word' ? 'text-blue-600' : ''}">
+				Word {#if sortColumn === 'word'}({sortDirection}){/if}
+			</button>
+		</div>
 		<div class="divide-y divide-gray-100">
 			{#each filteredGarbage() as g (g.word)}
-				<div class="flex items-center justify-between px-4 py-2.5">
+				<div
+					role="button"
+					tabindex="0"
+					onclick={(e) => handleRowClick(e, g.word)}
+					onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleRowClick(e, g.word); } }}
+					class="flex items-center justify-between px-4 py-2.5 cursor-pointer hover:bg-gray-50"
+				>
 					<div class="flex items-center gap-2">
 						<span class="text-base">{g.word}</span>
 						{#if g.systemDefault}
@@ -170,9 +271,11 @@
 					<button
 						onclick={() => unmark(g.word)}
 						disabled={updating === g.word}
-						class="text-red-400 hover:text-red-600 text-sm disabled:opacity-50"
+						class="p-1 rounded text-red-600 hover:text-red-800 hover:bg-red-50 disabled:opacity-50"
+						title="Marked as garbage — click to unmark"
+						aria-label="Marked as garbage — click to unmark"
 					>
-						Un-mark
+						{@render iconGarbage()}
 					</button>
 				</div>
 			{/each}
@@ -202,3 +305,19 @@
 		</div>
 	</div>
 {/if}
+
+<!-- No onGarbageMarked wired here (unlike analyze/[id]/known-words'-sibling
+     pages that track garbage state) - it only ever fires on a false->true
+     transition, and every word opened from this page's own rows is already
+     true, so it could never meaningfully fire. There's no callback at all
+     for the reverse (true->false) transition on WordDetailPanel today, so
+     un-marking a word from deep inside the panel (rather than this row's
+     own icon button, which does patch `raw` directly) leaves this list
+     stale until reload - the same accepted, documented trade-off the other
+     profile list pages already have for edits made outside their own
+     wired callbacks. -->
+<WordDetailModal
+	word={selectedWordForPanel}
+	context={panelContext}
+	onClose={() => selectedWordForPanel = null}
+/>

@@ -1,11 +1,45 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { browser } from '$app/environment';
 	import { isLoggedIn } from '$lib/auth';
 	import * as api from '$lib/api';
 	import { goto } from '$app/navigation';
-	import { familiarityLabel, familiarityColor } from '$lib/wordDisplay';
+	import { familiarityLabel } from '$lib/wordDisplay';
 	import WordDetailModal from '$lib/components/WordDetailModal.svelte';
+	import FamiliarityDots from '$lib/components/FamiliarityDots.svelte';
 	import type { WordDetailContext } from '$lib/wordDetailContext';
+
+	// Filter preferences persist across reloads as a global per-browser
+	// setting - same localStorage pattern analyze/[id] already established
+	// (FILTER_STORAGE_KEY there), but unlike that page, search is included
+	// here: analyze/[id] deliberately excludes it because a stale search
+	// term left over from a *different analysis's* words would be
+	// confusing, but this page is the same running list across every
+	// visit, so persisting the search box too is the more helpful default,
+	// not a stale-content risk. Every other profile list page (User Words,
+	// Garbage Words, Starred Words, Stopwords) follows this same shape,
+	// each with its own storage key and its own subset of fields.
+	const FILTER_STORAGE_KEY = 'mandarin_tools_known_words_filters';
+
+	interface StoredFilters {
+		search: string;
+		familiarityMode: FamiliarityFilterMode;
+		familiarityValue: number;
+		sortColumn: SortColumn;
+		sortDirection: 'asc' | 'desc';
+	}
+
+	function loadStoredFilters(): Partial<StoredFilters> {
+		if (!browser) return {};
+		try {
+			const raw = localStorage.getItem(FILTER_STORAGE_KEY);
+			return raw ? JSON.parse(raw) : {};
+		} catch {
+			return {};
+		}
+	}
+
+	const storedFilters = loadStoredFilters();
 
 	// Global list page - every word here is viewed with no text/analysis in
 	// scope, so WordDetailPanel.svelte's UserWord/Visibility sections show
@@ -24,7 +58,7 @@
 	let words: KnownWord[] = $state([]);
 	let loading = $state(true);
 	let error = $state('');
-	let search = $state('');
+	let search = $state(storedFilters.search ?? '');
 	let updatingWord: string | null = $state(null);
 
 	let newWord = $state('');
@@ -36,12 +70,12 @@
 	// selector rather than two independent controls, since only one mode
 	// is ever active at a time.
 	type FamiliarityFilterMode = 'all' | 'lte' | 'eq';
-	let familiarityMode: FamiliarityFilterMode = $state('all');
-	let familiarityValue = $state(5);
+	let familiarityMode: FamiliarityFilterMode = $state(storedFilters.familiarityMode ?? 'all');
+	let familiarityValue = $state(storedFilters.familiarityValue ?? 5);
 
 	type SortColumn = 'word' | 'familiarity' | null;
-	let sortColumn: SortColumn = $state(null);
-	let sortDirection: 'asc' | 'desc' = $state('asc');
+	let sortColumn: SortColumn = $state(storedFilters.sortColumn ?? null);
+	let sortDirection: 'asc' | 'desc' = $state(storedFilters.sortDirection ?? 'asc');
 
 	function toggleSort(column: Exclude<SortColumn, null>) {
 		if (sortColumn !== column) {
@@ -53,6 +87,18 @@
 			sortColumn = null;
 		}
 	}
+
+	// Persist filter preferences on every change - see FILTER_STORAGE_KEY's
+	// comment above for what's included here and why.
+	$effect(() => {
+		if (!browser) return;
+		try {
+			const toStore: StoredFilters = { search, familiarityMode, familiarityValue, sortColumn, sortDirection };
+			localStorage.setItem(FILTER_STORAGE_KEY, JSON.stringify(toStore));
+		} catch {
+			// e.g. storage disabled/full - filters just won't persist, no need to surface an error
+		}
+	});
 
 	onMount(async () => {
 		if (!isLoggedIn()) {
@@ -121,18 +167,6 @@
 		const target = event.target as HTMLElement;
 		if (target.closest('button, a, input, select, textarea')) return;
 		selectedWordForPanel = word;
-	}
-
-	async function remove(word: string) {
-		updatingWord = word;
-		try {
-			await api.deleteKnownWord(word);
-			words = words.filter((w) => w.word !== word);
-		} catch (e: unknown) {
-			error = e instanceof Error ? e.message : 'Failed to delete';
-		} finally {
-			updatingWord = null;
-		}
 	}
 
 	async function addWord() {
@@ -232,44 +266,35 @@
 							Word {#if sortColumn === 'word'}({sortDirection}){/if}
 						</button>
 					</th>
-					<th class="text-left px-4 py-3 text-sm font-medium text-gray-700">
+					<!-- w-px + whitespace-nowrap: the standard auto-layout-table trick
+					     for "shrink this column to its content's width, and give any
+					     leftover width to the other column(s) instead" - a table cell
+					     can never shrink below its content's own minimum width even
+					     with an explicit width this small, but it also won't claim any
+					     of the table's extra distributable space the way an
+					     unconstrained column does. That's what lets this column sit
+					     snugly around the dots (not stretched to the far edge on its
+					     own text-align) while still ending up flush against the
+					     table's right edge, since Word is the only column left to
+					     absorb the rest of the table's width. -->
+					<th class="w-px whitespace-nowrap text-center px-4 py-3 text-sm font-medium text-gray-700">
 						<button onclick={() => toggleSort('familiarity')} class="hover:text-blue-600 {sortColumn === 'familiarity' ? 'text-blue-600' : ''}">
 							Familiarity {#if sortColumn === 'familiarity'}({sortDirection}){/if}
 						</button>
 					</th>
-					<th class="text-left px-4 py-3 text-sm font-medium text-gray-700">Actions</th>
 				</tr>
 			</thead>
 			<tbody class="divide-y divide-gray-100">
 				{#each filtered() as w (w.id)}
 					<tr class="cursor-pointer hover:bg-gray-50" onclick={(e) => handleRowClick(e, w.word)}>
 						<td class="px-4 py-3 text-lg font-medium">{w.word}</td>
-						<td class="px-4 py-3">
-							<div class="flex gap-1">
-								{#each [1, 2, 3, 4, 5] as score}
-									<button
-										onclick={() => setFamiliarity(w.word, score)}
-										disabled={updatingWord === w.word}
-										class="w-7 h-7 rounded text-xs font-medium disabled:opacity-50
-										{w.familiarity === score ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}"
-										title={familiarityLabel(score)}
-									>
-										{score}
-									</button>
-								{/each}
-								<span class="text-xs px-2 py-1 rounded-full self-center {familiarityColor(w.familiarity)}">
-									{familiarityLabel(w.familiarity)}
-								</span>
-							</div>
-						</td>
-						<td class="px-4 py-3">
-							<button
-								onclick={() => remove(w.word)}
+						<td class="w-px whitespace-nowrap px-4 py-3">
+							<FamiliarityDots
+								familiarity={w.familiarity}
 								disabled={updatingWord === w.word}
-								class="text-red-400 hover:text-red-600 text-sm disabled:opacity-50"
-							>
-								Delete
-							</button>
+								dotSize="w-4 h-4"
+								onSetFamiliarity={(score) => setFamiliarity(w.word, score)}
+							/>
 						</td>
 					</tr>
 				{/each}

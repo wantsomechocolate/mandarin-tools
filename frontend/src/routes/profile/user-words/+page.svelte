@@ -1,11 +1,36 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { browser } from '$app/environment';
 	import { isLoggedIn } from '$lib/auth';
 	import * as api from '$lib/api';
 	import { goto } from '$app/navigation';
-	import { familiarityLabel, familiarityColor } from '$lib/wordDisplay';
 	import WordDetailModal from '$lib/components/WordDetailModal.svelte';
+	import FamiliarityDots from '$lib/components/FamiliarityDots.svelte';
 	import type { WordDetailContext } from '$lib/wordDetailContext';
+
+	// Persisted filter preferences - see known-words/+page.svelte's own
+	// FILTER_STORAGE_KEY comment for the full pattern and why search is
+	// included here (unlike analyze/[id]'s).
+	const FILTER_STORAGE_KEY = 'mandarin_tools_user_words_filters';
+
+	interface StoredFilters {
+		search: string;
+		scopeFilter: 'all' | Scope;
+		sortColumn: SortColumn;
+		sortDirection: 'asc' | 'desc';
+	}
+
+	function loadStoredFilters(): Partial<StoredFilters> {
+		if (!browser) return {};
+		try {
+			const raw = localStorage.getItem(FILTER_STORAGE_KEY);
+			return raw ? JSON.parse(raw) : {};
+		} catch {
+			return {};
+		}
+	}
+
+	const storedFilters = loadStoredFilters();
 
 	// Global list page - see the matching comment in known-words/+page.svelte.
 	const panelContext: WordDetailContext = { type: 'global' };
@@ -39,15 +64,16 @@
 	let knownWords: Record<string, number | null> = $state({});
 	let loading = $state(true);
 	let error = $state('');
-	let search = $state('');
-	let scopeFilter: 'all' | Scope = $state('all');
+	let search = $state(storedFilters.search ?? '');
+	let scopeFilter: 'all' | Scope = $state(storedFilters.scopeFilter ?? 'all');
+	let updatingWord: string | null = $state(null);
 
 	let newWord = $state('');
 	let adding = $state(false);
 
 	type SortColumn = 'word' | 'familiarity' | null;
-	let sortColumn: SortColumn = $state(null);
-	let sortDirection: 'asc' | 'desc' = $state('asc');
+	let sortColumn: SortColumn = $state(storedFilters.sortColumn ?? null);
+	let sortDirection: 'asc' | 'desc' = $state(storedFilters.sortDirection ?? 'asc');
 
 	function toggleSort(column: Exclude<SortColumn, null>) {
 		if (sortColumn !== column) {
@@ -59,6 +85,18 @@
 			sortColumn = null;
 		}
 	}
+
+	// Persist filter preferences on every change - see known-words'
+	// identical effect for the reasoning.
+	$effect(() => {
+		if (!browser) return;
+		try {
+			const toStore: StoredFilters = { search, scopeFilter, sortColumn, sortDirection };
+			localStorage.setItem(FILTER_STORAGE_KEY, JSON.stringify(toStore));
+		} catch {
+			// e.g. storage disabled/full - filters just won't persist, no need to surface an error
+		}
+	});
 
 	onMount(async () => {
 		if (!isLoggedIn()) {
@@ -128,6 +166,25 @@
 		const target = event.target as HTMLElement;
 		if (target.closest('button, a, input, select, textarea')) return;
 		selectedWordForPanel = word;
+	}
+
+	// Unlike Known Words' own setFamiliarity, clearing familiarity here does
+	// NOT remove the row - a UserWord row's reason to exist is the
+	// dictionary entry itself (pronunciation/meaning/notes/affects_dag), not
+	// the score, so a word with no familiarity stays listed with its dots
+	// just showing "none." Same knownWords-patching logic the panel's own
+	// onFamiliarityChanged callback already uses below, just triggered from
+	// the row's dots instead of the panel.
+	async function setFamiliarity(word: string, familiarity: number | null) {
+		updatingWord = word;
+		try {
+			await api.upsertKnownWord(word, familiarity);
+			knownWords = { ...knownWords, [word]: familiarity };
+		} catch (e: unknown) {
+			error = e instanceof Error ? e.message : 'Failed to update familiarity';
+		} finally {
+			updatingWord = null;
+		}
 	}
 
 	// Always global - a new entry from this page has no "current text/
@@ -240,35 +297,28 @@
 							Word {#if sortColumn === 'word'}({sortDirection}){/if}
 						</button>
 					</th>
-					<th class="text-left px-4 py-3 text-sm font-medium text-gray-700">
+					<!-- w-px + whitespace-nowrap: shrink this column to the dots'
+					     own content width rather than stretching it, same trick
+					     (and same reasoning) as Known Words' identical column -
+					     see that page's comment for the full explanation. -->
+					<th class="w-px whitespace-nowrap text-center px-4 py-3 text-sm font-medium text-gray-700">
 						<button onclick={() => toggleSort('familiarity')} class="hover:text-blue-600 {sortColumn === 'familiarity' ? 'text-blue-600' : ''}">
 							Familiarity {#if sortColumn === 'familiarity'}({sortDirection}){/if}
 						</button>
 					</th>
-					<th class="text-left px-4 py-3 text-sm font-medium text-gray-700">Actions</th>
 				</tr>
 			</thead>
 			<tbody class="divide-y divide-gray-100">
 				{#each filtered() as w (w.word)}
 					<tr class="cursor-pointer hover:bg-gray-50" onclick={(e) => handleRowClick(e, w.word)}>
 						<td class="px-4 py-3 text-lg font-medium">{w.word}</td>
-						<td class="px-4 py-3">
-							<span class="text-xs px-2 py-1 rounded-full {familiarityColor(w.familiarity)}">
-								{familiarityLabel(w.familiarity)}
-							</span>
-						</td>
-						<td class="px-4 py-3">
-							<button
-								onclick={() => selectedWordForPanel = w.word}
-								class="p-1 rounded text-gray-400 hover:text-blue-600 hover:bg-blue-50"
-								title="View details"
-								aria-label="View details"
-							>
-								<svg class="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
-									<circle cx="10" cy="5.3" r="1.7" />
-									<rect x="8.2" y="8.6" width="3.6" height="7.6" rx="1.8" />
-								</svg>
-							</button>
+						<td class="w-px whitespace-nowrap px-4 py-3">
+							<FamiliarityDots
+								familiarity={w.familiarity}
+								disabled={updatingWord === w.word}
+								dotSize="w-4 h-4"
+								onSetFamiliarity={(score) => setFamiliarity(w.word, score)}
+							/>
 						</td>
 					</tr>
 				{/each}

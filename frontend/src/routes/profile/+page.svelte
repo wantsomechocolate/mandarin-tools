@@ -16,12 +16,15 @@
 	});
 	let error = $state('');
 
+	// Same order as the tab bar (+layout.svelte's own `tabs` array) - kept
+	// in sync by hand since this is a separate array, not a shared import,
+	// matching this page's existing "own copy of card metadata" shape.
 	const cards = [
+		{ key: 'starredWords', href: '/profile/starred-words', label: 'Starred Words', description: 'Words you’ve bookmarked for later.' },
 		{ key: 'knownWords', href: '/profile/known-words', label: 'Known Words', description: 'Familiarity scores for vocabulary you’re studying.' },
 		{ key: 'userWords', href: '/profile/user-words', label: 'User Words', description: 'Your custom dictionary entries, across every text and analysis.' },
-		{ key: 'garbageWords', href: '/profile/garbage-words', label: 'Garbage Words', description: 'Numbers, punctuation, and junk excluded from results by default.' },
 		{ key: 'stopwords', href: '/profile/stopwords', label: 'Stopwords', description: 'Words excluded from the segmenter’s own algorithms.' },
-		{ key: 'starredWords', href: '/profile/starred-words', label: 'Starred Words', description: 'Words you’ve bookmarked for later.' },
+		{ key: 'garbageWords', href: '/profile/garbage-words', label: 'Garbage Words', description: 'Numbers, punctuation, and junk excluded from results by default.' },
 	];
 
 	onMount(() => {
