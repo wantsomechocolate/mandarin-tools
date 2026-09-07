@@ -69,6 +69,16 @@ from app.modules.known_words.schemas import (
 router = APIRouter(prefix="/known-words", tags=["known-words"])
 
 
+# AnalysisResult.source values that make up the "Main segmentation" bucket
+# (see wordDisplay.ts's bucketLabel for the frontend's identical mapping) -
+# the DAG's own disjoint best-guess walk, as opposed to the supplemental
+# "extra_match"/"repeated_sequence" (and legacy "token"/"longest_match_only")
+# passes layered on top of it. Used by get_analysis_spans to build its
+# left-to-right walk from best-guess rows only - see that function's
+# docstring for why mixing in the supplemental rows' positions breaks it.
+MAIN_SEGMENTATION_SOURCES = {"dag", "overlay", "unknown", "trie"}
+
+
 # --- Scoping helpers, shared by the user-words CRUD endpoints below (see
 # UserWord's scope_analysis_id/scope_input_text_id docstring in models.py
 # for the full design). KnownWord (familiarity) is deliberately NOT scoped -
@@ -530,11 +540,33 @@ def get_analysis_spans(
 ):
     """
     Reading-view payload: InputText.body walked in order, split into
-    dag/overlay-sourced "word" spans (from AnalysisResult.positions - see
-    its docstring, models.py) interleaved with plain-text "gap" spans for
-    everything a word span doesn't cover (token/unknown/longest_match_only
-    content, whitespace, punctuation). See AnalysisSpan's docstring
-    (schemas.py) for the exact shape.
+    Main-segmentation "word" spans (from AnalysisResult.positions, rows
+    whose source is in MAIN_SEGMENTATION_SOURCES - see its docstring)
+    interleaved with plain-text "gap" spans for everything a word span
+    doesn't cover (extra_match/repeated_sequence content, whitespace,
+    punctuation). See AnalysisSpan's docstring (schemas.py) for the exact
+    shape.
+
+    Only Main-segmentation rows feed the walk, even though extra_match rows
+    also carry real positions (aggregate_full_segmentation records one for
+    every DAG candidate, chosen by the DP or not - see its docstring,
+    dag_segmentor.py). Those positions routinely overlap a Main-segmentation
+    word's own span - e.g. "特别" (dag) at [313, 315] alongside "特"
+    (extra_match) at [313, 314] and "别" (extra_match) at [314, 315], since
+    "特"/"别" are themselves valid trie words the DP didn't choose here. This
+    walk is a single left-to-right pass with one cursor, sorted only by
+    start - it has no way to prefer the "right" occurrence when two rows tie
+    at the same start, so mixing best-guess and extra-match positions into
+    it previously produced exactly that fragmentation (confirmed against a
+    real analysis: "特" and "别" rendered as two spans while "特别" was
+    silently dropped, because whichever row happened to sort first "won"
+    the cursor and the other was skipped as already-covered). Restricting
+    the walk to Main-segmentation sources sidesteps this entirely, since
+    that set alone is genuinely disjoint by construction (the DP's own
+    non-overlapping best-guess path) - extra_match/repeated_sequence stay
+    exactly what they're meant to be, supplemental annotations reviewed
+    elsewhere (the results table's Bucket filter), not a second competing
+    tiling of the same text.
 
     Deliberately a separate endpoint from GET /analyze/{id} - the results
     table doesn't need this payload, and this one does extra work (a
@@ -556,20 +588,25 @@ def get_analysis_spans(
 
     results = db.query(AnalysisResult).filter(AnalysisResult.analysis_id == analysis_id).all()
 
-    # Flatten every row's [[start, end], ...] into individual
-    # (word, start, end, source) occurrences, then sort into the same
-    # left-to-right order the original disjoint DAG walk produced them in -
-    # AnalysisResult rows are per-word (one row can have many occurrences),
-    # not per-occurrence, so this is the step that recovers the actual
-    # reading order. Filtering on `r.positions` truthiness (Python-side,
-    # not a SQL `IS NOT NULL`) is deliberate - SQLAlchemy's JSONB columns
-    # store an unset value as the JSON literal `null` by default
-    # (none_as_null=False), which Postgres itself does NOT consider SQL
-    # NULL (`positions IS NOT NULL` is true for it) - only a Python-side
-    # truthiness check correctly treats both "no row" and "row with a JSON
-    # null" as "no positions".
+    # Flatten every Main-segmentation row's [[start, end], ...] into
+    # individual (word, start, end, source) occurrences, then sort into the
+    # same left-to-right order the original disjoint DAG walk produced them
+    # in - AnalysisResult rows are per-word (one row can have many
+    # occurrences), not per-occurrence, so this is the step that recovers
+    # the actual reading order. Restricted to MAIN_SEGMENTATION_SOURCES -
+    # see this function's docstring for why letting extra_match/
+    # repeated_sequence rows' (also-real) positions into this same walk
+    # fragments/drops Main-segmentation words whenever the two overlap.
+    # Filtering on `r.positions` truthiness (Python-side, not a SQL `IS NOT
+    # NULL`) is deliberate - SQLAlchemy's JSONB columns store an unset value
+    # as the JSON literal `null` by default (none_as_null=False), which
+    # Postgres itself does NOT consider SQL NULL (`positions IS NOT NULL`
+    # is true for it) - only a Python-side truthiness check correctly
+    # treats both "no row" and "row with a JSON null" as "no positions".
     occurrences: list[tuple[str, int, int, str]] = []
     for r in results:
+        if r.source not in MAIN_SEGMENTATION_SOURCES:
+            continue
         if not r.positions:
             continue
         for start, end in r.positions:
@@ -582,15 +619,34 @@ def get_analysis_spans(
     _uw_default = {"scopes": [], "resolved_affects_dag": True, "scope_affects_dag": {}}
 
     distinct_words = {o[0] for o in occurrences}
-    rarity_by_word: dict[str, str | None] = {}
+    # (rarity_tier, freq_per_million) together - see AnalysisSpan.
+    # freq_per_million's docstring for why both travel together rather than
+    # tier alone. Also pulls the raw HSK/CC-CEDICT columns in this same
+    # query - AnalysisSpan.dictionary_source (schemas.py) is derived from
+    # them right below, rather than a second query hitting DictionaryWord
+    # for the same word set a second time.
+    rarity_by_word: dict[str, tuple[str | None, float | None]] = {}
+    dictionary_source_by_word: dict[str, str | None] = {}
     if distinct_words:
-        for w, tier in db.query(DictionaryWord.word, DictionaryWord.rarity_tier).filter(DictionaryWord.word.in_(distinct_words)).all():
-            rarity_by_word[w] = tier
+        for w, tier, freq, hsk_v2, hsk_v3_2021, hsk_v3_2026, is_cedict in db.query(
+            DictionaryWord.word, DictionaryWord.rarity_tier, DictionaryWord.freq_per_million,
+            DictionaryWord.hsk_v2_2012, DictionaryWord.hsk_v3_2021, DictionaryWord.hsk_v3_2026,
+            DictionaryWord.is_cedict,
+        ).filter(DictionaryWord.word.in_(distinct_words)).all():
+            rarity_by_word[w] = (tier, freq)
+            # HSK wins over CC-CEDICT when a word is backed by both - see
+            # AnalysisSpan.dictionary_source's docstring for the full
+            # User > HSK > CC-CEDICT > Corpus > None priority order this is
+            # one piece of.
+            if hsk_v2 is not None or hsk_v3_2021 is not None or hsk_v3_2026 is not None:
+                dictionary_source_by_word[w] = "hsk"
+            elif is_cedict:
+                dictionary_source_by_word[w] = "cedict"
     # Same resolved-fresh evidence tier as WordResult's - see
     # get_word_dictionary_tiers's docstring and WordResult.evidence_tier's
     # docstring (schemas.py) for the hierarchy. Powers ReadingView's
-    # "Color by: Dictionary" mode the same way the results-table chip uses
-    # this elsewhere.
+    # "Color by: Source" mode's fallback - dictionary_source_by_word above
+    # covers the finer HSK/CC-CEDICT split that mode actually colors by.
     dictionary_tiers = service.get_word_dictionary_tiers(distinct_words, db)
 
     spans: list[AnalysisSpan] = []
@@ -610,7 +666,9 @@ def get_analysis_spans(
             familiarity=known_words.get(word),
             is_hidden=visibility.get(word, (False, "default"))[0],
             hidden_governing_scope=visibility.get(word, (False, "default"))[1],
-            rarity_tier=rarity_by_word.get(word),
+            rarity_tier=rarity_by_word.get(word, (None, None))[0],
+            freq_per_million=rarity_by_word.get(word, (None, None))[1],
+            dictionary_source=dictionary_source_by_word.get(word),
             userword_scopes=user_words.get(word, _uw_default)["scopes"],
             userword_resolved_affects_dag=user_words.get(word, _uw_default)["resolved_affects_dag"],
             evidence_tier=(

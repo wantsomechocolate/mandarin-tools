@@ -60,6 +60,27 @@
 	}
 </script>
 
+{#snippet iconHome()}
+	<svg class="w-5 h-5" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+		<path d="M3.5 9.5L10 4l6.5 5.5" />
+		<path d="M5 8.5v7a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1v-7" />
+		<path d="M8 16.5v-4a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v4" />
+	</svg>
+{/snippet}
+
+<!-- "See latest results" link next to the title - a small bar-chart glyph,
+     the counterpart to analyze/[id]'s own book icon (View source text):
+     book = the text, chart = what came out of analyzing it, rather than an
+     app-specific "segmented text" glyph nobody's seen before. -->
+{#snippet iconBarChart()}
+	<svg class="w-5 h-5" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+		<path d="M3.5 16.5h13" />
+		<path d="M6 16.5V11" />
+		<path d="M10 16.5V6.5" />
+		<path d="M14 16.5V9" />
+	</svg>
+{/snippet}
+
 <div class="min-h-screen bg-gray-50">
 	<!-- Same dynamic-title risk as analyze/[id] (a Chinese title has no
 	     spaces to wrap on) even though this row has no competing right-side
@@ -68,10 +89,22 @@
 	     justify-between dropped: this row has only one flex child. -->
 	<nav class="bg-white shadow-sm px-6 py-4 flex items-center">
 		<div class="flex items-center gap-4 min-w-0">
-			<a href="/" class="text-gray-600 hover:text-gray-800 text-sm shrink-0">← Back</a>
+			<a href="/" class="text-gray-600 hover:text-gray-800 shrink-0" aria-label="Home" title="Home">
+				{@render iconHome()}
+			</a>
 			<h1 class="text-xl font-bold text-gray-800 min-w-0 truncate" title={inputText?.title ?? 'Untitled'}>
 				{inputText?.title ?? 'Untitled'}
 			</h1>
+			{#if inputText && inputText.analyses.length > 0}
+				<a
+					href="/analyze/{inputText.analyses[0].id}"
+					class="text-gray-400 hover:text-blue-600 shrink-0"
+					aria-label="View latest results"
+					title="View latest results"
+				>
+					{@render iconBarChart()}
+				</a>
+			{/if}
 		</div>
 	</nav>
 

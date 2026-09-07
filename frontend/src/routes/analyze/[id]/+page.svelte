@@ -1093,6 +1093,14 @@
 	{/if}
 {/snippet}
 
+{#snippet iconHome()}
+	<svg class="w-5 h-5" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+		<path d="M3.5 9.5L10 4l6.5 5.5" />
+		<path d="M5 8.5v7a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1v-7" />
+		<path d="M8 16.5v-4a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v4" />
+	</svg>
+{/snippet}
+
 {#snippet iconBook()}
 	<svg class="w-4 h-4" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
 		<path d="M10 5.75c-1.3-1-3.1-1.5-5.25-1.5a.75.75 0 0 0-.75.75v9.5c0 .41.34.75.75.75 2.15 0 3.95.5 5.25 1.5 1.3-1 3.1-1.5 5.25-1.5.41 0 .75-.34.75-.75V5c0-.41-.34-.75-.75-.75-2.15 0-3.95.5-5.25 1.5Z" />
@@ -1426,7 +1434,9 @@
 	     title from wrapping one character per line. -->
 	<nav class="bg-white shadow-sm px-6 py-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 sm:gap-0">
 		<div class="flex flex-wrap items-center gap-4 min-w-0">
-			<a href="/" class="text-gray-600 hover:text-gray-800 shrink-0" aria-label="Back to your texts">←</a>
+			<a href="/" class="text-gray-600 hover:text-gray-800 shrink-0" aria-label="Home" title="Home">
+				{@render iconHome()}
+			</a>
 			<h1 class="text-xl font-bold text-gray-800 min-w-0 truncate" title={analysis?.title ?? 'Analysis Results'}>
 				{analysis?.title ?? 'Analysis Results'}
 			</h1>

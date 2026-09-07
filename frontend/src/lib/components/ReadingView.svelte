@@ -1,6 +1,7 @@
 <script lang="ts">
 	import * as api from '$lib/api';
-	import { evidenceTierColor, rarityColor, familiarityColor } from '$lib/wordDisplay';
+	import { sourceDetailColor, rarityContinuousColor, familiarityColor } from '$lib/wordDisplay';
+	import type { SourceDetailTier } from '$lib/wordDisplay';
 	import WordDetailModal from './WordDetailModal.svelte';
 	import type { WordDetailContext } from '$lib/wordDetailContext';
 
@@ -37,12 +38,27 @@
 		is_hidden: boolean;
 		hidden_governing_scope: string;
 		rarity_tier: string | null;
+		// Raw occurrences-per-million, alongside rarity_tier - "Color by:
+		// Rarity" interpolates a color directly from this (rarityContinuousColor),
+		// rather than snapping to rarity_tier's 5 buckets the way the chips
+		// elsewhere in the app still do. See AnalysisSpan.freq_per_million's
+		// docstring, schemas.py, for why the two travel together.
+		freq_per_million: number | null;
 		userword_scopes: string[];
 		userword_resolved_affects_dag: boolean;
 		// Same resolved-fresh evidence tier as the results table's per-row
 		// chip (WordResult.evidence_tier) - see get_analysis_spans'
-		// docstring, router.py. Powers this view's "Color by: Evidence" mode.
+		// docstring, router.py. This view's "Color by: Source" mode uses the
+		// finer sourceDetailTier() below instead, but evidence_tier stays
+		// on the span (spanTitle still reads off it via dictionary_source's
+		// presence, and it's the fallback if dictionary_source is ever null
+		// on an otherwise-"dictionary" word - see sourceDetailTier).
 		evidence_tier: 'user' | 'dictionary' | 'corpus' | 'unknown' | null;
+		// Splits evidence_tier's "dictionary" value into which curated
+		// source backs the word - see AnalysisSpan.dictionary_source's
+		// docstring, schemas.py, for the null cases and the HSK > CC-CEDICT
+		// precedence when a word is backed by both.
+		dictionary_source: 'hsk' | 'cedict' | null;
 	}
 	interface GapSpan {
 		type: 'gap';
@@ -57,7 +73,7 @@
 	let loading = $state(true);
 	let error = $state('');
 
-	type ColorBy = 'none' | 'evidence' | 'rarity' | 'familiarity';
+	type ColorBy = 'none' | 'source' | 'rarity' | 'familiarity';
 	let colorBy: ColorBy = $state('none');
 
 	let selectedWordForPanel: string | null = $state(null);
@@ -86,21 +102,6 @@
 		load();
 	});
 
-	// Alternating parity among WORD spans only (gaps don't count) - the
-	// default "Color by: None" boundary indicator. Computed once per spans
-	// load, not per-render.
-	const wordParity = $derived(() => {
-		const parity = new Map<WordSpan, number>();
-		let i = 0;
-		for (const s of spans) {
-			if (s.type === 'word') {
-				parity.set(s, i % 2);
-				i++;
-			}
-		}
-		return parity;
-	});
-
 	// The color scale functions (wordDisplay.ts) return a combined
 	// "bg-X-100 text-X-700" pair for use as small colored badges elsewhere
 	// in the app - reused here for the actual color mapping (not a new
@@ -111,14 +112,42 @@
 		return classes.split(' ')[0] ?? '';
 	}
 
+	// User > HSK > CC-CEDICT > Corpus > None - see AnalysisSpan.
+	// dictionary_source's docstring (schemas.py) for the same order and
+	// the HSK-over-CC-CEDICT tie-break. Falls back to evidence_tier's own
+	// "corpus"/"unknown" for the two cases dictionary_source doesn't cover
+	// (it's only ever "hsk"/"cedict"/null).
+	function sourceDetailTier(span: WordSpan): SourceDetailTier {
+		if (span.userword_scopes.length > 0) return 'user';
+		if (span.dictionary_source) return span.dictionary_source;
+		if (span.evidence_tier === 'corpus') return 'corpus';
+		return 'none';
+	}
+
 	function spanClass(span: WordSpan): string {
-		if (colorBy === 'evidence') return bgOnly(evidenceTierColor(span.evidence_tier));
-		if (colorBy === 'rarity') return bgOnly(rarityColor(span.rarity_tier));
+		if (colorBy === 'source') return bgOnly(sourceDetailColor(sourceDetailTier(span)));
+		// Rarity is the one mode with no bg-* class at all - see spanStyle.
+		if (colorBy === 'rarity') return '';
 		if (colorBy === 'familiarity') return bgOnly(familiarityColor(span.familiarity));
-		// 'none' - the default subtle alternating tint, just enough to show
-		// where one word ends and the next begins without any semantic
-		// meaning attached to the color itself.
-		return wordParity().get(span) === 0 ? 'bg-slate-100' : 'bg-white';
+		// 'none' - word boundaries shown as a broken underline instead of
+		// the old alternating bg-slate-100/bg-white tint (reported as hard
+		// on the eyes across a full page - a flat color field behind every
+		// other word is a much stronger signal than a boundary needs to
+		// be). Each word gets its own short bottom-border segment; the
+		// small trailing margin is what breaks the line between one word's
+		// segment and the next, rather than a continuous underline running
+		// the whole sentence.
+		return 'border-b-2 border-gray-400 mr-0.5';
+	}
+
+	// Rarity is the one "Color by" mode that isn't one of a fixed set of
+	// Tailwind classes - rarityContinuousColor interpolates an actual color
+	// from the word's real frequency (see its docstring, wordDisplay.ts),
+	// so it has to be applied as an inline style rather than a class. Every
+	// other mode returns '' here and relies on spanClass instead.
+	function spanStyle(span: WordSpan): string {
+		if (colorBy !== 'rarity') return '';
+		return `background-color: ${rarityContinuousColor(span.freq_per_million)}`;
 	}
 
 	function spanTitle(span: WordSpan): string {
@@ -143,12 +172,10 @@
 			Color by
 			<select bind:value={colorBy} class="border border-gray-300 rounded px-2 py-1 text-sm">
 				<option value="none">None</option>
-				<!-- Renamed from "Source" to "Evidence": the color now comes from
-				     evidence_tier (User/Dictionary/Corpus/Unknown - why a word
-				     should be trusted), not source (which pipeline pass produced
-				     it) - "Dictionary" alone would undersell the User/Corpus tiers
-				     this mode also colors, so the umbrella term matches better. -->
-				<option value="evidence">Evidence</option>
+				<!-- Colors by sourceDetailTier() - User > HSK > CC-CEDICT > Corpus >
+				     None, a finer split of evidenceTierColor's own 4-tier scale
+				     (see sourceDetailColor's docstring, wordDisplay.ts). -->
+				<option value="source">Source</option>
 				<option value="rarity">Rarity</option>
 				<option value="familiarity">Familiarity</option>
 			</select>
@@ -166,6 +193,7 @@
 				>{:else}<button
 						onclick={() => selectedWordForPanel = span.word}
 						class="rounded px-0.5 hover:ring-1 hover:ring-blue-400 {spanClass(span)}"
+						style={spanStyle(span)}
 						title={spanTitle(span)}
 					>{span.word}</button
 					>{/if}

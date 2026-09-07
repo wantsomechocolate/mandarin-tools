@@ -146,13 +146,36 @@ class AnalysisSpan(BaseModel):
     is_hidden: bool = False
     hidden_governing_scope: str = "default"
     rarity_tier: str | None = None
+    # Raw DictionaryWord.freq_per_million, alongside rarity_tier rather than
+    # instead of it - ReadingView's continuous "Color by: Rarity" gradient
+    # needs the actual number (it interpolates a color from log-frequency
+    # directly, not a snap to one of 5 tiers), but rarity_tier stays too
+    # since spanTitle's tooltip still reads off it. Null exactly when
+    # rarity_tier is (see compute_word_rarity.py - both columns are always
+    # NULL/non-NULL together).
+    freq_per_million: float | None = None
     userword_scopes: list[str] = []
     userword_resolved_affects_dag: bool = True
     # Same resolved-fresh evidence tier as WordResult.evidence_tier (see its
     # docstring) - null on a "gap" span, same nullable pattern `source`
     # already uses here, since both are only meaningful for a "word" span.
-    # Powers ReadingView's "Color by: Dictionary" mode.
+    # Powers ReadingView's "Color by: Source" mode's fallback (see
+    # dictionary_source below for the finer split that mode actually uses).
     evidence_tier: Literal["user", "dictionary", "corpus", "unknown"] | None = None
+    # Splits evidence_tier's "dictionary" bucket into which curated source
+    # actually backs the word - reading view only (WordResult.evidence_tier,
+    # and every other consumer of evidence_tier, keeps treating HSK/CC-CEDICT
+    # as one undifferentiated "dictionary" tier; this is a new, additive
+    # field, not a replacement). Null whenever evidence_tier isn't
+    # "dictionary" (user/corpus/unknown words have no dictionary_source to
+    # report) or when a word is dictionary-backed by neither HSK nor
+    # CC-CEDICT specifically (shouldn't happen given how evidence_tier's own
+    # "dictionary" value is derived, but nothing here assumes it can't).
+    # HSK wins when a word is backed by both (get_analysis_spans, router.py)
+    # - the more curated/pedagogical source, matching the priority order
+    # ReadingView's "Color by: Source" mode uses top to bottom: User > HSK >
+    # CC-CEDICT > Corpus > None.
+    dictionary_source: Literal["hsk", "cedict"] | None = None
 
 
 class AnalysisSpansResponse(BaseModel):
