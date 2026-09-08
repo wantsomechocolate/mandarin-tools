@@ -236,6 +236,36 @@ class KnownWordResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+# Bulk HSK-level familiarity assignment - see bulk_assign_hsk_familiarity's
+# docstring (router.py) for the actual behavior. "2021" is deliberately not
+# a valid edition here - excluded by product decision (see the feature's
+# own planning conversation), not an oversight.
+HskEdition = Literal["2012", "2026"]
+
+
+class BulkAssignHskRequest(BaseModel):
+    edition: HskEdition
+    level: int
+    familiarity: int
+    overwrite: bool = False
+
+
+class BulkAssignHskResponse(BaseModel):
+    matched: int
+    updated: int
+    skipped: int
+
+
+class HskLevelCount(BaseModel):
+    level: int
+    word_count: int
+
+
+class HskLevelCountsResponse(BaseModel):
+    v2012: list[HskLevelCount]
+    v2026: list[HskLevelCount]
+
+
 class UserWordCreate(BaseModel):
     word: str
     pronunciation: str | None = None

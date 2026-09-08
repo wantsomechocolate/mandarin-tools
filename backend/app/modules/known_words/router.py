@@ -41,6 +41,10 @@ from app.modules.known_words.schemas import (
     WordResult,
     KnownWordUpdate,
     KnownWordResponse,
+    BulkAssignHskRequest,
+    BulkAssignHskResponse,
+    HskLevelCount,
+    HskLevelCountsResponse,
     UserWordCreate,
     UserWordResponse,
     UserWordUpsert,
@@ -807,6 +811,111 @@ def delete_known_word(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Word not found")
     db.delete(known_word)
     db.commit()
+
+
+# Bulk HSK-level familiarity assignment - lets a new user (or one adding a
+# new HSK edition's data) skip hand-scoring hundreds/thousands of words one
+# at a time. HSK 2021 is deliberately not supported by either endpoint
+# below - see BulkAssignHskRequest's HskEdition (schemas.py), a product
+# decision from this feature's own planning conversation, not an
+# oversight. Real column name is looked up through this dict rather than
+# ever interpolating body.edition directly into SQL - doesn't actually
+# matter for injection here (Pydantic's Literal type already rejects
+# anything but "2012"/"2026" before this code runs), but keeps the actual
+# column name out of the request contract entirely.
+_HSK_EDITION_COLUMNS = {"2012": "hsk_v2_2012", "2026": "hsk_v3_2026"}
+_HSK_EDITION_MAX_LEVEL = {"2012": 6, "2026": 7}
+
+
+@router.get("/known-words/hsk-level-counts", response_model=HskLevelCountsResponse)
+def get_hsk_level_counts(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Word counts per level, for both HSK editions bulk_assign_hsk_familiarity
+    supports - lets the frontend show "2,500 words" on each bulk-assign
+    button before it's clicked, not just after. Identical for every user
+    (current_user is only required for auth consistency with every other
+    endpoint here, not to scope the result) - a plain count against
+    dictionary_words, nothing user-owned involved.
+    """
+    def counts_for(column: str) -> list[HskLevelCount]:
+        rows = db.execute(text(f"""
+            SELECT {column} AS level, COUNT(*) AS word_count
+            FROM dictionary_words
+            WHERE {column} IS NOT NULL
+            GROUP BY {column}
+            ORDER BY {column}
+        """)).fetchall()
+        return [HskLevelCount(level=r.level, word_count=r.word_count) for r in rows]
+
+    return HskLevelCountsResponse(
+        v2012=counts_for(_HSK_EDITION_COLUMNS["2012"]),
+        v2026=counts_for(_HSK_EDITION_COLUMNS["2026"]),
+    )
+
+
+@router.post("/known-words/bulk-assign-hsk", response_model=BulkAssignHskResponse)
+def bulk_assign_hsk_familiarity(
+    body: BulkAssignHskRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Sets familiarity for every dictionary word at one HSK level, as a
+    single bulk INSERT ... ON CONFLICT rather than one round trip per word -
+    HSK 2026's level 7 alone (the old combined 7-9 band under the newer 3.0
+    standard) is close to 5,000 words, so a per-word loop isn't viable here.
+    Relies on known_words' existing (user_id, word) unique index (models.py)
+    as the ON CONFLICT target.
+
+    overwrite=False (the default) only fills in words this user has no
+    KnownWord row for yet - purely additive, never touches a word they've
+    already scored, even to a different value (DO NOTHING - a matched row
+    that already exists is silently left alone, not overwritten and not an
+    error). overwrite=True replaces every matched word's familiarity
+    unconditionally (DO UPDATE), including ones already scored differently -
+    the frontend gates *this* path behind its own confirmation, since one
+    click can otherwise silently replace thousands of scores at once.
+
+    `matched` (dictionary words at this level) vs `updated` (how many
+    actually got this call's familiarity written - via RETURNING, which
+    only reports rows the INSERT actually touched: with DO NOTHING that's
+    just the newly-inserted ones, with DO UPDATE that's every matched row)
+    lets the frontend report e.g. "set 2,500 words - 312 already scored,
+    skipped" without a second query.
+    """
+    if body.edition not in _HSK_EDITION_COLUMNS:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported HSK edition")
+    column = _HSK_EDITION_COLUMNS[body.edition]
+    max_level = _HSK_EDITION_MAX_LEVEL[body.edition]
+    if not (1 <= body.level <= max_level):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Level must be between 1 and {max_level} for HSK {body.edition}",
+        )
+    if not (1 <= body.familiarity <= 5):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Familiarity must be between 1 and 5")
+
+    matched = db.execute(
+        text(f"SELECT COUNT(*) FROM dictionary_words WHERE {column} = :level"),
+        {"level": body.level},
+    ).scalar()
+
+    conflict_action = "DO UPDATE SET familiarity = EXCLUDED.familiarity" if body.overwrite else "DO NOTHING"
+    result = db.execute(text(f"""
+        INSERT INTO known_words (user_id, word, familiarity)
+        SELECT :user_id, word, :familiarity
+        FROM dictionary_words
+        WHERE {column} = :level
+        ON CONFLICT (user_id, word) {conflict_action}
+        RETURNING word
+    """), {"user_id": current_user.id, "familiarity": body.familiarity, "level": body.level})
+    updated = len(result.fetchall())
+    db.commit()
+
+    return BulkAssignHskResponse(matched=matched, updated=updated, skipped=matched - updated)
 
 
 @router.post("/user-words", response_model=UserWordResponse, status_code=status.HTTP_201_CREATED)

@@ -176,6 +176,23 @@ export async function listKnownWords() {
 // DELETE /known-words/known-words/{word} endpoint stays in place, just
 // unused from this frontend today.
 
+// Bulk HSK-level familiarity assignment - see bulk_assign_hsk_familiarity's
+// docstring (router.py) for the actual overwrite/matched/updated/skipped
+// semantics. "2021" is deliberately not a valid edition (product decision,
+// not an oversight).
+export async function getHskLevelCounts() {
+    return request('GET', '/known-words/known-words/hsk-level-counts');
+}
+
+export async function bulkAssignHskFamiliarity(
+    edition: '2012' | '2026',
+    level: number,
+    familiarity: number,
+    overwrite: boolean,
+) {
+    return request('POST', '/known-words/known-words/bulk-assign-hsk', { edition, level, familiarity, overwrite });
+}
+
 // User words
 // affects_dag is always explicitly sent as true here (never omitted) -
 // this is the quick "+ Add word" action (row/card bookmark button, panel's

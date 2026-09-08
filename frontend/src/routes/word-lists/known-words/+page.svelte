@@ -100,19 +100,103 @@
 		}
 	});
 
-	onMount(async () => {
+	onMount(() => {
 		if (!isLoggedIn()) {
 			goto('/login');
 			return;
 		}
+		// Fired independently (not Promise.all), same reasoning as
+		// word-lists/+page.svelte's own count-loading - the HSK counts are a
+		// secondary, "bulk tools" concern, and shouldn't hold back the main
+		// list (or vice versa) if one is slow or fails.
+		api.listKnownWords()
+			.then((r: unknown) => words = r as KnownWord[])
+			.catch((e: unknown) => error = e instanceof Error ? e.message : 'Failed to load known words')
+			.finally(() => loading = false);
+
+		api.getHskLevelCounts()
+			.then((r: unknown) => {
+				const counts = r as HskLevelCounts;
+				hskCounts = counts;
+				// Pre-fills the bulk-assign section's own per-row familiarity
+				// pickers with a sensible descending default (lower HSK level =
+				// more basic = "should already be mastered if you're using this
+				// app seriously") - fully editable per row before clicking
+				// Apply, this is just a starting point, not a forced value.
+				const initial: Record<string, number> = {};
+				for (const { level } of counts.v2012) initial[bulkKey('2012', level)] = defaultFamiliarityForLevel(level);
+				for (const { level } of counts.v2026) initial[bulkKey('2026', level)] = defaultFamiliarityForLevel(level);
+				bulkFamiliarityByKey = initial;
+			})
+			.catch((e: unknown) => hskCountsError = e instanceof Error ? e.message : 'Failed to load HSK level counts');
+	});
+
+	// Bulk-assign by HSK level - lets a new user (or one adding a new HSK
+	// edition's data) skip hand-scoring hundreds/thousands of words one at a
+	// time. HSK 2021 is deliberately not offered (see bulk_assign_hsk_familiarity's
+	// docstring, router.py) - a product decision, not an oversight.
+	interface HskLevelCount { level: number; word_count: number; }
+	interface HskLevelCounts { v2012: HskLevelCount[]; v2026: HskLevelCount[]; }
+
+	let bulkExpanded = $state(false);
+	let hskCounts: HskLevelCounts | null = $state(null);
+	let hskCountsError = $state('');
+	let bulkOverwrite = $state(false);
+	// Keyed by bulkKey(edition, level) - one entry per one of the 13 rows.
+	let bulkFamiliarityByKey: Record<string, number> = $state({});
+	let bulkApplying: string | null = $state(null);
+	let bulkResultByKey: Record<string, { matched: number; updated: number; skipped: number }> = $state({});
+	let bulkErrorByKey: Record<string, string> = $state({});
+
+	function bulkKey(edition: '2012' | '2026', level: number): string {
+		return `${edition}-${level}`;
+	}
+
+	// level 1 -> 5 (Mastered), 2 -> 4, 3 -> 3, 4 -> 2, 5/6/7 -> 1 (Seen it) -
+	// see this function's own callers for why this is only ever a starting
+	// point, never forced.
+	function defaultFamiliarityForLevel(level: number): number {
+		return Math.max(1, 6 - level);
+	}
+
+	async function applyBulkAssign(edition: '2012' | '2026', level: number) {
+		const key = bulkKey(edition, level);
+		const familiarity = bulkFamiliarityByKey[key] ?? defaultFamiliarityForLevel(level);
+		const levelCounts = edition === '2012' ? hskCounts?.v2012 : hskCounts?.v2026;
+		const matched = levelCounts?.find((l) => l.level === level)?.word_count ?? 0;
+
+		// Only the destructive path (replacing scores you already set) is
+		// gated - the additive default (overwrite off) can't lose any data,
+		// so it just runs. The count shown here is exact, not an estimate -
+		// with overwrite on, every matched word gets this call's familiarity
+		// regardless of whether it already had a different one, so "matched"
+		// and "affected" are the same number.
+		if (bulkOverwrite) {
+			const proceed = confirm(
+				`Set familiarity to "${familiarityLabel(familiarity)}" for all ${matched.toLocaleString()} HSK ${edition} level ${level} words, replacing any scores they already have?`
+			);
+			if (!proceed) return;
+		}
+
+		bulkApplying = key;
 		try {
+			const result = await api.bulkAssignHskFamiliarity(edition, level, familiarity, bulkOverwrite) as { matched: number; updated: number; skipped: number };
+			bulkResultByKey = { ...bulkResultByKey, [key]: result };
+			if (key in bulkErrorByKey) {
+				const { [key]: _dropped, ...rest } = bulkErrorByKey;
+				bulkErrorByKey = rest;
+			}
+			// A bulk action can add/update thousands of rows at once - the
+			// endpoint only returns counts, not which words, so the simplest
+			// correct way to reflect that here is a full refetch rather than
+			// trying to patch `words` incrementally.
 			words = await api.listKnownWords() as KnownWord[];
 		} catch (e: unknown) {
-			error = e instanceof Error ? e.message : 'Failed to load known words';
+			bulkErrorByKey = { ...bulkErrorByKey, [key]: e instanceof Error ? e.message : 'Failed to apply' };
 		} finally {
-			loading = false;
+			bulkApplying = null;
 		}
-	});
+	}
 
 	const filtered = $derived(() => {
 		const q = search.trim();
@@ -251,6 +335,104 @@
 		<p class="text-xs text-amber-600 mt-2">
 			"{existingKnownWord.word}" is already known ({existingKnownWord.familiarity !== null ? `familiarity: ${familiarityLabel(existingKnownWord.familiarity)}` : 'no score set'}) — adding here will update it to {newFamiliarity} - {familiarityLabel(newFamiliarity)}.
 		</p>
+	{/if}
+</div>
+
+<!-- Collapsed by default - a power tool for getting a baseline in place
+     fast (the app "takes a long time to start being useful" otherwise -
+     scoring HSK1-6/HSK1-7 word-by-word), not something a returning user
+     needs to see every visit. -->
+<div class="bg-white rounded-lg shadow-sm p-4 mb-4">
+	<button
+		onclick={() => bulkExpanded = !bulkExpanded}
+		class="w-full flex items-center justify-between text-sm font-medium text-gray-600 hover:text-gray-800"
+	>
+		<span>Bulk-assign by HSK level</span>
+		{@render iconChevron(bulkExpanded)}
+	</button>
+	{#if bulkExpanded}
+		<div class="mt-3 space-y-4">
+			<p class="text-xs text-gray-500">
+				Sets familiarity for every dictionary word at a given HSK level in one go. HSK 2021 isn't
+				offered here - HSK 2012 and the newer 2026 standard cover this instead.
+			</p>
+			<label class="flex items-center gap-1.5 text-sm text-gray-600">
+				<input type="checkbox" bind:checked={bulkOverwrite} class="rounded border-gray-300" />
+				Overwrite words that already have a familiarity score
+			</label>
+
+			{#if hskCountsError}
+				<p class="text-xs text-red-600">{hskCountsError}</p>
+			{:else if !hskCounts}
+				<p class="text-xs text-gray-400">Loading HSK level counts...</p>
+			{:else}
+				<div>
+					<p class="text-xs font-semibold text-gray-500 mb-1.5">HSK 2012</p>
+					<div class="space-y-1.5">
+						{#each hskCounts.v2012 as { level, word_count } (level)}
+							{@const key = bulkKey('2012', level)}
+							<div class="flex flex-wrap items-center gap-2 text-sm">
+								<span class="w-16 text-gray-700">Level {level}</span>
+								<span class="w-24 text-xs text-gray-400">{word_count.toLocaleString()} words</span>
+								<select bind:value={bulkFamiliarityByKey[key]} class="border border-gray-300 rounded px-2 py-1 text-sm">
+									{#each [1, 2, 3, 4, 5] as score}
+										<option value={score}>{score} - {familiarityLabel(score)}</option>
+									{/each}
+								</select>
+								<button
+									onclick={() => applyBulkAssign('2012', level)}
+									disabled={bulkApplying === key}
+									class="text-sm px-3 py-1 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50"
+								>
+									{bulkApplying === key ? 'Applying...' : 'Apply'}
+								</button>
+								{#if bulkResultByKey[key]}
+									<span class="text-xs text-emerald-600">
+										Set {bulkResultByKey[key].updated.toLocaleString()} word{bulkResultByKey[key].updated === 1 ? '' : 's'}{#if bulkResultByKey[key].skipped > 0} ({bulkResultByKey[key].skipped.toLocaleString()} already scored, skipped){/if}
+									</span>
+								{/if}
+								{#if bulkErrorByKey[key]}
+									<span class="text-xs text-red-600">{bulkErrorByKey[key]}</span>
+								{/if}
+							</div>
+						{/each}
+					</div>
+				</div>
+
+				<div>
+					<p class="text-xs font-semibold text-gray-500 mb-1.5">HSK 2026</p>
+					<div class="space-y-1.5">
+						{#each hskCounts.v2026 as { level, word_count } (level)}
+							{@const key = bulkKey('2026', level)}
+							<div class="flex flex-wrap items-center gap-2 text-sm">
+								<span class="w-16 text-gray-700">Level {level}</span>
+								<span class="w-24 text-xs text-gray-400">{word_count.toLocaleString()} words</span>
+								<select bind:value={bulkFamiliarityByKey[key]} class="border border-gray-300 rounded px-2 py-1 text-sm">
+									{#each [1, 2, 3, 4, 5] as score}
+										<option value={score}>{score} - {familiarityLabel(score)}</option>
+									{/each}
+								</select>
+								<button
+									onclick={() => applyBulkAssign('2026', level)}
+									disabled={bulkApplying === key}
+									class="text-sm px-3 py-1 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50"
+								>
+									{bulkApplying === key ? 'Applying...' : 'Apply'}
+								</button>
+								{#if bulkResultByKey[key]}
+									<span class="text-xs text-emerald-600">
+										Set {bulkResultByKey[key].updated.toLocaleString()} word{bulkResultByKey[key].updated === 1 ? '' : 's'}{#if bulkResultByKey[key].skipped > 0} ({bulkResultByKey[key].skipped.toLocaleString()} already scored, skipped){/if}
+									</span>
+								{/if}
+								{#if bulkErrorByKey[key]}
+									<span class="text-xs text-red-600">{bulkErrorByKey[key]}</span>
+								{/if}
+							</div>
+						{/each}
+					</div>
+				</div>
+			{/if}
+		</div>
 	{/if}
 </div>
 
