@@ -10,6 +10,17 @@ from datetime import datetime
 # scope_input_text_id docstring (models.py) for the resolution priority.
 ScopeChoice = Literal["global", "text", "analysis"]
 
+# UserWord.affects_dag's three states (see its docstring, models.py):
+# 'increase' boosts a word's DAG segmentation weight to a dominant ceiling,
+# 'decrease' suppresses it to the same floor a totally unrecognized word
+# gets (applied to every DAG edge spelling that word, regardless of which
+# trie produced it - see Segmenter._word_weight, dag_segmentor.py), and
+# 'neutral' expresses "no boost, no suppression" explicitly (distinct from
+# NULL/"no opinion, inherit from a broader scope" - see UserWord's
+# docstring). NULL is still represented as `AffectsDagChoice | None` at
+# every use site, never folded into this Literal itself.
+AffectsDagChoice = Literal["increase", "neutral", "decrease"]
+
 
 class AnalyzeTextRequest(BaseModel):
     # Set to re-run analysis against an existing InputText (a new Analysis +
@@ -58,20 +69,22 @@ class WordResult(BaseModel):
     # results-table quick-action renders one badge per entry present here.
     userword_scopes: list[str] = []
     # The winning entry's affects_dag, resolved analysis > text > global
-    # (skipping NULL opinions, falling back to True if nothing resolves) -
-    # see _resolve_user_word_detail's docstring, router.py, for exactly how
-    # this differs from build_user_overlay's own (text/global-only) walk.
-    # Already collapsed to plain true/false, never null - this is
-    # specifically "what actually happens during segmentation," which is
-    # always one of those two.
-    userword_resolved_affects_dag: bool = True
+    # (skipping NULL opinions, falling back to 'increase' if nothing
+    # resolves) - see _resolve_user_word_detail's docstring, router.py, for
+    # exactly how this differs from build_user_overlay's own
+    # (text/global-only) walk. Carries the actual 3-way value (not collapsed
+    # to a boolean) so 'decrease' is visually distinguishable from 'neutral'
+    # in the UI, not just "boosts or doesn't" - this is specifically "what
+    # actually happens during segmentation," which is always one of the
+    # three (never null itself, even though a per-scope entry can be).
+    userword_resolved_affects_dag: AffectsDagChoice = "increase"
     # Each scope-in-userword_scopes' OWN raw affects_dag (tri-state,
-    # unresolved/uninherited) - {"global": true, "text": null, ...}. Unlike
-    # userword_resolved_affects_dag (the one winning value), this is what
-    # lets the results-table quick-action's badge fan show every present
-    # scope's actual setting instead of only the winner's - see
+    # unresolved/uninherited) - {"global": "increase", "text": null, ...}.
+    # Unlike userword_resolved_affects_dag (the one winning value), this is
+    # what lets the results-table quick-action's badge fan show every
+    # present scope's actual setting instead of only the winner's - see
     # _resolve_user_word_detail's docstring, router.py.
-    userword_scope_affects_dag: dict[str, bool | None] = {}
+    userword_scope_affects_dag: dict[str, AffectsDagChoice | None] = {}
     # Resolved (never persisted) same as is_garbage/is_hidden - a second,
     # orthogonal dimension from `source` above: `source` answers "which
     # pipeline pass produced this row" (dag/overlay/unknown for best-guess,
@@ -155,7 +168,7 @@ class AnalysisSpan(BaseModel):
     # NULL/non-NULL together).
     freq_per_million: float | None = None
     userword_scopes: list[str] = []
-    userword_resolved_affects_dag: bool = True
+    userword_resolved_affects_dag: AffectsDagChoice = "increase"
     # Same resolved-fresh evidence tier as WordResult.evidence_tier (see its
     # docstring) - null on a "gap" span, same nullable pattern `source`
     # already uses here, since both are only meaningful for a "word" span.
@@ -276,11 +289,12 @@ class UserWordCreate(BaseModel):
     hsk_v2_2012: int | None = None
     hsk_v3_2021: int | None = None
     hsk_v3_2026: int | None = None
-    # Whether this entry's frequency boosts DAG segmentation - tri-state,
-    # see UserWord's docstring (models.py). Defaults to None ("no opinion"),
-    # NOT True - a request that only sets e.g. `notes` must never silently
-    # opt this entry into boosting segmentation.
-    affects_dag: bool | None = None
+    # Whether/how this entry's frequency affects DAG segmentation -
+    # tri-state ('increase'/'neutral'/'decrease'), see UserWord's docstring
+    # (models.py). Defaults to None ("no opinion"), NOT 'increase' - a
+    # request that only sets e.g. `notes` must never silently opt this
+    # entry into boosting segmentation.
+    affects_dag: AffectsDagChoice | None = None
     analysis_id: int | None = None
     input_text_id: int | None = None
     scope: ScopeChoice = "global"
@@ -301,12 +315,13 @@ class UserWordUpsert(BaseModel):
     pronunciation: str | None = None
     meaning: str | None = None
     notes: str | None = None
-    # Tri-state - see UserWord's docstring (models.py). None is a real,
-    # explicit value distinct from "field omitted" (handled by
-    # exclude_unset in the router) - sending `"affects_dag": null` clears an
-    # existing opinion back to "inherit", while omitting the key entirely
-    # leaves whatever the row already had untouched.
-    affects_dag: bool | None = None
+    # Tri-state ('increase'/'neutral'/'decrease') - see UserWord's docstring
+    # (models.py). None is a real, explicit value distinct from "field
+    # omitted" (handled by exclude_unset in the router) - sending
+    # `"affects_dag": null` clears an existing opinion back to "inherit",
+    # while omitting the key entirely leaves whatever the row already had
+    # untouched.
+    affects_dag: AffectsDagChoice | None = None
     analysis_id: int | None = None
     input_text_id: int | None = None
     scope: ScopeChoice = "global"
@@ -319,7 +334,7 @@ class UserWordResponse(BaseModel):
     meaning: str | None = None
     notes: str | None = None
     dictionary_word_id: int | None = None
-    affects_dag: bool | None = None
+    affects_dag: AffectsDagChoice | None = None
     scope_analysis_id: int | None = None
     scope_input_text_id: int | None = None
     # Informational only - see UserWord's docstring (models.py).
@@ -488,7 +503,7 @@ class UserWordEntryDetail(BaseModel):
     pronunciation: str | None = None
     meaning: str | None = None
     notes: str | None = None
-    affects_dag: bool | None = None
+    affects_dag: AffectsDagChoice | None = None
 
     model_config = {"from_attributes": True}
 
@@ -568,3 +583,22 @@ class WordDetail(BaseModel):
     # Same reasoning/shape as user_word_entries above, for WordVisibility -
     # what WordDetailPanel.svelte's Visibility section renders.
     visibility_entries: list[VisibilityEntryDetail] = []
+
+
+# Machine-generated pinyin/translation - see WordEnrichment's docstring
+# (models.py) for the full storage/staleness design. `translation` is the
+# already-resolved value (google_translation ?? ctranslate2_translation ??
+# null) computed in service.py - the frontend never re-derives this
+# precedence itself. `google_translation`/`ctranslate2_translation` are
+# also both included individually (not just the resolved value) so the
+# info panel can show which source backed the resolved translation, and
+# offer "improve with Google" when only the ctranslate2 one exists (phase 2).
+class WordEnrichmentResponse(BaseModel):
+    word: str
+    pinyin: str | None = None
+    translation: str | None = None
+    google_translation: str | None = None
+    google_generated_at: datetime | None = None
+    ctranslate2_translation: str | None = None
+    ctranslate2_generated_at: datetime | None = None
+    ctranslate2_stale: bool = False

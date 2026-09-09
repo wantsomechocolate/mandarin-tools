@@ -131,33 +131,39 @@ def build_user_overlay(
     an analysis/text-scoped custom word from leaking into *other* texts'
     segmentation - callers simply don't pass its input_text_id.
 
-    affects_dag is tri-state (NULL/true/false - see UserWord's docstring,
-    models.py) - a NULL means "no opinion at this scope," so the walk skips
-    straight past it to the next broader scope, exactly as if that row
-    didn't exist for this purpose (its own freq_combined is skipped right
-    along with it - a row with no opinion on whether to affect segmentation
-    has nothing to contribute to it either). This is distinct from "no row
-    exists at this scope" only in that the row still exists for its other
-    fields (pronunciation/meaning/notes, untouched by any of this); the
-    *segmentation* outcome is identical either way. A text-scoped row with
-    a non-NULL affects_dag still wins over a global row outright, false
-    included, same as before this tri-state existed. Only when EVERY scope
-    (text, global - analysis is already excluded above) has either no row
-    or a NULL affects_dag does resolution fall back to a hardcoded `true`
-    default - but with no row left to source a frequency from at that
-    point, there's nothing to add to the overlay either, so this case is
+    affects_dag is one of 'increase'/'neutral'/'decrease', or NULL (see
+    UserWord's docstring, models.py) - a NULL means "no opinion at this
+    scope," so the walk skips straight past it to the next broader scope,
+    exactly as if that row didn't exist for this purpose (its own
+    freq_combined is skipped right along with it - a row with no opinion on
+    segmentation weight has nothing to contribute to it either). This is
+    distinct from "no row exists at this scope" only in that the row still
+    exists for its other fields (pronunciation/meaning/notes, untouched by
+    any of this); the *segmentation* outcome is identical either way. A
+    text-scoped row with a non-NULL affects_dag still wins over a global
+    row outright, 'neutral'/'decrease' included, same as before this
+    three-state design existed. Only when EVERY scope (text, global -
+    analysis is already excluded above) has either no row or a NULL
+    affects_dag does resolution fall back to a hardcoded 'increase' default
+    - but with no row left to source a frequency from at that point,
+    there's nothing to add to the overlay either, so this case is
     functionally identical to the word having no UserWord entry at all:
     segmentation falls through to the segmenter's own global dictionary
     frequency, same as build_user_overlay returning None entirely.
 
-    A *resolved* affects_dag=false no longer means "excluded from the
-    overlay" - add_word is now called unconditionally for every resolved
-    row, passing affects_dag through. See UserOverlay.add_word's docstring
-    (dag_segmentor.py) for what it does with that: the word still becomes a
-    real trie candidate (so it always shows up as at least an extra match),
-    it just doesn't get a competitive frequency, so it essentially never
-    wins best-guess. This is the actual point of affects_dag=false - "don't
-    let this drive segmentation" - not "pretend this word doesn't exist."
+    A *resolved* affects_dag of 'neutral' or 'decrease' no longer means
+    "excluded from the overlay" - add_word is called unconditionally for
+    every resolved row, passing the resolved value through. See
+    UserOverlay.add_word's docstring (dag_segmentor.py) for what each of
+    the three values does: the word always becomes a real trie candidate
+    (so it always shows up as at least an extra match) regardless of which
+    one; 'neutral' just doesn't get a competitive frequency (falls through
+    to its own real corpus frequency, if it has one - this is why
+    'neutral' alone can't force a word to lose against a real dictionary
+    competitor, only 'decrease' can); 'decrease' gets the same floor score
+    a totally unrecognized word gets, applied to every DAG edge spelling
+    this word regardless of which trie produced it (see
+    Segmenter._word_weight).
     """
     rows = db.execute(text("""
         SELECT word, freq_combined, scope_input_text_id, affects_dag FROM user_words
@@ -172,8 +178,8 @@ def build_user_overlay(
     # Split into text-scoped vs. global candidates per word (priority
     # order: text, then global - analysis-scoped rows are already excluded
     # by the query above).
-    text_scoped: dict[str, tuple[int | None, bool | None]] = {}
-    global_scoped: dict[str, tuple[int | None, bool | None]] = {}
+    text_scoped: dict[str, tuple[int | None, str | None]] = {}
+    global_scoped: dict[str, tuple[int | None, str | None]] = {}
     for word, freq_combined, scope_input_text_id, affects_dag in rows:
         if scope_input_text_id is not None:
             text_scoped[word] = (freq_combined, affects_dag)
@@ -181,7 +187,8 @@ def build_user_overlay(
             global_scoped[word] = (freq_combined, affects_dag)
 
     overlay = UserOverlay()
-    floor = segmenter.dominance_floor()
+    dominance_floor = segmenter.dominance_floor()
+    suppression_floor = segmenter.suppression_floor()
     any_added = False
     for word in set(text_scoped) | set(global_scoped):
         # Walk text -> global, skipping any row whose affects_dag is NULL -
@@ -195,20 +202,23 @@ def build_user_overlay(
                 break
         if resolved is None:
             # No scope expressed an opinion anywhere - defaults to
-            # affects_dag=true, but there's no row left to source a weight
-            # from, so there's nothing to add (see docstring above).
+            # affects_dag='increase', but there's no row left to source a
+            # weight from, so there's nothing to add (see docstring above).
             continue
         freq_combined, affects_dag = resolved
-        # Called unconditionally, affects_dag included either way - see
-        # UserOverlay.add_word's docstring for what it does with a false
-        # opinion (floor scoring, not exclusion).
-        overlay.add_word(word, freq_combined, dominance_floor=floor, affects_dag=bool(affects_dag))
+        # Called unconditionally, affects_dag passed straight through
+        # (already one of 'increase'/'neutral'/'decrease' - see the CHECK
+        # constraint, models.py) - see UserOverlay.add_word's docstring for
+        # what each value does.
+        overlay.add_word(
+            word, freq_combined, dominance_floor=dominance_floor, suppression_floor=suppression_floor, dag_weight=affects_dag
+        )
         any_added = True
     # Keep the "None means nothing to add" contract honest - tracked via
     # `any_added` rather than `overlay.freq`, since an overlay containing
-    # only affects_dag=false words is trie-only (add_word deliberately
+    # only affects_dag='neutral' words is trie-only (add_word deliberately
     # skips self.freq for those - see its docstring) and so is NOT empty,
     # even though overlay.freq is. Checking overlay.freq here would
-    # silently drop every affects_dag=false word from the overlay entirely,
-    # undoing the whole point of the floor-based rewrite.
+    # silently drop every 'neutral' word from the overlay entirely, undoing
+    # the whole point of the floor-based rewrite.
     return overlay if any_added else None

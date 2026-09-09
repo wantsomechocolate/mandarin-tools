@@ -100,29 +100,41 @@ class UserOverlay:
         self.trie = Trie()
         self.freq: dict[str, int] = {}
 
-    def add_word(self, word: str, freq: int | None, dominance_floor: int, affects_dag: bool = True) -> None:
+    def add_word(
+        self, word: str, freq: int | None, dominance_floor: int, suppression_floor: int, dag_weight: str | None = "increase"
+    ) -> None:
         """
         Always inserts into the trie, so the word is always a real DAG
         candidate (both best-guess and full segmentation) regardless of
-        affects_dag - see build_user_overlay's docstring for why floor
-        scoring, not exclusion, is what "doesn't affect segmentation" means
-        now.
+        dag_weight - see build_user_overlay's docstring for why offering it
+        as a candidate is separate from how strongly it competes.
 
-        Only populates self.freq when affects_dag is true - a near-
-        guaranteed-win floor (dominance_floor, or the word's own
-        freq_combined if it has one) so it reliably wins the DP exactly as
-        a boosted word should. When affects_dag is false, self.freq is left
-        untouched for this word: Segmenter._word_weight's existing
-        `from_overlay and word in overlay.freq` check then falls straight
-        through to `self.freq.get(word)` (almost always None for a
-        personal-only word), landing on the same low-confidence
-        unknown-floor score any no-frequency dictionary word already gets -
-        no separate scoring path needed, the word just essentially never
-        wins best-guess while still being a real, visible candidate.
+        dag_weight is one of "increase"/"neutral"/"decrease" (or None,
+        treated the same as "neutral") - see UserWord.affects_dag's
+        docstring (models.py) for the full three-state design and why
+        "neutral" alone (leave self.freq untouched, word competes on
+        whatever real corpus frequency it has, same as no override at all)
+        turned out not to be enough: a word that already has real
+        dictionary frequency can't be pushed *below* that frequency just by
+        not boosting it.
+
+        - "increase": self.freq[word] = a near-guaranteed-win floor
+          (dominance_floor, or the word's own freq_combined if it has one),
+          same as this method's old affects_dag=True behavior.
+        - "decrease": self.freq[word] = suppression_floor (see
+          Segmenter.suppression_floor - not an arbitrary small number,
+          scores identically to a totally unrecognized word).
+        - "neutral"/None: self.freq left untouched for this word - same as
+          this method's old affects_dag=False behavior, and see
+          Segmenter._word_weight for why this alone can't force a word
+          below its own real global frequency (that's exactly what
+          "decrease" is for).
         """
         self.trie.insert(word)
-        if affects_dag:
+        if dag_weight == "increase":
             self.freq[word] = freq if freq is not None else dominance_floor
+        elif dag_weight == "decrease":
+            self.freq[word] = suppression_floor
 
 
 class Segmenter:
@@ -159,6 +171,17 @@ class Segmenter:
         """A frequency guaranteed to outrank anything in the global table,
         for user words added without an explicit frequency."""
         return self.max_freq * 2
+
+    def suppression_floor(self) -> int:
+        """The overlay frequency that scores identically to a totally
+        unrecognized word - see UserOverlay.add_word's "decrease" case for
+        why 1 specifically (math.log(1) == 0, so this collapses to exactly
+        -log_total, the same floor _word_weight already gives a word with
+        no frequency data anywhere). Unlike dominance_floor, not derived
+        from max_freq - it's a fixed constant, kept as a method here purely
+        for call-site symmetry with dominance_floor at the one call site
+        that uses both (build_user_overlay, segmenter_loader.py)."""
+        return 1
 
     def build_dag(
         self, text: str, overlay: UserOverlay | None, stopwords: set[str] | None = None
@@ -232,7 +255,23 @@ class Segmenter:
         return 1.0
 
     def _word_weight(self, word: str, from_overlay: bool, overlay: UserOverlay | None) -> float:
-        if from_overlay and overlay is not None and word in overlay.freq:
+        # Deliberately NOT gated on from_overlay - build_dag walks the
+        # global trie and the overlay trie independently, so the same word
+        # can produce two separate DAG edges for the identical span, one
+        # from each trie. Gating this on from_overlay (the old behavior)
+        # meant an override only ever touched the overlay-sourced edge,
+        # leaving the global-trie edge free to score at the word's own real
+        # corpus frequency - harmless for "increase" (the DP just picks the
+        # higher-scoring boosted edge and ignores the untouched one), but a
+        # real bug for "decrease": a word with real dictionary frequency
+        # could still win via its own unsuppressed global edge, silently
+        # bypassing the override entirely (the exact failure mode this was
+        # written to fix - see this project's own planning conversation).
+        # Keying purely on the word text means EVERY edge spelling an
+        # overridden word gets the same score, regardless of which trie
+        # produced it - there's no unsuppressed edge left for the DP to
+        # fall back on.
+        if overlay is not None and word in overlay.freq:
             return math.log(overlay.freq[word]) - self.log_total
         freq = self.freq.get(word)
         if freq is None:
@@ -252,7 +291,24 @@ class Segmenter:
             for end, from_overlay in dag[idx]:
                 word = text[idx:end + 1]
                 score = self._word_weight(word, from_overlay, overlay) + route[end + 1][0]
-                if best is None or score > best[0]:
+                # Exact ties are expected now, not a floating-point edge
+                # case to worry about: since _word_weight no longer gates
+                # on from_overlay, an overridden word's global-trie edge and
+                # overlay-trie edge compute the identical expression on the
+                # identical inputs (same word, same overlay.freq lookup,
+                # same route[end+1]) - bit-for-bit equal, not approximately
+                # equal. Preferring the overlay-sourced candidate on a tie
+                # doesn't change which word/span gets chosen (both
+                # candidates represent the same text either way) - it only
+                # fixes `from_overlay`, which downstream code (aggregate_
+                # segments' source="overlay" vs "dag") uses to explain *why*
+                # a word was chosen. Without this, ties silently attribute
+                # to whichever trie build_dag happened to walk first (the
+                # global trie), making an overridden word look like a
+                # coincidence instead of the override actually responsible.
+                is_better = best is None or score > best[0]
+                is_tied_but_more_attributable = best is not None and score == best[0] and from_overlay and not best[2]
+                if is_better or is_tied_but_more_attributable:
                     best = (score, end + 1, from_overlay)
             route[idx] = best
         return route

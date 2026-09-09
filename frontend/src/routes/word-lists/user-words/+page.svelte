@@ -202,11 +202,11 @@
 	//
 	// Unlike Known Words, this can't safely turn a re-add into an update:
 	// this form only ever collects a bare word, so proceeding would call
-	// upsertUserWordDetail(word, { affects_dag: true }, ...) against an
+	// upsertUserWordDetail(word, { affects_dag: 'increase' }, ...) against an
 	// existing row - and since that endpoint only touches fields explicitly
 	// present in the request (exclude_unset - see its docstring), affects_dag
-	// would get silently forced back to true even if the existing entry had
-	// deliberately been set to false ("excluded from segmentation"). There's
+	// would get silently forced back to 'increase' even if the existing
+	// entry had deliberately been set to 'neutral' or 'decrease'. There's
 	// no value in this form to safely "update" to, so a genuine global
 	// duplicate stays blocked - the warning below points at the panel, which
 	// is the one place that data can be seen and changed intentionally.
@@ -215,7 +215,7 @@
 		if (!word || existingGlobalUserWord) return;
 		adding = true;
 		try {
-			const created = await api.upsertUserWordDetail(word, { affects_dag: true }, { scope: 'global' }) as UserWordRawRow;
+			const created = await api.upsertUserWordDetail(word, { affects_dag: 'increase' }, { scope: 'global' }) as UserWordRawRow;
 			rawRows = [created, ...rawRows];
 			newWord = '';
 		} catch (e: unknown) {

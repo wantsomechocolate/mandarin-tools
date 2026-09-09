@@ -45,7 +45,7 @@
 		// docstring, schemas.py, for why the two travel together.
 		freq_per_million: number | null;
 		userword_scopes: string[];
-		userword_resolved_affects_dag: boolean;
+		userword_resolved_affects_dag: api.AffectsDag;
 		// Same resolved-fresh evidence tier as the results table's per-row
 		// chip (WordResult.evidence_tier) - see get_analysis_spans'
 		// docstring, router.py. This view's "Color by: Source" mode uses the

@@ -38,6 +38,7 @@ from app.modules.known_words.schemas import (
     InputTextDetailResponse,
     WordOccurrence,
     WordContextResponse,
+    WordEnrichmentResponse,
     WordResult,
     KnownWordUpdate,
     KnownWordResponse,
@@ -216,7 +217,8 @@ def _resolve_user_word_detail(
         canonical order, 0-3 of them).
       - "resolved_affects_dag": the winning entry's affects_dag (see below).
       - "scope_affects_dag": {scope_name: that scope's own raw affects_dag},
-        i.e. each row's OWN tri-state value, unresolved/uninherited.
+        i.e. each row's OWN value ('increase'/'neutral'/'decrease'/None),
+        unresolved/uninherited.
     Powers WordResult.is_user_word/userword_scopes/
     userword_resolved_affects_dag/userword_scope_affects_dag.
 
@@ -234,7 +236,7 @@ def _resolve_user_word_detail(
 
     resolved_affects_dag mirrors build_user_overlay's null-skipping walk
     (segmenter_loader.py) - skip a row whose affects_dag is NULL exactly as
-    if it didn't exist for this purpose, fall back to True if nothing
+    if it didn't exist for this purpose, fall back to 'increase' if nothing
     resolves - but walks analysis > text > global, unlike
     build_user_overlay which never considers analysis-scope at all. That
     difference is deliberate, not a divergence to reconcile: this field is
@@ -269,7 +271,7 @@ def _resolve_user_word_detail(
         scopes = [s for s in ("global", "text", "analysis") if s in by_scope]
         scope_affects_dag = {s: by_scope[s].affects_dag for s in scopes}
 
-        affects_dag = True
+        affects_dag = "increase"
         for scope_name in ("analysis", "text", "global"):
             row = by_scope.get(scope_name)
             if row is not None and row.affects_dag is not None:
@@ -431,7 +433,7 @@ def analyze(
     # resolving analysis-scoped UserWord rows.
     visibility = _resolve_word_visibility(current_user.id, db, analysis.id, input_text.id)
     user_words = _resolve_user_word_detail(current_user.id, db, analysis.id, input_text.id)
-    _uw_default = {"scopes": [], "resolved_affects_dag": True, "scope_affects_dag": {}}
+    _uw_default = {"scopes": [], "resolved_affects_dag": "increase", "scope_affects_dag": {}}
     # Bulk, not per-row - see get_word_dictionary_tiers's docstring for why
     # a missing key means "no dictionary backing" (caller falls through to
     # 'unknown' via .get's default below).
@@ -500,7 +502,7 @@ def get_analysis(
     # apply when reopening it, see _resolve_word_visibility.
     visibility = _resolve_word_visibility(current_user.id, db, analysis.id, analysis.input_text_id)
     user_words = _resolve_user_word_detail(current_user.id, db, analysis.id, analysis.input_text_id)
-    _uw_default = {"scopes": [], "resolved_affects_dag": True, "scope_affects_dag": {}}
+    _uw_default = {"scopes": [], "resolved_affects_dag": "increase", "scope_affects_dag": {}}
     # Bulk, not per-row - resolved fresh on every read (like familiarity/
     # is_garbage above), not from the persisted `source` column, so a
     # pre-fix analysis's tiers correct themselves here with no migration -
@@ -622,7 +624,7 @@ def get_analysis_spans(
     known_words = service.get_known_words_for_user(current_user.id, db)
     visibility = _resolve_word_visibility(current_user.id, db, analysis.id, analysis.input_text_id)
     user_words = _resolve_user_word_detail(current_user.id, db, analysis.id, analysis.input_text_id)
-    _uw_default = {"scopes": [], "resolved_affects_dag": True, "scope_affects_dag": {}}
+    _uw_default = {"scopes": [], "resolved_affects_dag": "increase", "scope_affects_dag": {}}
 
     distinct_words = {o[0] for o in occurrences}
     # (rarity_tier, freq_per_million) together - see AnalysisSpan.
@@ -744,6 +746,73 @@ def get_word_context(
     ]
 
     return WordContextResponse(word=word, occurrences=occurrences)
+
+
+def _resolve_word_enrichment(word: str, row: dict | None) -> WordEnrichmentResponse:
+    """
+    Turns a raw word_enrichment row (or None) into the resolved shape the
+    frontend actually consumes - see WordEnrichmentResponse's docstring
+    (schemas.py) for why `translation` is computed here rather than stored:
+    google_translation ?? ctranslate2_translation ?? None, same "resolve
+    fresh on every read" pattern is_hidden/is_garbage/is_user_word already
+    use elsewhere in this router. ctranslate2_stale is likewise computed,
+    not stored - see WordEnrichment's docstring (models.py).
+    """
+    if row is None:
+        return WordEnrichmentResponse(word=word)
+
+    from app.modules.known_words.enrichment import CURRENT_CTRANSLATE2_MODEL_VERSION
+
+    ctranslate2_stale = (
+        row["ctranslate2_translation"] is not None
+        and row["ctranslate2_model_version"] != CURRENT_CTRANSLATE2_MODEL_VERSION
+    )
+    return WordEnrichmentResponse(
+        word=word,
+        pinyin=row["pinyin"],
+        translation=row["google_translation"] or row["ctranslate2_translation"],
+        google_translation=row["google_translation"],
+        google_generated_at=row["google_generated_at"],
+        ctranslate2_translation=row["ctranslate2_translation"],
+        ctranslate2_generated_at=row["ctranslate2_generated_at"],
+        ctranslate2_stale=ctranslate2_stale,
+    )
+
+
+@router.get("/word-enrichment/{word}", response_model=WordEnrichmentResponse)
+def get_word_enrichment(
+    word: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Shared across every user (see WordEnrichment's docstring, models.py) -
+    current_user is only required for auth consistency with every other
+    endpoint here, not to scope the result. Always 200, even when nothing's
+    been generated yet - a null-filled WordEnrichmentResponse cleanly means
+    "show the generate button," no 404 special-casing needed client-side.
+    """
+    row = service.get_word_enrichment(db, word)
+    return _resolve_word_enrichment(word, row)
+
+
+@router.post("/word-enrichment/{word}/generate-fallback", response_model=WordEnrichmentResponse)
+def generate_fallback_word_enrichment(
+    word: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Pinyin (if missing) + a fresh CTranslate2 translation (always - this
+    endpoint serves "nothing generated yet," "existing translation is
+    stale," and "user wants a manual redo" alike, since the frontend
+    decides *when* to show the button, not this endpoint). See
+    service.generate_fallback_enrichment's docstring for the upsert shape.
+    Requires no per-user setup (unlike the phase-2 Google path) - this is
+    exactly the point of having a no-external-calls fallback.
+    """
+    row = service.generate_fallback_enrichment(db, word)
+    return _resolve_word_enrichment(word, row)
 
 
 @router.post("/known-words", response_model=KnownWordResponse | None, status_code=status.HTTP_201_CREATED)

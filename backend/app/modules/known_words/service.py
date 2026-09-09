@@ -245,3 +245,55 @@ def get_known_words_for_user(user_id: int, db: Session) -> dict[str, int]:
     return {word: familiarity for word, familiarity in rows}
 
 
+
+
+def get_word_enrichment(db: Session, word: str) -> dict | None:
+    """
+    Raw word_enrichment row as a dict, or None if nothing's been generated
+    for this word yet - the router resolves this into WordEnrichmentResponse
+    (translation precedence, staleness) rather than doing that here, so a
+    None here cleanly means "nothing to resolve" for that caller.
+    """
+    row = db.execute(text("""
+        SELECT word, pinyin, pinyin_generated_at,
+               ctranslate2_translation, ctranslate2_generated_at, ctranslate2_model_version,
+               google_translation, google_generated_at
+        FROM word_enrichment WHERE word = :word
+    """), {"word": word}).mappings().first()
+    return dict(row) if row else None
+
+
+def generate_fallback_enrichment(db: Session, word: str) -> dict:
+    """
+    Fills in pinyin (if missing) and (re)generates the CTranslate2
+    translation - this one function serves all three of "nothing generated
+    yet," "existing ctranslate2_translation is stale" (model version
+    mismatch), and "user just wants to manually redo it," since the
+    decision of *when* to call this is a frontend concern (which button it
+    shows), not this function's. Upserts into the shared word_enrichment
+    row - see WordEnrichment's docstring (models.py) for why this table is
+    global, not per-user.
+    """
+    from app.modules.known_words.enrichment import (
+        generate_pinyin,
+        generate_ctranslate2_translation,
+        CURRENT_CTRANSLATE2_MODEL_VERSION,
+    )
+
+    existing = get_word_enrichment(db, word)
+    pinyin = existing["pinyin"] if existing and existing["pinyin"] else generate_pinyin(word)
+    translation = generate_ctranslate2_translation(word)
+
+    db.execute(text("""
+        INSERT INTO word_enrichment (word, pinyin, pinyin_generated_at, ctranslate2_translation, ctranslate2_generated_at, ctranslate2_model_version)
+        VALUES (:word, :pinyin, now(), :translation, now(), :model_version)
+        ON CONFLICT (word) DO UPDATE SET
+            pinyin = CASE WHEN word_enrichment.pinyin IS NULL THEN EXCLUDED.pinyin ELSE word_enrichment.pinyin END,
+            pinyin_generated_at = CASE WHEN word_enrichment.pinyin IS NULL THEN EXCLUDED.pinyin_generated_at ELSE word_enrichment.pinyin_generated_at END,
+            ctranslate2_translation = EXCLUDED.ctranslate2_translation,
+            ctranslate2_generated_at = EXCLUDED.ctranslate2_generated_at,
+            ctranslate2_model_version = EXCLUDED.ctranslate2_model_version
+    """), {"word": word, "pinyin": pinyin, "translation": translation, "model_version": CURRENT_CTRANSLATE2_MODEL_VERSION})
+    db.commit()
+
+    return get_word_enrichment(db, word)

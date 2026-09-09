@@ -22,6 +22,10 @@
 		sentence: string;
 	}
 
+	// Re-exported from api.ts (see its docstring there) so every type
+	// annotation in this file can say `AffectsDag` instead of `api.AffectsDag`.
+	type AffectsDag = api.AffectsDag;
+
 	// Both UserWordEntry/VisibilityEntry satisfy ScopedEntry (see
 	// wordDetailContext.ts) structurally - no adapter needed for
 	// isEntryEditable. Exported so WordDetailModal.svelte (the shared
@@ -37,7 +41,7 @@
 		pronunciation: string | null;
 		meaning: string | null;
 		notes: string | null;
-		affects_dag: boolean | null;
+		affects_dag: AffectsDag | null;
 	}
 
 	export interface VisibilityEntry {
@@ -123,6 +127,24 @@
 	let loading = $state(true);
 	let error = $state('');
 
+	// Auto-generated (pinyin/translation) - see WordEnrichment's docstring
+	// (models.py, backend). Fetched independently of `detail` above (not
+	// awaited together) since it's a secondary concern that shouldn't hold
+	// back the panel's main content, same "fired independently" reasoning
+	// word-lists/+page.svelte's own count-loading already uses.
+	interface WordEnrichment {
+		word: string;
+		pinyin: string | null;
+		translation: string | null;
+		google_translation: string | null;
+		ctranslate2_translation: string | null;
+		ctranslate2_stale: boolean;
+	}
+	let enrichment = $state<WordEnrichment | null>(null);
+	let enrichmentLoading = $state(true);
+	let enrichmentGenerating = $state(false);
+	let enrichmentError = $state('');
+
 	// Quick-action bar (Familiarity/Star/Garbage/global-UserWord) - always
 	// global, always fully editable regardless of context (see KnownWord/
 	// StarredWord's docstrings, models.py) - no hierarchy logic here.
@@ -149,12 +171,12 @@
 	let uwTextExpanded = $state(false);
 	let uwAnalysisExpanded = $state(false);
 	let uwEditingIds: Set<number> = $state(new Set());
-	let uwDrafts: Record<number, { pronunciation: string; meaning: string; notes: string; affectsDag: boolean | null }> = $state({});
+	let uwDrafts: Record<number, { pronunciation: string; meaning: string; notes: string; affectsDag: AffectsDag | null }> = $state({});
 	let uwSavingId: number | null = $state(null);
 	let uwAddingGlobal = $state(false);
 	let uwAddingText = $state(false);
 	let uwAddingAnalysis = $state(false);
-	let uwNewDraft = $state<{ pronunciation: string; meaning: string; notes: string; affectsDag: boolean | null }>({ pronunciation: '', meaning: '', notes: '', affectsDag: true });
+	let uwNewDraft = $state<{ pronunciation: string; meaning: string; notes: string; affectsDag: AffectsDag | null }>({ pronunciation: '', meaning: '', notes: '', affectsDag: 'increase' });
 
 	// Visibility section - same collapsed-group pattern, but each entry is
 	// just a Shown/Hidden toggle (no pronunciation/meaning/notes), and
@@ -190,12 +212,52 @@
 		}
 	}
 
+	async function loadEnrichment() {
+		enrichmentLoading = true;
+		enrichmentError = '';
+		try {
+			enrichment = await api.getWordEnrichment(word) as WordEnrichment;
+		} catch (e: unknown) {
+			enrichmentError = e instanceof Error ? e.message : 'Failed to load auto-generated data';
+		} finally {
+			enrichmentLoading = false;
+		}
+	}
+
+	// Serves "nothing generated yet," "stale" (ctranslate2_stale), and "user
+	// wants a manual redo" alike - see generate_fallback_word_enrichment's
+	// docstring, router.py, for why this is one endpoint/one function
+	// regardless of which of those three is actually true when it's called.
+	async function generateFallback() {
+		enrichmentGenerating = true;
+		enrichmentError = '';
+		try {
+			enrichment = await api.generateFallbackEnrichment(word) as WordEnrichment;
+		} catch (e: unknown) {
+			enrichmentError = e instanceof Error ? e.message : 'Failed to generate';
+		} finally {
+			enrichmentGenerating = false;
+		}
+	}
+
+	// Copies the already-displayed Auto-generated values into the new-entry
+	// draft, for the "quick definition when creating a new UserWord" use
+	// case from this feature's own planning conversation - reuses whatever
+	// the Auto-generated section already fetched/generated rather than a
+	// separate code path, so there's exactly one place that calls the
+	// generation endpoints.
+	function fillFromEnrichment() {
+		if (enrichment?.pinyin) uwNewDraft.pronunciation = enrichment.pinyin;
+		if (enrichment?.translation) uwNewDraft.meaning = enrichment.translation;
+	}
+
 	// Re-fetch whenever the word this panel is showing changes - the parent
 	// keeps the same component instance mounted across word selections
 	// (only `word`/`context` change), rather than remounting per word.
 	$effect(() => {
 		word;
 		load();
+		loadEnrichment();
 	});
 
 	const globalUserWord = $derived(detail?.user_word_entries.find((e: UserWordEntry) => e.scope === 'global') ?? null);
@@ -348,7 +410,7 @@
 		try {
 			const draft = uwDrafts[entry.id];
 			const isAnalysisScoped = entry.scope === 'analysis';
-			const fields: { pronunciation: string | null; meaning: string | null; notes: string | null; affects_dag?: boolean | null } = {
+			const fields: { pronunciation: string | null; meaning: string | null; notes: string | null; affects_dag?: AffectsDag | null } = {
 				pronunciation: draft.pronunciation || null,
 				meaning: draft.meaning || null,
 				notes: draft.notes || null,
@@ -386,7 +448,7 @@
 	}
 
 	function startAddingUserWord(scope: 'global' | 'text' | 'analysis') {
-		uwNewDraft = { pronunciation: '', meaning: '', notes: '', affectsDag: true };
+		uwNewDraft = { pronunciation: '', meaning: '', notes: '', affectsDag: 'increase' };
 		if (scope === 'global') uwAddingGlobal = true;
 		else if (scope === 'text') uwAddingText = true;
 		else uwAddingAnalysis = true;
@@ -402,7 +464,7 @@
 		uwSavingId = -1;
 		try {
 			const isAnalysisScoped = scope === 'analysis';
-			const fields: { pronunciation: string | null; meaning: string | null; notes: string | null; affects_dag?: boolean | null } = {
+			const fields: { pronunciation: string | null; meaning: string | null; notes: string | null; affects_dag?: AffectsDag | null } = {
 				pronunciation: uwNewDraft.pronunciation || null,
 				meaning: uwNewDraft.meaning || null,
 				notes: uwNewDraft.notes || null,
@@ -727,11 +789,69 @@
 			{/if}
 		</div>
 
+		<!-- Auto-generated - only offered when there's an actual gap to fill
+		     (no CEDICT sense, no HSK form - both of those already carry their
+		     own pinyin/meaning). Third source in this panel's Pleco-style
+		     "each source under its own heading" layout, not a special case -
+		     see WordEnrichment's docstring (models.py, backend) for the full
+		     design and why this is shared across every user. -->
+		{#if detail.cedict.length === 0 && detail.forms.length === 0}
+			<div class="border-t border-gray-100 mt-4 pt-3">
+				<p class="text-xs font-medium text-gray-400 uppercase tracking-wide mb-2">Auto-generated</p>
+
+				{#if enrichmentError}
+					<p class="text-sm text-red-600 mb-2">{enrichmentError}</p>
+				{/if}
+
+				{#if enrichmentLoading}
+					<p class="text-sm text-gray-400">Loading...</p>
+				{:else if enrichment?.pinyin || enrichment?.translation}
+					<div class="space-y-1 mb-2">
+						{#if enrichment.pinyin}
+							<p class="text-sm text-blue-600">{enrichment.pinyin}</p>
+						{/if}
+						{#if enrichment.translation}
+							<p class="text-sm text-gray-700">
+								{enrichment.translation}
+								<span class="text-xs text-gray-400">
+									— {enrichment.google_translation ? 'Google Translate' : 'local model'}
+								</span>
+							</p>
+						{/if}
+					</div>
+					{#if enrichment.ctranslate2_stale && !enrichment.google_translation}
+						<p class="text-xs text-amber-600 mb-2">
+							This was generated with an older local model - the translation may be out of date.
+						</p>
+					{/if}
+					<button
+						onclick={generateFallback}
+						disabled={enrichmentGenerating}
+						class="text-xs text-blue-600 hover:text-blue-800 disabled:opacity-50"
+					>
+						{enrichmentGenerating ? 'Regenerating...' : enrichment.ctranslate2_stale ? 'Refresh' : 'Regenerate'}
+					</button>
+				{:else}
+					<p class="text-sm text-gray-400 mb-2">
+						No dictionary entry for this word - pinyin and a rough translation can be generated
+						from a local model instead.
+					</p>
+					<button
+						onclick={generateFallback}
+						disabled={enrichmentGenerating}
+						class="text-sm px-3 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50"
+					>
+						{enrichmentGenerating ? 'Generating...' : 'Generate'}
+					</button>
+				{/if}
+			</div>
+		{/if}
+
 		<!-- Your entries (UserWord) -->
 		<div class="border-t border-gray-100 mt-4 pt-3">
 			<p class="text-xs font-medium text-gray-400 uppercase tracking-wide mb-2">Your entries</p>
 
-			{#snippet uwFields(draftKey: string, draft: { pronunciation: string; meaning: string; notes: string; affectsDag: boolean | null }, showAffectsDag: boolean, idPrefix: string)}
+			{#snippet uwFields(draftKey: string, draft: { pronunciation: string; meaning: string; notes: string; affectsDag: AffectsDag | null }, showAffectsDag: boolean, idPrefix: string)}
 				<div class="space-y-2">
 					<div>
 						<label for="{idPrefix}-pron" class="text-xs text-gray-500">Pronunciation</label>
@@ -749,20 +869,26 @@
 						<textarea id="{idPrefix}-notes" bind:value={draft.notes} placeholder="Any other notes — context, mnemonics, etc." rows="2" class="w-full border border-gray-300 rounded px-2 py-1 text-sm mt-0.5"></textarea>
 					</div>
 					{#if showAffectsDag}
-						<!-- Tri-state, not a checkbox - NULL ("no preference") is a
-						     real, distinct value from false ("excluded"), not just
-						     "unchecked" - see UserWord.affects_dag's docstring
-						     (models.py). Hidden for an analysis-scoped entry - it
-						     can never have an observable effect there. -->
+						<!-- 4-way radio, not a checkbox - NULL ("no preference") is a
+						     real, distinct value from 'neutral' ("no opinion, but
+						     don't inherit"), which is itself distinct from
+						     'increase'/'decrease' - see UserWord.affects_dag's
+						     docstring (models.py) for the full 3-state design.
+						     Hidden for an analysis-scoped entry - it can never have
+						     an observable effect there. -->
 						<div class="text-xs text-gray-500">
 							<span class="block mb-1">Segmentation weight</span>
 							<label class="flex items-center gap-1.5 mb-0.5">
-								<input type="radio" name="{idPrefix}-affects-dag" checked={draft.affectsDag === true} onchange={() => draft.affectsDag = true} />
-								Affects segmentation
+								<input type="radio" name="{idPrefix}-affects-dag" checked={draft.affectsDag === 'increase'} onchange={() => draft.affectsDag = 'increase'} />
+								Increase - reliably wins over alternatives
 							</label>
 							<label class="flex items-center gap-1.5 mb-0.5">
-								<input type="radio" name="{idPrefix}-affects-dag" checked={draft.affectsDag === false} onchange={() => draft.affectsDag = false} />
-								Excluded from segmentation
+								<input type="radio" name="{idPrefix}-affects-dag" checked={draft.affectsDag === 'neutral'} onchange={() => draft.affectsDag = 'neutral'} />
+								Neutral - competes on its own corpus frequency only
+							</label>
+							<label class="flex items-center gap-1.5 mb-0.5">
+								<input type="radio" name="{idPrefix}-affects-dag" checked={draft.affectsDag === 'decrease'} onchange={() => draft.affectsDag = 'decrease'} />
+								Decrease - suppressed below any real alternative
 							</label>
 							<label class="flex items-center gap-1.5">
 								<input type="radio" name="{idPrefix}-affects-dag" checked={draft.affectsDag === null} onchange={() => draft.affectsDag = null} />
@@ -806,8 +932,10 @@
 							{#if entry.meaning}<p class="text-sm text-gray-700 break-words">{entry.meaning}</p>{/if}
 							{#if entry.notes}<p class="text-xs text-gray-500 italic break-words">{entry.notes}</p>{/if}
 							{#if !entry.pronunciation && !entry.meaning && !entry.notes}<p class="text-sm text-gray-400">No details added yet.</p>{/if}
-							{#if entry.scope !== 'analysis' && entry.affects_dag === false}
-								<span class="inline-block text-xs px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">Excluded from segmentation</span>
+							{#if entry.scope !== 'analysis' && entry.affects_dag === 'decrease'}
+								<span class="inline-block text-xs px-2 py-0.5 rounded-full bg-red-100 text-red-600">Decreased segmentation weight</span>
+							{:else if entry.scope !== 'analysis' && entry.affects_dag === 'neutral'}
+								<span class="inline-block text-xs px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">Neutral segmentation weight</span>
 							{:else if entry.scope !== 'analysis' && entry.affects_dag === null}
 								<span class="inline-block text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-400">No segmentation preference (inherits)</span>
 							{/if}
@@ -825,6 +953,11 @@
 			{:else if uwAddingGlobal}
 				<div class="mb-2 pb-2 border-b border-gray-50">
 					<span class="text-xs font-medium text-gray-500">Global</span>
+					{#if enrichment?.pinyin || enrichment?.translation}
+						<button onclick={fillFromEnrichment} class="block text-xs text-blue-600 hover:text-blue-800 mb-1.5">
+							Fill from auto-generated ({enrichment.pinyin}{enrichment.pinyin && enrichment.translation ? ' — ' : ''}{enrichment.translation})
+						</button>
+					{/if}
 					{@render uwFields('new-global', uwNewDraft, true, 'uw-new-global')}
 					<div class="flex gap-2 pt-1">
 						<button onclick={() => saveNewUserWord('global')} disabled={uwSavingId === -1} class="text-xs px-3 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50">

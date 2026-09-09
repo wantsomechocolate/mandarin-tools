@@ -202,6 +202,53 @@ class DictionaryWord(Base):
     )
 
 
+class WordEnrichment(Base):
+    """
+    Machine-generated pinyin/translation for a word, shared across every
+    user rather than per-user data - see this feature's own planning
+    conversation. The point of sharing: one CTranslate2 (or, phase 2,
+    Google Translate) lookup anywhere in the app benefits every user who
+    ever looks at that word afterward, not just whoever triggered it.
+
+    Three independent value slots, not one - pinyin (pypinyin, free/local,
+    no real staleness concern), ctranslate2_translation (local fallback,
+    always available), and google_translation (phase 2 - a user's own key,
+    see the planning conversation - column exists now so adding that phase
+    later is a pure addition, not a migration touching existing rows).
+    None of these are mutually exclusive or overwrite each other - a row
+    can hold a ctranslate2_translation and, later, a google_translation
+    too, side by side.
+
+    Resolution (which translation to actually show) is NOT stored here -
+    it's computed at read time in service.py (google ?? ctranslate2 ??
+    null), same "resolve fresh on every read, never persist the resolved
+    value" pattern this app already uses for is_hidden/is_garbage/
+    is_user_word. Staleness is likewise computed, not a stored flag -
+    ctranslate2_model_version compared against the current code constant
+    (service.CURRENT_CTRANSLATE2_MODEL_VERSION) catches exactly the one
+    case that actually matters (you swapped the local model), and needs no
+    background job to keep correct the way a stored is_stale boolean would.
+    """
+    __tablename__ = "word_enrichment"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    word: Mapped[str] = mapped_column(String, unique=True, nullable=False, index=True)
+
+    pinyin: Mapped[str | None] = mapped_column(String, nullable=True)
+    pinyin_generated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    ctranslate2_translation: Mapped[str | None] = mapped_column(String, nullable=True)
+    ctranslate2_generated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Compared against service.CURRENT_CTRANSLATE2_MODEL_VERSION to compute
+    # staleness at read time - see this model's own docstring above.
+    ctranslate2_model_version: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    # Phase 2 (Google Translate, user-supplied API keys) - unused until
+    # that phase, present now so it's additive later, not a migration.
+    google_translation: Mapped[str | None] = mapped_column(String, nullable=True)
+    google_generated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class UserWord(Base):
     """
     Scoping (scope_analysis_id/scope_input_text_id): both NULL (the default)
@@ -222,35 +269,50 @@ class UserWord(Base):
     see dag_segmentor.py) against just one text without it silently
     affecting every other analysis.
 
-    affects_dag: whether this entry's frequency boosts DAG segmentation at
-    all - tri-state (NULL/true/false), NOT a plain boolean. NULL means "no
-    opinion at this scope, inherit from the next broader scope" - this is
-    the field's default for newly-created rows, deliberately not `true`:
-    a UserWord row created purely to hold a note (pronunciation/meaning/
-    notes worth keeping) has no opinion on segmentation weight, and
-    silently defaulting that to `true` would let a note-only row override
-    a broader scope's explicit `affects_dag = false` without the user ever
-    touching this setting. `true`/`false` are explicit opinions - see
-    build_user_overlay (segmenter_loader.py) for exactly how the
-    resolution walk treats a NULL row as "keep walking to the next
+    affects_dag: how this entry's frequency affects DAG segmentation -
+    nullable string, one of 'increase'/'neutral'/'decrease' when set. NULL
+    means "no opinion at this scope, inherit from the next broader scope" -
+    this is the field's default for newly-created rows, deliberately not
+    'increase': a UserWord row created purely to hold a note (pronunciation/
+    meaning/notes worth keeping) has no opinion on segmentation weight, and
+    silently defaulting that to 'increase' would let a note-only row
+    override a broader scope's explicit opinion without the user ever
+    touching this setting. 'increase'/'neutral'/'decrease' are explicit
+    opinions - see build_user_overlay (segmenter_loader.py) for exactly how
+    the resolution walk treats a NULL row as "keep walking to the next
     broader scope" (distinct from "no row exists here" but functionally
-    the same outcome), only falling back to a hardcoded `true` default if
-    every scope has neither a row nor a non-NULL opinion. This absorbed
+    the same outcome), only falling back to a hardcoded 'increase' default
+    if every scope has neither a row nor a non-NULL opinion. This absorbed
     the old, now-removed Fragment concept: a word that's a genuine word in
     one text but a segmentation artifact in another is a single UserWord
-    row with affects_dag=false at whatever scope it's an artifact in. Note
-    this can only ever have an observable effect at global or text scope:
-    an analysis-scoped row can't influence segmentation, since the
-    analysis it's scoped to has already finished segmenting by the time
-    such a row could exist (build_user_overlay never resolves
-    analysis-scoped rows at all, for exactly this reason) - the UI hides
-    the toggle for analysis-scoped entries accordingly.
+    row with affects_dag='neutral' (or 'decrease', if it needs to actively
+    lose to a real competing word - see below) at whatever scope it's an
+    artifact in. Note this can only ever have an observable effect at
+    global or text scope: an analysis-scoped row can't influence
+    segmentation, since the analysis it's scoped to has already finished
+    segmenting by the time such a row could exist (build_user_overlay never
+    resolves analysis-scoped rows at all, for exactly this reason) - the UI
+    hides the toggle for analysis-scoped entries accordingly.
+
+    'decrease' is the third state (originally shipped as a plain boolean -
+    true/false only, i.e. 'increase'/'neutral' - the same day, until it
+    became clear "neutral" and "actively force this word to lose" are
+    different things a user might want, and the boolean had no room for a
+    third value). 'neutral' means "don't boost - let the word compete on
+    its own real corpus frequency, if it has one" - which turned out to
+    silently do nothing for a word that already has real dictionary
+    frequency data, since nothing was suppressing that word's *other*
+    candidacy via the global trie. 'decrease' actually forces the DP's
+    floor score for every DAG edge spelling this word, regardless of which
+    trie produced the edge - see UserOverlay.add_word/Segmenter._word_weight
+    (dag_segmentor.py) for the mechanism.
 
     Existing rows from before this field became nullable were left exactly
     as they were (no backfill to NULL) - every row that already held an
-    explicit true/false keeps meaning exactly that; nullability only
-    changes what happens for rows created going forward that intentionally
-    leave this field untouched.
+    explicit opinion keeps meaning exactly that (old `true` -> 'increase',
+    old `false` -> 'neutral'); nullability only changes what happens for
+    rows created going forward that intentionally leave this field
+    untouched.
 
     created_from_analysis_id/created_from_input_text_id are purely
     informational (never used for resolution) - they remember where an
@@ -277,9 +339,11 @@ class UserWord(Base):
     meaning: Mapped[str | None] = mapped_column(String, nullable=True)
     notes: Mapped[str | None] = mapped_column(String, nullable=True)
 
-    # See class docstring's affects_dag paragraph - tri-state, NULL is a
-    # real, distinct value ("no opinion"), not just "unset."
-    affects_dag: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=None)
+    # See class docstring's affects_dag paragraph - NULL is a real, distinct
+    # value ("no opinion"), not just "unset." CHECK constraint (below) is
+    # this codebase's existing pattern for a small fixed string set - see
+    # DictionaryWord.rarity_tier for the precedent.
+    affects_dag: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
 
     # See class docstring - at most one of these two is ever set.
     scope_analysis_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("analyses.id"), nullable=True, index=True)
@@ -311,6 +375,10 @@ class UserWord(Base):
         CheckConstraint(
             "scope_analysis_id IS NULL OR scope_input_text_id IS NULL",
             name="ck_user_words_scope_mutually_exclusive",
+        ),
+        CheckConstraint(
+            "affects_dag IN ('increase', 'neutral', 'decrease')",
+            name="ck_user_words_affects_dag",
         ),
     )
 

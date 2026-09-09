@@ -95,18 +95,19 @@
 		// action's badge fan (see userWordScopeBadges).
 		userword_scopes: string[];
 		// The winning entry's affects_dag, resolved analysis > text > global
-		// (skipping a NULL opinion, falling back to true if nothing
+		// (skipping a NULL opinion, falling back to 'increase' if nothing
 		// resolves) - see _resolve_user_word_detail's docstring (router.py).
-		// Already collapsed to plain true/false. Not used for the quick-
-		// action icon's own color (that's neutral, existence-only, like
-		// visibilityAction's) - the per-scope badges carry the color
-		// instead, from userword_scope_affects_dag below.
-		userword_resolved_affects_dag: boolean;
+		// Carries the actual 3-way value, never collapsed to a boolean, so
+		// 'decrease' is visually distinguishable from 'neutral'. Not used
+		// for the quick-action icon's own color (that's neutral, existence-
+		// only, like visibilityAction's) - the per-scope badges carry the
+		// color instead, from userword_scope_affects_dag below.
+		userword_resolved_affects_dag: api.AffectsDag;
 		// Each scope-in-userword_scopes' OWN raw affects_dag (tri-state,
-		// unresolved/uninherited) - e.g. {global: true, text: null}. Drives
-		// each badge in the fan showing ITS OWN scope's setting, rather
-		// than every badge showing the one resolved winner's.
-		userword_scope_affects_dag: Record<string, boolean | null>;
+		// unresolved/uninherited) - e.g. {global: 'increase', text: null}.
+		// Drives each badge in the fan showing ITS OWN scope's setting,
+		// rather than every badge showing the one resolved winner's.
+		userword_scope_affects_dag: Record<string, api.AffectsDag | null>;
 		// Resolved (never persisted) same as is_garbage/is_hidden - a second,
 		// orthogonal dimension from `source`: `source` is which pipeline
 		// pass produced this row (still backs BUCKETS and the
@@ -122,14 +123,14 @@
 		pronunciation: string | null;
 		meaning: string | null;
 		notes: string | null;
-		// Whether this entry's frequency boosts DAG segmentation - tri-state
-		// (see UserWord's docstring, models.py): null means "no opinion at
-		// this scope, inherit from the next broader scope," NOT the same as
-		// false. Only meaningful at global/text scope; an analysis-scoped
-		// entry's value here can never have an observable effect (see
-		// build_user_overlay, segmenter_loader.py), so the UI never shows a
-		// control for it.
-		affects_dag: boolean | null;
+		// Whether/how this entry's frequency affects DAG segmentation -
+		// tri-state (see UserWord's docstring, models.py): null means "no
+		// opinion at this scope, inherit from the next broader scope," NOT
+		// the same as 'neutral'. Only meaningful at global/text scope; an
+		// analysis-scoped entry's value here can never have an observable
+		// effect (see build_user_overlay, segmenter_loader.py), so the UI
+		// never shows a control for it.
+		affects_dag: api.AffectsDag | null;
 		scope_analysis_id: number | null;
 		scope_input_text_id: number | null;
 	}
@@ -659,17 +660,17 @@
 	// governing scope), UserWord entries coexist rather than cascading, so
 	// this returns every scope present (canonical order) rather than one
 	// winner, alongside the resolved affects_dag (analysis > text > global,
-	// skipping a NULL opinion, falling back to true).
-	function resolveUserWordFromEntries(entries: UserWordDetail[]): { scopes: string[]; resolvedAffectsDag: boolean; scopeAffectsDag: Record<string, boolean | null> } {
+	// skipping a NULL opinion, falling back to 'increase').
+	function resolveUserWordFromEntries(entries: UserWordDetail[]): { scopes: string[]; resolvedAffectsDag: api.AffectsDag; scopeAffectsDag: Record<string, api.AffectsDag | null> } {
 		const byScope: Partial<Record<Scope, UserWordDetail>> = {};
 		for (const e of entries) {
 			const name: Scope = e.scope_analysis_id != null ? 'analysis' : e.scope_input_text_id != null ? 'text' : 'global';
 			byScope[name] = e;
 		}
 		const scopes = (['global', 'text', 'analysis'] as Scope[]).filter((s) => s in byScope);
-		const scopeAffectsDag: Record<string, boolean | null> = {};
+		const scopeAffectsDag: Record<string, api.AffectsDag | null> = {};
 		for (const s of scopes) scopeAffectsDag[s] = byScope[s]!.affects_dag;
-		let resolvedAffectsDag = true;
+		let resolvedAffectsDag: api.AffectsDag = 'increase';
 		for (const name of ['analysis', 'text', 'global'] as Scope[]) {
 			const e = byScope[name];
 			if (e && e.affects_dag !== null) {
@@ -799,8 +800,9 @@
 		{ value: 'analysis', label: 'This analysis' },
 	];
 
-	function affectsDagSummary(affectsDag: boolean | null): string {
-		if (affectsDag === false) return 'excluded from segmentation';
+	function affectsDagSummary(affectsDag: api.AffectsDag | null): string {
+		if (affectsDag === 'decrease') return 'decreases segmentation weight';
+		if (affectsDag === 'neutral') return 'neutral segmentation weight';
 		if (affectsDag === null) return 'no segmentation preference set';
 		return 'boosts segmentation';
 	}
@@ -950,7 +952,7 @@
 	// reuses those to keep the row/card quick-action icons in sync - the same
 	// live-update behavior this page already had before the panel was
 	// extracted, just re-derived from richer data now.
-	function handleUserWordEntriesChanged(word: string, entries: { id: number; scope: 'global' | 'text' | 'analysis'; text_id: number | null; analysis_id: number | null; pronunciation: string | null; meaning: string | null; notes: string | null; affects_dag: boolean | null }[]) {
+	function handleUserWordEntriesChanged(word: string, entries: { id: number; scope: 'global' | 'text' | 'analysis'; text_id: number | null; analysis_id: number | null; pronunciation: string | null; meaning: string | null; notes: string | null; affects_dag: api.AffectsDag | null }[]) {
 		const relevant = entries
 			.filter((e) => isEntryEditable(e, panelContext))
 			.map((e): UserWordDetail => ({
@@ -1169,11 +1171,15 @@
 
      Each badge is colored by ITS OWN scope's affects_dag (scopeAffectsDag,
      from userword_scope_affects_dag) - light-bg/dark-text emerald when
-     that entry boosts segmentation, light-bg/dark-text slate otherwise
-     (false or null/no-preference, collapsed together the same way the
-     panel's own per-entry bookmark icon already treats them) - the same
-     filled-chip language the familiarity/HSK/source badges elsewhere on
-     this page already use (e.g. the "Mastered" familiarity chip), not the
+     that entry boosts segmentation ('increase'), light-bg/dark-text red
+     when it decreases segmentation weight ('decrease' - the one state that
+     actually needs to stand out, since it's the one most likely to
+     surprise a user expecting a real dictionary word to segment normally),
+     light-bg/dark-text slate otherwise ('neutral' or null/no-preference,
+     collapsed together the same way the panel's own per-entry bookmark
+     icon already treats "no boost" states) - the same filled-chip
+     language the familiarity/HSK/source badges elsewhere on this page
+     already use (e.g. the "Mastered" familiarity chip), not the
      white-background-plus-colored-border-and-text scopeBadge itself still
      uses - colored text on a plain white circle has no other precedent
      anywhere else in this app. This is deliberately NOT the icon's own
@@ -1181,14 +1187,15 @@
      the whole point is showing every present scope's actual setting
      instead of only the one resolved winner's. -->
 
-{#snippet userWordScopeBadges(scopes: string[], scopeAffectsDag: Record<string, boolean | null>)}
+{#snippet userWordScopeBadges(scopes: string[], scopeAffectsDag: Record<string, api.AffectsDag | null>)}
 	{@const present = (['global', 'text', 'analysis'] as const).filter((s) => scopes.includes(s))}
 	{#each present as scope, i}
 		{@const distanceFromCorner = present.length - 1 - i}
+		{@const value = scopeAffectsDag[scope]}
 		<span
-			class="absolute w-3 h-3 rounded-full text-[8px] leading-[10px] font-bold flex items-center justify-center pointer-events-none {scopeAffectsDag[scope] ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-600'}"
+			class="absolute w-3 h-3 rounded-full text-[8px] leading-[10px] font-bold flex items-center justify-center pointer-events-none {value === 'increase' ? 'bg-emerald-100 text-emerald-700' : value === 'decrease' ? 'bg-red-100 text-red-700' : 'bg-slate-100 text-slate-600'}"
 			style="bottom: -0.125rem; right: {-0.125 + distanceFromCorner * 0.5}rem; z-index: {i + 1};"
-			title="{scope === 'global' ? 'Global' : scope === 'text' ? 'This text' : 'This analysis'}: {scopeAffectsDag[scope] === false ? 'excluded from segmentation' : scopeAffectsDag[scope] === null ? 'no segmentation preference set' : 'boosts segmentation'}"
+			title="{scope === 'global' ? 'Global' : scope === 'text' ? 'This text' : 'This analysis'}: {value === 'decrease' ? 'decreases segmentation weight' : value === 'neutral' ? 'neutral segmentation weight' : value === null ? 'no segmentation preference set' : 'boosts segmentation'}"
 		>{scope === 'global' ? 'G' : scope === 'text' ? 'T' : 'A'}</span>
 	{/each}
 {/snippet}

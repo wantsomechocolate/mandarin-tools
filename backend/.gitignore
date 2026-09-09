@@ -13,3 +13,7 @@ wheels/
 assets/frequencies/
 assets/hsk/
 assets/cc-cedict/
+assets/translation_model/
+
+# Throwaway experiment output (see scripts/poc_ctranslate2_*.py)
+scripts/_poc_ctranslate2_model/

@@ -136,7 +136,10 @@ class TestUserOverlay:
         # base dictionary already, so pick a case where the overlay word
         # genuinely isn't segmentable correctly without it.
         overlay = UserOverlay()
-        overlay.add_word("研究生命", freq=None, dominance_floor=segmenter.dominance_floor())
+        overlay.add_word(
+            "研究生命", freq=None, dominance_floor=segmenter.dominance_floor(),
+            suppression_floor=segmenter.suppression_floor(),
+        )
 
         result = segmenter.segment("研究生命起源", overlay=overlay)
         assert words(result) == ["研究生命", "起源"]
@@ -150,57 +153,74 @@ class TestUserOverlay:
     def test_overlay_does_not_mutate_shared_segmenter(self, segmenter: Segmenter):
         original_freq_count = len(segmenter.freq)
         overlay = UserOverlay()
-        overlay.add_word("研究生命", freq=None, dominance_floor=segmenter.dominance_floor())
+        overlay.add_word(
+            "研究生命", freq=None, dominance_floor=segmenter.dominance_floor(),
+            suppression_floor=segmenter.suppression_floor(),
+        )
         segmenter.segment("研究生命起源", overlay=overlay)
 
         assert len(segmenter.freq) == original_freq_count
         assert "研究生命" not in segmenter.freq
 
 
-class TestFloorBasedUserWords:
+class TestThreeStateUserWords:
     """
-    Covers the affects_dag=false rewrite: a UserWord scoped to not affect
-    segmentation is no longer excluded from the overlay entirely - it's
-    still inserted into the trie (so it's always a real candidate) but
-    never given a competitive frequency (see UserOverlay.add_word's
-    docstring), so it essentially never wins best-guess while still
-    surfacing via full segmentation. affects_dag=true keeps behaving
-    exactly as before (regression check, alongside
-    TestUserOverlay.test_overlay_word_wins_over_default_split above).
+    Covers the 3-state affects_dag design (increase/neutral/decrease - see
+    UserWord's docstring, models.py, and UserOverlay.add_word's docstring
+    here). 'increase' keeps behaving exactly as before (regression check,
+    alongside TestUserOverlay.test_overlay_word_wins_over_default_split
+    above). 'neutral' is what used to be the only non-boosting option
+    (still inserted into the trie so it's always a real candidate, but
+    never given a competitive frequency - essentially never wins best-guess
+    while still surfacing via full segmentation). 'decrease' is the new
+    state this class exists to cover: unlike 'neutral', it actively forces
+    a word below a real dictionary competitor, not just "doesn't help it."
     """
 
-    def test_affects_dag_true_still_reliably_wins_best_guess(self, segmenter: Segmenter):
+    def test_increase_still_reliably_wins_best_guess(self, segmenter: Segmenter):
         overlay = UserOverlay()
-        overlay.add_word("研究生命", freq=None, dominance_floor=segmenter.dominance_floor(), affects_dag=True)
+        overlay.add_word(
+            "研究生命", freq=None, dominance_floor=segmenter.dominance_floor(),
+            suppression_floor=segmenter.suppression_floor(), dag_weight="increase",
+        )
 
         assert "研究生命" in overlay.freq
         result = segmenter.segment("研究生命起源", overlay=overlay)
         assert words(result) == ["研究生命", "起源"]
 
-    def test_affects_dag_false_is_trie_resident_but_not_in_freq(self, segmenter: Segmenter):
+    def test_neutral_is_trie_resident_but_not_in_freq(self, segmenter: Segmenter):
         overlay = UserOverlay()
-        overlay.add_word("生命起源", freq=None, dominance_floor=segmenter.dominance_floor(), affects_dag=False)
+        overlay.add_word(
+            "生命起源", freq=None, dominance_floor=segmenter.dominance_floor(),
+            suppression_floor=segmenter.suppression_floor(), dag_weight="neutral",
+        )
 
         assert overlay.trie.contains("生命起源") is True
         assert "生命起源" not in overlay.freq
 
-    def test_affects_dag_false_essentially_never_wins_best_guess(self, segmenter: Segmenter):
+    def test_neutral_essentially_never_wins_best_guess(self, segmenter: Segmenter):
         # Without the overlay, "生命"/"起源" (both real, decently-frequent
         # dictionary words) already split cleanly - a personal word with no
         # real frequency shouldn't be able to out-score that real
         # alternative just by existing in the trie.
         overlay = UserOverlay()
-        overlay.add_word("生命起源", freq=None, dominance_floor=segmenter.dominance_floor(), affects_dag=False)
+        overlay.add_word(
+            "生命起源", freq=None, dominance_floor=segmenter.dominance_floor(),
+            suppression_floor=segmenter.suppression_floor(), dag_weight="neutral",
+        )
 
         result = segmenter.segment("生命起源", overlay=overlay)
         assert words(result) == ["生命", "起源"]
 
-    def test_affects_dag_false_still_appears_in_full_segmentation(self, segmenter: Segmenter):
+    def test_neutral_still_appears_in_full_segmentation(self, segmenter: Segmenter):
         # The actual point: "don't drive segmentation" must not mean
         # "invisible" - it should still surface as a real, findable
         # candidate (an "extra match" once merged in service.analyze_text).
         overlay = UserOverlay()
-        overlay.add_word("生命起源", freq=None, dominance_floor=segmenter.dominance_floor(), affects_dag=False)
+        overlay.add_word(
+            "生命起源", freq=None, dominance_floor=segmenter.dominance_floor(),
+            suppression_floor=segmenter.suppression_floor(), dag_weight="neutral",
+        )
 
         text = "生命起源"
         dag = segmenter.build_dag(text, overlay=overlay)
@@ -209,6 +229,97 @@ class TestFloorBasedUserWords:
 
         assert "生命起源" not in best_guess
         assert "生命起源" in full
+
+    def test_decrease_defeats_a_word_with_real_global_frequency(self, segmenter: Segmenter):
+        # The exact bug 'decrease' exists to fix: "清华大学" has real,
+        # substantial global-dictionary frequency (5000 in SAMPLE_FREQ, and
+        # normally wins outright over its "清华"+"大学" split - see
+        # TestDagSegmenterBasics.test_simple_sentence), so merely NOT
+        # boosting it (the old 'neutral'-only design) could never stop it
+        # from winning on its own real merit. 'decrease' must override
+        # every DAG edge spelling "清华大学" - including the one produced
+        # by the *global* trie, not just the overlay's own trie - down to
+        # the unrecognized-word floor, so the DP now prefers splitting it
+        # into 清华/大学 instead (both real, well-scoring words on their
+        # own, unlike 研究生's components - see this class's docstring for
+        # why suppression alone doesn't always force a split when the only
+        # alternative decomposition includes an unrecognized fragment).
+        overlay = UserOverlay()
+        overlay.add_word(
+            "清华大学", freq=None, dominance_floor=segmenter.dominance_floor(),
+            suppression_floor=segmenter.suppression_floor(), dag_weight="decrease",
+        )
+
+        result = segmenter.segment("清华大学", overlay=overlay)
+        assert words(result) == ["清华", "大学"]
+
+    def test_decrease_still_appears_in_full_segmentation(self, segmenter: Segmenter):
+        # Same "not invisible" guarantee 'neutral' gets - 'decrease' must
+        # still surface as a findable candidate even though it can never
+        # win best-guess.
+        overlay = UserOverlay()
+        overlay.add_word(
+            "清华大学", freq=None, dominance_floor=segmenter.dominance_floor(),
+            suppression_floor=segmenter.suppression_floor(), dag_weight="decrease",
+        )
+
+        text = "清华大学"
+        dag = segmenter.build_dag(text, overlay=overlay)
+        best_guess = aggregate_segments(segmenter.segment(text, overlay=overlay, dag=dag))
+        full = aggregate_full_segmentation(text, dag)
+
+        assert "清华大学" not in best_guess
+        assert "清华大学" in full
+
+
+class TestOverrideSourceAttribution:
+    """
+    Covers _dp's tie-break (see its docstring, dag_segmentor.py): once
+    _word_weight stopped gating on from_overlay, an overridden word's
+    global-trie edge and overlay-trie edge score bit-for-bit identically,
+    so without a deliberate tie-break, `from_overlay`/`source` attribution
+    would depend on trie walk order (build_dag always walks the global
+    trie first) rather than on the override actually being responsible.
+    """
+
+    def test_increase_override_attributes_to_overlay_not_global_trie(self, segmenter: Segmenter):
+        # "研究生" already exists in the global trie/freq_dict (3500) - the
+        # override still must win attribution, not just win the score.
+        overlay = UserOverlay()
+        overlay.add_word(
+            "研究生", freq=None, dominance_floor=segmenter.dominance_floor(),
+            suppression_floor=segmenter.suppression_floor(), dag_weight="increase",
+        )
+
+        result = segmenter.segment("研究生", overlay=overlay)
+        assert words(result) == ["研究生"]
+        assert result[0].from_overlay is True
+
+        agg = aggregate_segments(result)
+        assert agg["研究生"]["source"] == "overlay"
+
+    def test_decrease_override_attributes_to_overlay_not_global_trie(self, segmenter: Segmenter):
+        # "研究生" is a real global-dictionary word too (freq 3500), so
+        # suppressing it ties its global-trie edge against its overlay-trie
+        # edge - and unlike the "清华大学" case above, its only alternative
+        # decomposition (研究 + an unrecognized "生", not a real word on its
+        # own in this dictionary) scores worse than even the suppressed
+        # floor, so the DP still chooses "研究生" as one span despite the
+        # override. The tie-break must still attribute that choice to the
+        # overlay, not silently let it look like an ordinary, unsuppressed
+        # dictionary pick.
+        overlay = UserOverlay()
+        overlay.add_word(
+            "研究生", freq=None, dominance_floor=segmenter.dominance_floor(),
+            suppression_floor=segmenter.suppression_floor(), dag_weight="decrease",
+        )
+
+        result = segmenter.segment("研究生", overlay=overlay)
+        assert words(result) == ["研究生"]
+        assert result[0].from_overlay is True
+
+        agg = aggregate_segments(result)
+        assert agg["研究生"]["source"] == "overlay"
 
 
 class TestAggregateSegments:
@@ -225,7 +336,10 @@ class TestAggregateSegments:
 
     def test_overlay_source_label(self, segmenter: Segmenter):
         overlay = UserOverlay()
-        overlay.add_word("研究生命", freq=None, dominance_floor=segmenter.dominance_floor())
+        overlay.add_word(
+            "研究生命", freq=None, dominance_floor=segmenter.dominance_floor(),
+            suppression_floor=segmenter.suppression_floor(),
+        )
         result = segmenter.segment("研究生命起源", overlay=overlay)
         agg = aggregate_segments(result)
         assert agg["研究生命"]["source"] == "overlay"
@@ -246,7 +360,10 @@ class TestAggregateSegments:
         assert aggregate_segments(unknown_result)["谊"]["positions"] == [(0, 1)]
 
         overlay = UserOverlay()
-        overlay.add_word("研究生命", freq=None, dominance_floor=segmenter.dominance_floor())
+        overlay.add_word(
+            "研究生命", freq=None, dominance_floor=segmenter.dominance_floor(),
+            suppression_floor=segmenter.suppression_floor(),
+        )
         overlay_result = segmenter.segment("研究生命起源", overlay=overlay)
         assert aggregate_segments(overlay_result)["研究生命"]["positions"] == [(0, 4)]
 

@@ -20,6 +20,8 @@ env/
 # Large data files
 backend/assets/frequencies/
 backend/assets/hsk/
+backend/assets/translation_model/
+backend/scripts/_poc_ctranslate2_model/
 
 # Database
 *.sqlite3

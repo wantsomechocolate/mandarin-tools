@@ -24,6 +24,16 @@ export interface ScopeContext {
     scope?: Scope;
 }
 
+// UserWord.affects_dag's three states (see the backend's AffectsDagChoice,
+// schemas.py, and UserWord's docstring, models.py): 'increase' boosts a
+// word's DAG segmentation weight to a near-guaranteed win, 'decrease'
+// suppresses it below any real dictionary competitor (applied to every DAG
+// edge spelling that word, not just an overlay-sourced one), 'neutral'
+// competes on its own real corpus frequency only. `null` (kept separate
+// from this type - always `AffectsDag | null` at every use site) means "no
+// opinion at this scope, inherit from the next broader scope."
+export type AffectsDag = 'increase' | 'neutral' | 'decrease';
+
 // Builds the "?analysis_id=..&input_text_id=.." query string used by the
 // resolved-view list/detail GET endpoints - omits a param entirely when
 // undefined, since the backend treats "not provided" and "provided as
@@ -194,19 +204,19 @@ export async function bulkAssignHskFamiliarity(
 }
 
 // User words
-// affects_dag is always explicitly sent as true here (never omitted) -
+// affects_dag is always explicitly sent as 'increase' here (never omitted) -
 // this is the quick "+ Add word" action (row/card bookmark button, panel's
 // own bookmark icon), a deliberate "yes, this is a word, help the segmenter
 // recognize it" action, not a bare request that merely mentions other
 // fields - see UserWordCreate's docstring (schemas.py) for why the
-// server-side default is None ("no opinion"), not true: that default
+// server-side default is None ("no opinion"), not 'increase': that default
 // exists to protect requests which DON'T express a segmentation opinion,
 // not to change what this deliberate action does.
 export async function createUserWord(word: string, notes?: string, ctx?: ScopeContext) {
     return request('POST', '/known-words/user-words', {
         word,
         notes,
-        affects_dag: true,
+        affects_dag: 'increase',
         analysis_id: ctx?.analysisId,
         input_text_id: ctx?.inputTextId,
         scope: ctx?.scope ?? 'global',
@@ -236,7 +246,7 @@ export async function deleteUserWord(word: string, scopeAnalysisId?: number | nu
 
 export async function upsertUserWordDetail(
     word: string,
-    fields: { pronunciation?: string | null; meaning?: string | null; notes?: string | null; affects_dag?: boolean | null },
+    fields: { pronunciation?: string | null; meaning?: string | null; notes?: string | null; affects_dag?: AffectsDag | null },
     ctx?: ScopeContext
 ) {
     return request('PUT', `/known-words/user-words/${encodeURIComponent(word)}`, {
@@ -364,4 +374,17 @@ export async function unmarkGarbageWord(word: string) {
 
 export async function getWordDetail(word: string, analysisId?: number, inputTextId?: number) {
     return request('GET', `/known-words/words/${encodeURIComponent(word)}${viewingContextQuery(analysisId, inputTextId)}`);
+}
+
+// Machine-generated pinyin/translation, shared across every user - see
+// WordEnrichment's docstring (models.py, backend) for the full design.
+// Google Translate (phase 2, per-user API keys) isn't wired up yet -
+// generateFallbackEnrichment covers pinyin + the local CTranslate2
+// translation only, which needs no per-user setup.
+export async function getWordEnrichment(word: string) {
+    return request('GET', `/known-words/word-enrichment/${encodeURIComponent(word)}`);
+}
+
+export async function generateFallbackEnrichment(word: string) {
+    return request('POST', `/known-words/word-enrichment/${encodeURIComponent(word)}/generate-fallback`);
 }
