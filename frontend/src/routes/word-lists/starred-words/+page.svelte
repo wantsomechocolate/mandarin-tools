@@ -6,6 +6,7 @@
 	import { goto } from '$app/navigation';
 	import WordDetailModal from '$lib/components/WordDetailModal.svelte';
 	import type { WordDetailContext } from '$lib/wordDetailContext';
+	import { saveOpenWordPanel, loadOpenWordPanel } from '$lib/panelWordPersistence';
 
 	// Persisted filter preferences - see known-words/+page.svelte's own
 	// FILTER_STORAGE_KEY comment for the full pattern and why search is
@@ -32,7 +33,12 @@
 
 	// Global list page - see the matching comment in known-words/+page.svelte.
 	const panelContext: WordDetailContext = { type: 'global' };
-	let selectedWordForPanel: string | null = $state(null);
+	// See panelWordPersistence.ts's docstring - recovers which word's panel
+	// was open across a mobile browser's involuntary page reload.
+	let selectedWordForPanel: string | null = $state(loadOpenWordPanel());
+	$effect(() => {
+		saveOpenWordPanel(selectedWordForPanel);
+	});
 
 	// No more `note` field - that used to live here (a StarredWord-only
 	// column, with its own "+ Note"/"Edit note" UI on this page), but has
@@ -181,15 +187,15 @@
 <svelte:head><title>Starred Words - Mandarin Tools</title></svelte:head>
 
 {#if error}
-	<div class="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded mb-4">
+	<div class="bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/30 text-red-700 dark:text-red-400 px-4 py-3 rounded mb-4">
 		{error}
 	</div>
 {/if}
 
 <!-- Global per user+word, no scoping - same reasoning as KnownWord (see
      StarredWord's docstring, models.py). -->
-<div class="bg-white rounded-lg shadow-sm p-4 mb-4">
-	<p class="text-sm font-medium text-gray-600 mb-2">Star a word</p>
+<div class="bg-white dark:bg-slate-900 rounded-lg shadow-sm p-4 mb-4">
+	<p class="text-sm font-medium text-gray-600 dark:text-slate-400 mb-2">Star a word</p>
 	<div class="flex flex-wrap items-center gap-2">
 		<input
 			type="text"
@@ -201,7 +207,7 @@
 		<button
 			onclick={addWord}
 			disabled={!newWord.trim() || adding || !!existingStarredWord}
-			class="text-sm px-3 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50"
+			class="text-sm px-3 py-1.5 bg-blue-600 dark:bg-blue-500 text-white rounded hover:bg-blue-700 dark:hover:bg-blue-600 disabled:opacity-50"
 		>
 			{adding ? 'Adding...' : existingStarredWord ? 'Already starred' : 'Add'}
 		</button>
@@ -220,7 +226,7 @@
 		placeholder="Search words..."
 		class="border border-gray-300 rounded px-2 py-1 text-sm w-56"
 	/>
-	<span class="text-sm text-gray-400">{filtered().length} of {rows.length} words</span>
+	<span class="text-sm text-gray-400 dark:text-slate-500">{filtered().length} of {rows.length} words</span>
 </div>
 
 <!-- Shared flex row with the panel below (lg and up) - same mechanism as
@@ -228,28 +234,28 @@
      to `display: contents` at `lg`, so its child joins this row as a
      sticky-positioned sibling instead of floating as a modal. -->
 <div class="flex flex-col lg:flex-row gap-4">
-<div class="flex-1 min-w-0 bg-white rounded-lg shadow-sm overflow-hidden">
+<div class="flex-1 min-w-0 bg-white dark:bg-slate-900 rounded-lg shadow-sm overflow-hidden">
 	{#if loading}
-		<p class="text-gray-500 p-4">Loading...</p>
+		<p class="text-gray-500 dark:text-slate-400 p-4">Loading...</p>
 	{:else if rows.length === 0}
-		<p class="text-gray-500 p-4">No starred words yet - star one above, or from any analysis.</p>
+		<p class="text-gray-500 dark:text-slate-400 p-4">No starred words yet - star one above, or from any analysis.</p>
 	{:else if filtered().length === 0}
-		<p class="text-gray-500 p-4">No words match.</p>
+		<p class="text-gray-500 dark:text-slate-400 p-4">No words match.</p>
 	{:else}
 		<table class="w-full">
-			<thead class="bg-gray-50 border-b border-gray-200">
+			<thead class="bg-gray-50 dark:bg-slate-950 border-b border-gray-200 dark:border-slate-800">
 				<tr>
-					<th class="text-left px-4 py-3 text-sm font-medium text-gray-700">
-						<button onclick={() => toggleSort('word')} class="inline-flex items-center gap-1 hover:text-blue-600 {sortColumn === 'word' ? 'text-blue-600' : ''}">
+					<th class="text-left px-4 py-3 text-sm font-medium text-gray-700 dark:text-slate-300">
+						<button onclick={() => toggleSort('word')} class="inline-flex items-center gap-1 hover:text-blue-600 dark:hover:text-blue-400 {sortColumn === 'word' ? 'text-blue-600 dark:text-blue-400' : ''}">
 							Word {#if sortColumn === 'word'}{@render iconChevron(sortDirection === 'asc')}{/if}
 						</button>
 					</th>
-					<th class="w-px whitespace-nowrap text-center px-4 py-3 text-sm font-medium text-gray-700">Starred</th>
+					<th class="w-px whitespace-nowrap text-center px-4 py-3 text-sm font-medium text-gray-700 dark:text-slate-300">Starred</th>
 				</tr>
 			</thead>
-			<tbody class="divide-y divide-gray-100">
+			<tbody class="divide-y divide-gray-100 dark:divide-slate-800">
 				{#each filtered() as row (row.id)}
-					<tr class="cursor-pointer hover:bg-gray-50" onclick={(e) => handleRowClick(e, row.word)}>
+					<tr class="cursor-pointer hover:bg-gray-50 dark:hover:bg-slate-800" onclick={(e) => handleRowClick(e, row.word)}>
 						<td class="px-4 py-3">
 							<p class="text-lg font-medium">{row.word}</p>
 						</td>
@@ -257,7 +263,7 @@
 							<button
 								onclick={() => remove(row.word)}
 								disabled={saving === row.word}
-								class="p-1 rounded text-amber-500 hover:text-red-600 hover:bg-red-50 disabled:opacity-50"
+								class="p-1 rounded text-amber-500 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10 disabled:opacity-50"
 								title="Starred — click to unstar"
 								aria-label="Starred — click to unstar"
 							>

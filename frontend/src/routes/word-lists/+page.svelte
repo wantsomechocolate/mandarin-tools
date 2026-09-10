@@ -46,7 +46,7 @@
 </script>
 
 {#if error}
-	<div class="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded mb-4">
+	<div class="bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/30 text-red-700 dark:text-red-400 px-4 py-3 rounded mb-4">
 		{error}
 	</div>
 {/if}
@@ -55,15 +55,15 @@
 	{#each cards as card}
 		<a
 			href={card.href}
-			class="bg-white rounded-lg shadow-sm p-5 hover:shadow-md transition-shadow"
+			class="bg-white dark:bg-slate-900 rounded-lg shadow-sm p-5 hover:shadow-md transition-shadow"
 		>
 			<div class="flex items-baseline justify-between mb-1">
-				<h2 class="text-lg font-semibold text-gray-800">{card.label}</h2>
-				<span class="text-2xl font-bold text-blue-600">
+				<h2 class="text-lg font-semibold text-gray-800 dark:text-slate-200">{card.label}</h2>
+				<span class="text-2xl font-bold text-blue-600 dark:text-blue-400">
 					{counts[card.key] ?? '…'}
 				</span>
 			</div>
-			<p class="text-sm text-gray-500">{card.description}</p>
+			<p class="text-sm text-gray-500 dark:text-slate-400">{card.description}</p>
 		</a>
 	{/each}
 </div>

@@ -164,7 +164,7 @@
 <svelte:head><title>Stopwords - Mandarin Tools</title></svelte:head>
 
 {#if error}
-	<div class="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded mb-4">
+	<div class="bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/30 text-red-700 dark:text-red-400 px-4 py-3 rounded mb-4">
 		{error}
 	</div>
 {/if}
@@ -175,34 +175,34 @@
      DEFAULT_STOPWORDS (service.py) was a code constant with no API of its
      own until listDefaultStopwords/list_default_stopwords (api.ts,
      router.py) were added specifically for this. -->
-<div class="bg-white rounded-lg shadow-sm p-4 mb-4">
-	<h2 class="text-sm font-semibold text-gray-700 mb-1.5">What are stopwords?</h2>
-	<p class="text-sm text-gray-600 mb-2">
+<div class="bg-white dark:bg-slate-900 rounded-lg shadow-sm p-4 mb-4">
+	<h2 class="text-sm font-semibold text-gray-700 dark:text-slate-300 mb-1.5">What are stopwords?</h2>
+	<p class="text-sm text-gray-600 dark:text-slate-400 mb-2">
 		Characters the segmenter treats as pure boundaries, not real words - mostly punctuation and
 		whitespace. A word can never start with or extend through a stopword, and a stopword never
 		shows up on its own as an "unrecognized sequence" either.
 	</p>
-	<p class="text-sm text-gray-600 mb-3">
+	<p class="text-sm text-gray-600 dark:text-slate-400 mb-3">
 		They're consulted in two places, both the same list: the DAG segmenter's own word-boundary
 		scan, and the tokenizer's repeated-sequence pass (the one that flags runs of unrecognized
 		characters worth reviewing) - both simply skip over every stopword the same way.
 	</p>
-	<p class="text-xs font-medium text-gray-500 mb-1.5">
+	<p class="text-xs font-medium text-gray-500 dark:text-slate-400 mb-1.5">
 		Default stopwords - always on, built into the app, not something you can edit directly:
 	</p>
 	<div class="flex flex-wrap gap-1.5">
 		{#each defaultStopwords as w}
-			<span class="text-xs font-mono px-1.5 py-0.5 rounded bg-gray-100 text-gray-600">{displayChar(w)}</span>
+			<span class="text-xs font-mono px-1.5 py-0.5 rounded bg-gray-100 text-gray-600 dark:bg-slate-800 dark:text-slate-300">{displayChar(w)}</span>
 		{/each}
 	</div>
-	<p class="text-xs text-gray-400 mt-2">
+	<p class="text-xs text-gray-400 dark:text-slate-500 mt-2">
 		Don't want one of these treated as a stopword? Type it below - since it's already covered by
 		default, the button will offer to exclude it instead of adding a redundant row.
 	</p>
 </div>
 
-<div class="bg-white rounded-lg shadow-sm p-4 mb-4">
-	<p class="text-sm font-medium text-gray-600 mb-2">Add a stopword</p>
+<div class="bg-white dark:bg-slate-900 rounded-lg shadow-sm p-4 mb-4">
+	<p class="text-sm font-medium text-gray-600 dark:text-slate-400 mb-2">Add a stopword</p>
 	<div class="flex flex-wrap items-center gap-2">
 		<input
 			type="text"
@@ -214,7 +214,7 @@
 		<button
 			onclick={addWord}
 			disabled={!newWord.trim() || adding || !!existingOwnStopword}
-			class="text-sm px-3 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50"
+			class="text-sm px-3 py-1.5 bg-blue-600 dark:bg-blue-500 text-white rounded hover:bg-blue-700 dark:hover:bg-blue-600 disabled:opacity-50"
 		>
 			{adding ? 'Adding...' : existingOwnStopword ? 'Already added' : newWordIsUncoveredDefault ? 'Exclude it' : 'Add'}
 		</button>
@@ -235,7 +235,7 @@
 			</button>
 		</p>
 	{:else if newWordIsUncoveredDefault}
-		<p class="text-xs text-blue-600 mt-2">
+		<p class="text-xs text-blue-600 dark:text-blue-400 mt-2">
 			"{displayChar(newWord.trim())}" is already a stopword by default - clicking "Exclude it" will stop it
 			from being treated as one, instead of adding a redundant row.
 		</p>
@@ -249,36 +249,36 @@
 		placeholder="Search words..."
 		class="border border-gray-300 rounded px-2 py-1 text-sm w-48"
 	/>
-	<span class="text-sm text-gray-400">{filtered().length} of {rows.length} rows</span>
+	<span class="text-sm text-gray-400 dark:text-slate-500">{filtered().length} of {rows.length} rows</span>
 </div>
 
-<div class="bg-white rounded-lg shadow-sm overflow-hidden">
+<div class="bg-white dark:bg-slate-900 rounded-lg shadow-sm overflow-hidden">
 	{#if loading}
-		<p class="text-gray-500 p-4">Loading...</p>
+		<p class="text-gray-500 dark:text-slate-400 p-4">Loading...</p>
 	{:else if rows.length === 0}
-		<p class="text-gray-500 p-4">No stopword rows yet - add one above.</p>
+		<p class="text-gray-500 dark:text-slate-400 p-4">No stopword rows yet - add one above.</p>
 	{:else if filtered().length === 0}
-		<p class="text-gray-500 p-4">No rows match.</p>
+		<p class="text-gray-500 dark:text-slate-400 p-4">No rows match.</p>
 	{:else}
 		<table class="w-full">
-			<thead class="bg-gray-50 border-b border-gray-200">
+			<thead class="bg-gray-50 dark:bg-slate-950 border-b border-gray-200 dark:border-slate-800">
 				<tr>
-					<th class="text-left px-4 py-3 text-sm font-medium text-gray-700">Word</th>
-					<th class="text-left px-4 py-3 text-sm font-medium text-gray-700">Type</th>
-					<th class="text-left px-4 py-3 text-sm font-medium text-gray-700">Actions</th>
+					<th class="text-left px-4 py-3 text-sm font-medium text-gray-700 dark:text-slate-300">Word</th>
+					<th class="text-left px-4 py-3 text-sm font-medium text-gray-700 dark:text-slate-300">Type</th>
+					<th class="text-left px-4 py-3 text-sm font-medium text-gray-700 dark:text-slate-300">Actions</th>
 				</tr>
 			</thead>
-			<tbody class="divide-y divide-gray-100">
+			<tbody class="divide-y divide-gray-100 dark:divide-slate-800">
 				{#each filtered() as r (r.id)}
-					<tr class="hover:bg-gray-50">
+					<tr class="hover:bg-gray-50 dark:hover:bg-slate-800">
 						<td class="px-4 py-3 text-base">{displayChar(r.word)}</td>
 						<td class="px-4 py-3">
 							{#if r.user_id === null}
-								<span class="text-xs px-2 py-1 rounded-full bg-gray-100 text-gray-500">system default</span>
+								<span class="text-xs px-2 py-1 rounded-full bg-gray-100 text-gray-500 dark:bg-slate-500/15 dark:text-slate-400">system default</span>
 							{:else if r.is_override}
-								<span class="text-xs px-2 py-1 rounded-full bg-amber-100 text-amber-700">your override</span>
+								<span class="text-xs px-2 py-1 rounded-full bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300">your override</span>
 							{:else}
-								<span class="text-xs px-2 py-1 rounded-full bg-emerald-100 text-emerald-700">your addition</span>
+								<span class="text-xs px-2 py-1 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300">your addition</span>
 							{/if}
 						</td>
 						<td class="px-4 py-3">
@@ -286,12 +286,12 @@
 								<button
 									onclick={() => remove(r)}
 									disabled={deleting === r.id}
-									class="text-red-400 hover:text-red-600 text-sm disabled:opacity-50"
+									class="text-red-400 hover:text-red-600 dark:hover:text-red-400 text-sm disabled:opacity-50"
 								>
 									Delete
 								</button>
 							{:else}
-								<span class="text-xs text-gray-300">-</span>
+								<span class="text-xs text-gray-300 dark:text-slate-600">-</span>
 							{/if}
 						</td>
 					</tr>

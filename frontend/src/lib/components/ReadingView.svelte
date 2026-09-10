@@ -4,6 +4,8 @@
 	import type { SourceDetailTier } from '$lib/wordDisplay';
 	import WordDetailModal from './WordDetailModal.svelte';
 	import type { WordDetailContext } from '$lib/wordDetailContext';
+	import { saveOpenWordPanel, loadOpenWordPanel } from '$lib/panelWordPersistence';
+	import { isDarkMode } from '$lib/theme.svelte';
 
 	// Read-only foundation for the reading view - renders the source text
 	// with its best-guess (dag/overlay-sourced) segmentation visually
@@ -76,7 +78,15 @@
 	type ColorBy = 'none' | 'source' | 'rarity' | 'familiarity';
 	let colorBy: ColorBy = $state('none');
 
-	let selectedWordForPanel: string | null = $state(null);
+	// 'reading-view' slot - see panelWordPersistence.ts's docstring - this
+	// component and analyze/[id]/+page.svelte's own results-table panel can
+	// both be open (in the sense of "was open before a reload") on the same
+	// page, so each needs its own storage slot rather than sharing the
+	// default one.
+	let selectedWordForPanel: string | null = $state(loadOpenWordPanel('reading-view'));
+	$effect(() => {
+		saveOpenWordPanel(selectedWordForPanel, 'reading-view');
+	});
 	const panelContext: WordDetailContext = $derived(
 		textId != null
 			? { type: 'analysis', textId, textTitle, analysisId, analysisTitle }
@@ -112,6 +122,39 @@
 		return classes.split(' ')[0] ?? '';
 	}
 
+	// Dark-mode tints for "Color by: Source"/"Color by: Familiarity" -
+	// deliberately NOT wordDisplay.ts's own dark:bg-{hue}-500/15 halves
+	// (bgOnly would otherwise grab the light bg-{hue}-100 token and leave
+	// the dark: variant to apply itself via CSS same as everywhere else).
+	// That wash is tuned for a small chip sitting next to text of its own
+	// color; applied as a large fill behind a whole word on a black
+	// background it read as barely-there. These run a full hue step
+	// brighter and roughly double the opacity - bg-{hue}-400/30 instead of
+	// bg-{hue}-500/15 - so a tinted word is unmistakable at a glance
+	// against a dark page, the same bar the light mode fills already clear
+	// against a white one.
+	// 'none' still gets a (subtle) dark tint, not '' - bgOnly() below only
+	// ever keeps the LIGHT half of sourceDetailColor/familiarityColor's
+	// returned class pair, so an empty string here would leave that word's
+	// span with nothing but its light-mode bg-gray-100 class - which,
+	// unlike a dark: class, applies unconditionally regardless of theme,
+	// painting a bright box behind now-light text in dark mode instead of
+	// no visible tint at all.
+	const SOURCE_TINT_DARK: Record<SourceDetailTier, string> = {
+		user: 'dark:bg-yellow-400/30',
+		hsk: 'dark:bg-blue-400/30',
+		cedict: 'dark:bg-fuchsia-400/30',
+		corpus: 'dark:bg-teal-400/30',
+		none: 'dark:bg-slate-500/15',
+	};
+	const FAMILIARITY_TINT_DARK: Record<number, string> = {
+		1: 'dark:bg-red-400/30',
+		2: 'dark:bg-orange-400/30',
+		3: 'dark:bg-yellow-400/30',
+		4: 'dark:bg-green-400/30',
+		5: 'dark:bg-emerald-400/30',
+	};
+
 	// User > HSK > CC-CEDICT > Corpus > None - see AnalysisSpan.
 	// dictionary_source's docstring (schemas.py) for the same order and
 	// the HSK-over-CC-CEDICT tie-break. Falls back to evidence_tier's own
@@ -125,10 +168,20 @@
 	}
 
 	function spanClass(span: WordSpan): string {
-		if (colorBy === 'source') return bgOnly(sourceDetailColor(sourceDetailTier(span)));
+		if (colorBy === 'source') {
+			const tier = sourceDetailTier(span);
+			return bgOnly(sourceDetailColor(tier)) + ' ' + SOURCE_TINT_DARK[tier];
+		}
 		// Rarity is the one mode with no bg-* class at all - see spanStyle.
 		if (colorBy === 'rarity') return '';
-		if (colorBy === 'familiarity') return bgOnly(familiarityColor(span.familiarity));
+		if (colorBy === 'familiarity') {
+			// Same "'' would leave an unconditional light bg-gray-100 applied
+			// in dark mode too" reasoning as SOURCE_TINT_DARK's 'none' entry
+			// above - a word with no familiarity score set still needs an
+			// explicit (subtle) dark tint, not an absent one.
+			const tint = span.familiarity ? FAMILIARITY_TINT_DARK[span.familiarity] : 'dark:bg-slate-500/15';
+			return bgOnly(familiarityColor(span.familiarity)) + ' ' + tint;
+		}
 		// 'none' - word boundaries shown as a broken underline instead of
 		// the old alternating bg-slate-100/bg-white tint (reported as hard
 		// on the eyes across a full page - a flat color field behind every
@@ -137,17 +190,21 @@
 		// small trailing margin is what breaks the line between one word's
 		// segment and the next, rather than a continuous underline running
 		// the whole sentence.
-		return 'border-b-2 border-gray-400 mr-0.5';
+		return 'border-b-2 border-gray-400 dark:border-slate-500 mr-0.5';
 	}
 
 	// Rarity is the one "Color by" mode that isn't one of a fixed set of
 	// Tailwind classes - rarityContinuousColor interpolates an actual color
 	// from the word's real frequency (see its docstring, wordDisplay.ts),
 	// so it has to be applied as an inline style rather than a class. Every
-	// other mode returns '' here and relies on spanClass instead.
+	// other mode returns '' here and relies on spanClass instead. isDarkMode()
+	// is the one reactive read in this whole component that isn't a plain
+	// `dark:` class - see its own docstring, theme.svelte.ts, for why an
+	// inline-computed color needs to be told the mode directly instead of
+	// reacting to a `dark` ancestor class the way every other span here does.
 	function spanStyle(span: WordSpan): string {
 		if (colorBy !== 'rarity') return '';
-		return `background-color: ${rarityContinuousColor(span.freq_per_million)}`;
+		return `background-color: ${rarityContinuousColor(span.freq_per_million, isDarkMode())}`;
 	}
 
 	function spanTitle(span: WordSpan): string {
@@ -165,12 +222,12 @@
      child joins this row as a sticky-positioned sibling instead of
      floating as a modal. -->
 <div class="flex flex-col lg:flex-row gap-4">
-<div class="flex-1 min-w-0 bg-white rounded-lg shadow-sm p-4">
+<div class="flex-1 min-w-0 bg-white dark:bg-slate-900 rounded-lg shadow-sm p-4">
 	<div class="flex items-center justify-between gap-3 mb-3 flex-wrap">
-		<p class="text-xs font-medium text-gray-400 uppercase tracking-wide">Reading view</p>
-		<label class="flex items-center gap-1.5 text-sm text-gray-700">
+		<p class="text-xs font-medium text-gray-400 dark:text-slate-500 uppercase tracking-wide">Reading view</p>
+		<label class="flex items-center gap-1.5 text-sm text-gray-700 dark:text-slate-300">
 			Color by
-			<select bind:value={colorBy} class="border border-gray-300 rounded px-2 py-1 text-sm">
+			<select bind:value={colorBy} class="border border-gray-300 rounded px-2 py-1 text-sm bg-white dark:bg-slate-800 dark:border-slate-600 dark:text-slate-200">
 				<option value="none">None</option>
 				<!-- Colors by sourceDetailTier() - User > HSK > CC-CEDICT > Corpus >
 				     None, a finer split of evidenceTierColor's own 4-tier scale
@@ -183,11 +240,11 @@
 	</div>
 
 	{#if loading}
-		<p class="text-gray-500 text-sm">Loading...</p>
+		<p class="text-gray-500 dark:text-slate-400 text-sm">Loading...</p>
 	{:else if error}
-		<p class="text-red-600 text-sm">{error}</p>
+		<p class="text-red-600 dark:text-red-400 text-sm">{error}</p>
 	{:else}
-		<p class="text-xl leading-loose whitespace-pre-wrap break-words">
+		<p class="text-xl leading-loose whitespace-pre-wrap break-words text-gray-900 dark:text-slate-100">
 			{#each spans as span}
 				{#if span.type === 'gap'}<span>{span.text}</span
 				>{:else}<button

@@ -13,16 +13,30 @@ export function familiarityLabel(score: number | null | undefined): string {
     return labels[score] ?? 'Unknown';
 }
 
+// Dark variants keep every scale's hue in this file identical to its light
+// one - the mental model (red always means "seen it," blue always means
+// dictionary-backed) shouldn't reshuffle just because the ground got dark
+// - and invert the light-mode relationship (pale fill behind dark text)
+// to a translucent wash of the same hue behind light, saturated text:
+// `bg-{hue}-100 text-{hue}-700` becomes `dark:bg-{hue}-500/15
+// dark:text-{hue}-300`. A wash, not a solid `-900` fill, so a dozen
+// different hues sitting on the same dark card don't read as muddy - the
+// card's own background shows through and ties every chip back to one
+// surface. ReadingView.svelte's "Color by: Source"/"Color by:
+// Familiarity" modes deliberately do NOT reuse these dark classes (see
+// its own SOURCE_TINT_DARK/FAMILIARITY_TINT_DARK) - a chip-sized wash
+// disappears as a full-word fill against a black ground, so that one
+// consumer runs its own bolder version instead.
 export function familiarityColor(score: number | null | undefined): string {
-    if (score === null || score === undefined) return 'bg-gray-100 text-gray-600';
+    if (score === null || score === undefined) return 'bg-gray-100 text-gray-600 dark:bg-slate-500/15 dark:text-slate-400';
     const colors: Record<number, string> = {
-        1: 'bg-red-100 text-red-700',
-        2: 'bg-orange-100 text-orange-700',
-        3: 'bg-yellow-100 text-yellow-700',
-        4: 'bg-green-100 text-green-700',
-        5: 'bg-emerald-100 text-emerald-700',
+        1: 'bg-red-100 text-red-700 dark:bg-red-500/15 dark:text-red-300',
+        2: 'bg-orange-100 text-orange-700 dark:bg-orange-500/15 dark:text-orange-300',
+        3: 'bg-yellow-100 text-yellow-700 dark:bg-yellow-500/15 dark:text-yellow-200',
+        4: 'bg-green-100 text-green-700 dark:bg-green-500/15 dark:text-green-300',
+        5: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300',
     };
-    return colors[score] ?? 'bg-gray-100 text-gray-600';
+    return colors[score] ?? 'bg-gray-100 text-gray-600 dark:bg-slate-500/15 dark:text-slate-400';
 }
 
 // Solid-dot counterpart to familiarityColor's badge, for FamiliarityDots.svelte
@@ -30,15 +44,22 @@ export function familiarityColor(score: number | null | undefined): string {
 // different shape (a row of dots is denser than a pill badge, useful in a
 // table column). Unfilled dots are a flat bg-gray-200 regardless of score -
 // only the filled prefix carries color.
+// Solid dots (not a translucent wash like the badge scales above) need
+// their own, separately-tuned dark values rather than a mechanical -500->
+// -400 shift - a small solid circle reads fine at -600 on white, but the
+// same -600 dot nearly vanishes against a dark card, so the dark side
+// bumps every dot up a step or two for visibility rather than following
+// the wash pattern (which doesn't apply here - dots have no separate
+// text/fill relationship to invert).
 export function familiarityDotColor(score: number): string {
     const colors: Record<number, string> = {
-        1: 'bg-red-600',
-        2: 'bg-orange-600',
-        3: 'bg-yellow-600',
-        4: 'bg-green-400',
-        5: 'bg-emerald-600',
+        1: 'bg-red-600 dark:bg-red-500',
+        2: 'bg-orange-600 dark:bg-orange-500',
+        3: 'bg-yellow-600 dark:bg-yellow-400',
+        4: 'bg-green-400 dark:bg-green-400',
+        5: 'bg-emerald-600 dark:bg-emerald-400',
     };
-    return colors[score] ?? 'bg-gray-200';
+    return colors[score] ?? 'bg-gray-200 dark:bg-slate-600';
 }
 
 // Bucket label/color mapping - the "which pass produced this row" axis,
@@ -67,18 +88,18 @@ export function bucketLabel(source: string | null | undefined): string {
 }
 
 export function bucketColor(source: string | null | undefined): string {
-    if (!source) return 'bg-blue-100 text-blue-700';
+    if (!source) return 'bg-blue-100 text-blue-700 dark:bg-blue-500/15 dark:text-blue-300';
     const colors: Record<string, string> = {
-        dag: 'bg-blue-100 text-blue-700',
-        overlay: 'bg-blue-100 text-blue-700',
-        unknown: 'bg-blue-100 text-blue-700',
-        trie: 'bg-blue-100 text-blue-700',
-        extra_match: 'bg-amber-100 text-amber-700',
-        longest_match_only: 'bg-amber-100 text-amber-700',
-        repeated_sequence: 'bg-purple-100 text-purple-700',
-        token: 'bg-purple-100 text-purple-700',
+        dag: 'bg-blue-100 text-blue-700 dark:bg-blue-500/15 dark:text-blue-300',
+        overlay: 'bg-blue-100 text-blue-700 dark:bg-blue-500/15 dark:text-blue-300',
+        unknown: 'bg-blue-100 text-blue-700 dark:bg-blue-500/15 dark:text-blue-300',
+        trie: 'bg-blue-100 text-blue-700 dark:bg-blue-500/15 dark:text-blue-300',
+        extra_match: 'bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300',
+        longest_match_only: 'bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300',
+        repeated_sequence: 'bg-purple-100 text-purple-700 dark:bg-purple-500/15 dark:text-purple-300',
+        token: 'bg-purple-100 text-purple-700 dark:bg-purple-500/15 dark:text-purple-300',
     };
-    return colors[source] ?? 'bg-gray-100 text-gray-600';
+    return colors[source] ?? 'bg-gray-100 text-gray-600 dark:bg-slate-500/15 dark:text-slate-400';
 }
 
 // Evidence-tier label/color mapping - the primary per-row chip (results
@@ -100,24 +121,24 @@ export function evidenceTierLabel(tier: string | null | undefined): string {
 }
 
 export function evidenceTierColor(tier: string | null | undefined): string {
-    if (!tier) return 'bg-gray-100 text-gray-600';
+    if (!tier) return 'bg-gray-100 text-gray-600 dark:bg-slate-500/15 dark:text-slate-400';
     const colors: Record<string, string> = {
         // Matches overlay's existing color (bucketColor) - both mean "this
         // word exists in segmentation because of the user's own data."
-        user: 'bg-indigo-100 text-indigo-700',
+        user: 'bg-indigo-100 text-indigo-700 dark:bg-indigo-500/15 dark:text-indigo-300',
         // Matches dag/trie's existing color - Dictionary is the direct
         // successor to what "segmenter" meant in the common case (a real
         // dictionary word, not just something the DP happened to route
         // through).
-        dictionary: 'bg-blue-100 text-blue-700',
+        dictionary: 'bg-blue-100 text-blue-700 dark:bg-blue-500/15 dark:text-blue-300',
         // A new, distinct color (not reused from bucketColor) - "real
         // corpus frequency, but not curated by HSK/CC-CEDICT" is a
         // genuinely different signal from either Dictionary or None,
         // and needs its own color to read as a third thing at a glance.
-        corpus: 'bg-teal-100 text-teal-700',
-        unknown: 'bg-gray-100 text-gray-600',
+        corpus: 'bg-teal-100 text-teal-700 dark:bg-teal-500/15 dark:text-teal-300',
+        unknown: 'bg-gray-100 text-gray-600 dark:bg-slate-500/15 dark:text-slate-400',
     };
-    return colors[tier] ?? 'bg-gray-100 text-gray-600';
+    return colors[tier] ?? 'bg-gray-100 text-gray-600 dark:bg-slate-500/15 dark:text-slate-400';
 }
 
 // Finer-grained counterpart to evidenceTierLabel/evidenceTierColor above,
@@ -148,21 +169,21 @@ export function sourceDetailColor(tier: SourceDetailTier): string {
         // enough from blue, fuchsia, and teal on the color wheel to read as
         // its own clearly separate color, with nothing else in this
         // specific scale using it.
-        user: 'bg-yellow-100 text-yellow-700',
+        user: 'bg-yellow-100 text-yellow-700 dark:bg-yellow-500/15 dark:text-yellow-200',
         // Same blue as evidenceTierColor's 'dictionary' - HSK is the more
         // curated/pedagogical of the two dictionary sources, so it keeps
         // that scale's existing "real dictionary word" color.
-        hsk: 'bg-blue-100 text-blue-700',
+        hsk: 'bg-blue-100 text-blue-700 dark:bg-blue-500/15 dark:text-blue-300',
         // A new hue for the other dictionary source - originally cyan, but
         // that sits right next to Corpus's teal on the color wheel and the
         // two read as nearly the same color in practice. Fuchsia is far
         // enough from HSK's blue, User's indigo, and Corpus's teal to read
         // as a clearly separate fourth color, not used by any other scale
         // in this file.
-        cedict: 'bg-fuchsia-100 text-fuchsia-700',
+        cedict: 'bg-fuchsia-100 text-fuchsia-700 dark:bg-fuchsia-500/15 dark:text-fuchsia-300',
         // Same teal as evidenceTierColor's 'corpus'.
-        corpus: 'bg-teal-100 text-teal-700',
-        none: 'bg-gray-100 text-gray-600',
+        corpus: 'bg-teal-100 text-teal-700 dark:bg-teal-500/15 dark:text-teal-300',
+        none: 'bg-gray-100 text-gray-600 dark:bg-slate-500/15 dark:text-slate-400',
     };
     return colors[tier];
 }
@@ -219,20 +240,28 @@ export function rarityLabel(tier: string | null | undefined): string {
 // don't land on named shades. One deliberate departure from the computed
 // value: extremely_common (see its own comment below).
 export function rarityColor(tier: string | null | undefined): string {
-    if (!tier) return 'bg-gray-100 text-gray-500';
+    if (!tier) return 'bg-gray-100 text-gray-500 dark:bg-slate-500/15 dark:text-slate-400';
+    // Dark pairs step through the same named-hue progression the light
+    // arbitrary rgb() values approximate (yellow -> amber -> orange -> red)
+    // rather than trying to derive them from rarityContinuousColor's own
+    // dark stops (see that function's docstring) - this discrete scale
+    // already departed from a literal gradient sample at the light
+    // extremely_common tier (a chip needs to actually read as a pill, a
+    // continuous background tint doesn't), so there's no obligation to
+    // keep sampling exactly in step here either.
     const colors: Record<string, string> = {
         // Not literal white - the gradient's own t=0 color is, but a pure
         // white chip is invisible against this app's white cards/table rows
         // (nothing to tell it apart from "no chip here at all"). A light
         // gray keeps the "barely registers" intent while still reading as
         // an actual pill.
-        extremely_common: 'bg-gray-100 text-gray-400',
-        common: 'bg-[rgb(253,233,165)] text-yellow-700',
-        uncommon: 'bg-[rgb(252,210,78)] text-amber-800',
-        rare: 'bg-[rgb(252,186,124)] text-orange-800',
-        extremely_rare: 'bg-[rgb(252,165,165)] text-red-900',
+        extremely_common: 'bg-gray-100 text-gray-400 dark:bg-slate-500/15 dark:text-slate-500',
+        common: 'bg-[rgb(253,233,165)] text-yellow-700 dark:bg-yellow-500/15 dark:text-yellow-200',
+        uncommon: 'bg-[rgb(252,210,78)] text-amber-800 dark:bg-amber-500/15 dark:text-amber-300',
+        rare: 'bg-[rgb(252,186,124)] text-orange-800 dark:bg-orange-500/15 dark:text-orange-300',
+        extremely_rare: 'bg-[rgb(252,165,165)] text-red-900 dark:bg-red-500/20 dark:text-red-300',
     };
-    return colors[tier] ?? 'bg-gray-100 text-gray-500';
+    return colors[tier] ?? 'bg-gray-100 text-gray-500 dark:bg-slate-500/15 dark:text-slate-400';
 }
 
 // Continuous counterpart to rarityColor, used only by ReadingView's
@@ -271,12 +300,32 @@ const RARITY_GRADIENT_STOPS: [number, number, number][] = [
     [252, 211, 77], // amber-300
     [252, 165, 165], // red-300 - as rare as this scale goes
 ];
+// Dark counterpart - can't just reuse the light stops verbatim, because
+// the light scheme's whole logic (start at pure white, drift toward an
+// increasingly saturated pastel) assumes permanently-black text sitting
+// on top, which only ever gains contrast as the tint darkens. Once the
+// reading view's default text turns light (dark mode), that same pastel
+// drift would wash the text out at the common end instead. This run
+// starts at the reading view's own dark card background (see
+// ReadingView.svelte's --card equivalent, bg-[#12141f]) - so a common
+// word still barely tints - and shifts toward fully-saturated amber-700/
+// red-700 rather than a muted near-black, since an early attempt that
+// matched light mode's restraint (dark, desaturated amber-900/red-900
+// tones) read as almost no color at all against a black ground. Staying
+// dark (never brightening toward a pastel) is what keeps light text
+// legible the entire way across, same as the light run staying light
+// keeps black text legible the entire way across.
+const RARITY_GRADIENT_STOPS_DARK: [number, number, number][] = [
+    [18, 20, 31], // reading-view card background - as common as this scale goes
+    [180, 83, 9], // amber-700
+    [185, 28, 28], // red-700 - as rare as this scale goes
+];
 
-export function rarityContinuousColor(freqPerMillion: number | null | undefined): string {
+export function rarityContinuousColor(freqPerMillion: number | null | undefined, isDark: boolean = false): string {
     // No corpus data at all (word isn't in the frequency-scored dictionary)
     // - same neutral gray-100 fallback rarityColor uses for a null tier,
     // not an assumed extreme in either direction.
-    if (freqPerMillion == null || freqPerMillion <= 0) return 'rgb(243, 244, 246)';
+    if (freqPerMillion == null || freqPerMillion <= 0) return isDark ? 'rgb(18, 20, 31)' : 'rgb(243, 244, 246)';
 
     const t = Math.min(
         1,
@@ -284,10 +333,11 @@ export function rarityContinuousColor(freqPerMillion: number | null | undefined)
     );
     const rarity = 1 - t; // 0 = as common as it gets, 1 = as rare as it gets
 
+    const stops = isDark ? RARITY_GRADIENT_STOPS_DARK : RARITY_GRADIENT_STOPS;
     const segment = rarity <= 0.5 ? 0 : 1;
     const localT = rarity <= 0.5 ? rarity / 0.5 : (rarity - 0.5) / 0.5;
-    const [r1, g1, b1] = RARITY_GRADIENT_STOPS[segment];
-    const [r2, g2, b2] = RARITY_GRADIENT_STOPS[segment + 1];
+    const [r1, g1, b1] = stops[segment];
+    const [r2, g2, b2] = stops[segment + 1];
     const r = Math.round(r1 + (r2 - r1) * localT);
     const g = Math.round(g1 + (g2 - g1) * localT);
     const b = Math.round(b1 + (b2 - b1) * localT);

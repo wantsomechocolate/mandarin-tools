@@ -8,6 +8,7 @@
 	import WordDetailModal from '$lib/components/WordDetailModal.svelte';
 	import FamiliarityDots from '$lib/components/FamiliarityDots.svelte';
 	import type { WordDetailContext } from '$lib/wordDetailContext';
+	import { saveOpenWordPanel, loadOpenWordPanel } from '$lib/panelWordPersistence';
 
 	// Filter preferences persist across reloads as a global per-browser
 	// setting - same localStorage pattern analyze/[id] already established
@@ -47,7 +48,12 @@
 	// wordDetailContext.ts - this falls out of the hierarchy rule with no
 	// special case for "global page").
 	const panelContext: WordDetailContext = { type: 'global' };
-	let selectedWordForPanel: string | null = $state(null);
+	// See panelWordPersistence.ts's docstring - recovers which word's panel
+	// was open across a mobile browser's involuntary page reload.
+	let selectedWordForPanel: string | null = $state(loadOpenWordPanel());
+	$effect(() => {
+		saveOpenWordPanel(selectedWordForPanel);
+	});
 
 	interface KnownWord {
 		id: number;
@@ -301,15 +307,15 @@
 <svelte:head><title>Known Words - Mandarin Tools</title></svelte:head>
 
 {#if error}
-	<div class="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded mb-4">
+	<div class="bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/30 text-red-700 dark:text-red-400 px-4 py-3 rounded mb-4">
 		{error}
 	</div>
 {/if}
 
 <!-- Known words are always global (see KnownWord's docstring, models.py) -
      no scope column needed here, unlike User Words. -->
-<div class="bg-white rounded-lg shadow-sm p-4 mb-4">
-	<p class="text-sm font-medium text-gray-600 mb-2">Add a word</p>
+<div class="bg-white dark:bg-slate-900 rounded-lg shadow-sm p-4 mb-4">
+	<p class="text-sm font-medium text-gray-600 dark:text-slate-400 mb-2">Add a word</p>
 	<div class="flex flex-wrap items-center gap-2">
 		<input
 			type="text"
@@ -326,7 +332,7 @@
 		<button
 			onclick={addWord}
 			disabled={!newWord.trim() || adding}
-			class="text-sm px-3 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50"
+			class="text-sm px-3 py-1.5 bg-blue-600 dark:bg-blue-500 text-white rounded hover:bg-blue-700 dark:hover:bg-blue-600 disabled:opacity-50"
 		>
 			{adding ? 'Adding...' : existingKnownWord ? 'Update familiarity' : 'Add'}
 		</button>
@@ -342,38 +348,38 @@
      fast (the app "takes a long time to start being useful" otherwise -
      scoring HSK1-6/HSK1-7 word-by-word), not something a returning user
      needs to see every visit. -->
-<div class="bg-white rounded-lg shadow-sm p-4 mb-4">
+<div class="bg-white dark:bg-slate-900 rounded-lg shadow-sm p-4 mb-4">
 	<button
 		onclick={() => bulkExpanded = !bulkExpanded}
-		class="w-full flex items-center justify-between text-sm font-medium text-gray-600 hover:text-gray-800"
+		class="w-full flex items-center justify-between text-sm font-medium text-gray-600 dark:text-slate-400 hover:text-gray-800 dark:hover:text-slate-200"
 	>
 		<span>Bulk-assign by HSK level</span>
 		{@render iconChevron(bulkExpanded)}
 	</button>
 	{#if bulkExpanded}
 		<div class="mt-3 space-y-4">
-			<p class="text-xs text-gray-500">
+			<p class="text-xs text-gray-500 dark:text-slate-400">
 				Sets familiarity for every dictionary word at a given HSK level in one go. HSK 2021 isn't
 				offered here - HSK 2012 and the newer 2026 standard cover this instead.
 			</p>
-			<label class="flex items-center gap-1.5 text-sm text-gray-600">
+			<label class="flex items-center gap-1.5 text-sm text-gray-600 dark:text-slate-400">
 				<input type="checkbox" bind:checked={bulkOverwrite} class="rounded border-gray-300" />
 				Overwrite words that already have a familiarity score
 			</label>
 
 			{#if hskCountsError}
-				<p class="text-xs text-red-600">{hskCountsError}</p>
+				<p class="text-xs text-red-600 dark:text-red-400">{hskCountsError}</p>
 			{:else if !hskCounts}
-				<p class="text-xs text-gray-400">Loading HSK level counts...</p>
+				<p class="text-xs text-gray-400 dark:text-slate-500">Loading HSK level counts...</p>
 			{:else}
 				<div>
-					<p class="text-xs font-semibold text-gray-500 mb-1.5">HSK 2012</p>
+					<p class="text-xs font-semibold text-gray-500 dark:text-slate-400 mb-1.5">HSK 2012</p>
 					<div class="space-y-1.5">
 						{#each hskCounts.v2012 as { level, word_count } (level)}
 							{@const key = bulkKey('2012', level)}
 							<div class="flex flex-wrap items-center gap-2 text-sm">
-								<span class="w-16 text-gray-700">Level {level}</span>
-								<span class="w-24 text-xs text-gray-400">{word_count.toLocaleString()} words</span>
+								<span class="w-16 text-gray-700 dark:text-slate-300">Level {level}</span>
+								<span class="w-24 text-xs text-gray-400 dark:text-slate-500">{word_count.toLocaleString()} words</span>
 								<select bind:value={bulkFamiliarityByKey[key]} class="border border-gray-300 rounded px-2 py-1 text-sm">
 									{#each [1, 2, 3, 4, 5] as score}
 										<option value={score}>{score} - {familiarityLabel(score)}</option>
@@ -382,7 +388,7 @@
 								<button
 									onclick={() => applyBulkAssign('2012', level)}
 									disabled={bulkApplying === key}
-									class="text-sm px-3 py-1 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50"
+									class="text-sm px-3 py-1 bg-blue-600 dark:bg-blue-500 text-white rounded hover:bg-blue-700 dark:hover:bg-blue-600 disabled:opacity-50"
 								>
 									{bulkApplying === key ? 'Applying...' : 'Apply'}
 								</button>
@@ -392,7 +398,7 @@
 									</span>
 								{/if}
 								{#if bulkErrorByKey[key]}
-									<span class="text-xs text-red-600">{bulkErrorByKey[key]}</span>
+									<span class="text-xs text-red-600 dark:text-red-400">{bulkErrorByKey[key]}</span>
 								{/if}
 							</div>
 						{/each}
@@ -400,13 +406,13 @@
 				</div>
 
 				<div>
-					<p class="text-xs font-semibold text-gray-500 mb-1.5">HSK 2026</p>
+					<p class="text-xs font-semibold text-gray-500 dark:text-slate-400 mb-1.5">HSK 2026</p>
 					<div class="space-y-1.5">
 						{#each hskCounts.v2026 as { level, word_count } (level)}
 							{@const key = bulkKey('2026', level)}
 							<div class="flex flex-wrap items-center gap-2 text-sm">
-								<span class="w-16 text-gray-700">Level {level}</span>
-								<span class="w-24 text-xs text-gray-400">{word_count.toLocaleString()} words</span>
+								<span class="w-16 text-gray-700 dark:text-slate-300">Level {level}</span>
+								<span class="w-24 text-xs text-gray-400 dark:text-slate-500">{word_count.toLocaleString()} words</span>
 								<select bind:value={bulkFamiliarityByKey[key]} class="border border-gray-300 rounded px-2 py-1 text-sm">
 									{#each [1, 2, 3, 4, 5] as score}
 										<option value={score}>{score} - {familiarityLabel(score)}</option>
@@ -415,7 +421,7 @@
 								<button
 									onclick={() => applyBulkAssign('2026', level)}
 									disabled={bulkApplying === key}
-									class="text-sm px-3 py-1 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50"
+									class="text-sm px-3 py-1 bg-blue-600 dark:bg-blue-500 text-white rounded hover:bg-blue-700 dark:hover:bg-blue-600 disabled:opacity-50"
 								>
 									{bulkApplying === key ? 'Applying...' : 'Apply'}
 								</button>
@@ -425,7 +431,7 @@
 									</span>
 								{/if}
 								{#if bulkErrorByKey[key]}
-									<span class="text-xs text-red-600">{bulkErrorByKey[key]}</span>
+									<span class="text-xs text-red-600 dark:text-red-400">{bulkErrorByKey[key]}</span>
 								{/if}
 							</div>
 						{/each}
@@ -444,7 +450,7 @@
 			placeholder="Search words..."
 			class="border border-gray-300 rounded px-2 py-1 text-sm w-48"
 		/>
-		<span class="flex items-center gap-1.5 text-sm text-gray-700">
+		<span class="flex items-center gap-1.5 text-sm text-gray-700 dark:text-slate-300">
 			Familiarity
 			<select bind:value={familiarityMode} class="border border-gray-300 rounded px-2 py-1 text-sm">
 				<option value="all">All</option>
@@ -460,7 +466,7 @@
 			{/if}
 		</span>
 	</div>
-	<span class="text-sm text-gray-400">{filtered().length} of {words.length} words</span>
+	<span class="text-sm text-gray-400 dark:text-slate-500">{filtered().length} of {words.length} words</span>
 </div>
 
 <!-- Shared flex row with the panel below (lg and up) - same mechanism as
@@ -468,17 +474,17 @@
      to `display: contents` at `lg`, so its child joins this row as a
      sticky-positioned sibling instead of floating as a modal. -->
 <div class="flex flex-col lg:flex-row gap-4">
-<div class="flex-1 min-w-0 bg-white rounded-lg shadow-sm overflow-hidden">
+<div class="flex-1 min-w-0 bg-white dark:bg-slate-900 rounded-lg shadow-sm overflow-hidden">
 	{#if loading}
-		<p class="text-gray-500 p-4">Loading...</p>
+		<p class="text-gray-500 dark:text-slate-400 p-4">Loading...</p>
 	{:else if words.length === 0}
-		<p class="text-gray-500 p-4">No known words yet - add one above, or mark familiarity from any analysis.</p>
+		<p class="text-gray-500 dark:text-slate-400 p-4">No known words yet - add one above, or mark familiarity from any analysis.</p>
 	{:else}
 		<table class="w-full">
-			<thead class="bg-gray-50 border-b border-gray-200">
+			<thead class="bg-gray-50 dark:bg-slate-950 border-b border-gray-200 dark:border-slate-800">
 				<tr>
-					<th class="text-left px-4 py-3 text-sm font-medium text-gray-700">
-						<button onclick={() => toggleSort('word')} class="inline-flex items-center gap-1 hover:text-blue-600 {sortColumn === 'word' ? 'text-blue-600' : ''}">
+					<th class="text-left px-4 py-3 text-sm font-medium text-gray-700 dark:text-slate-300">
+						<button onclick={() => toggleSort('word')} class="inline-flex items-center gap-1 hover:text-blue-600 dark:hover:text-blue-400 {sortColumn === 'word' ? 'text-blue-600 dark:text-blue-400' : ''}">
 							Word {#if sortColumn === 'word'}{@render iconChevron(sortDirection === 'asc')}{/if}
 						</button>
 					</th>
@@ -493,16 +499,16 @@
 					     own text-align) while still ending up flush against the
 					     table's right edge, since Word is the only column left to
 					     absorb the rest of the table's width. -->
-					<th class="w-px whitespace-nowrap text-center px-4 py-3 text-sm font-medium text-gray-700">
-						<button onclick={() => toggleSort('familiarity')} class="inline-flex items-center gap-1 hover:text-blue-600 {sortColumn === 'familiarity' ? 'text-blue-600' : ''}">
+					<th class="w-px whitespace-nowrap text-center px-4 py-3 text-sm font-medium text-gray-700 dark:text-slate-300">
+						<button onclick={() => toggleSort('familiarity')} class="inline-flex items-center gap-1 hover:text-blue-600 dark:hover:text-blue-400 {sortColumn === 'familiarity' ? 'text-blue-600 dark:text-blue-400' : ''}">
 							Familiarity {#if sortColumn === 'familiarity'}{@render iconChevron(sortDirection === 'asc')}{/if}
 						</button>
 					</th>
 				</tr>
 			</thead>
-			<tbody class="divide-y divide-gray-100">
+			<tbody class="divide-y divide-gray-100 dark:divide-slate-800">
 				{#each filtered() as w (w.id)}
-					<tr class="cursor-pointer hover:bg-gray-50" onclick={(e) => handleRowClick(e, w.word)}>
+					<tr class="cursor-pointer hover:bg-gray-50 dark:hover:bg-slate-800" onclick={(e) => handleRowClick(e, w.word)}>
 						<td class="px-4 py-3 text-lg font-medium">{w.word}</td>
 						<td class="w-px whitespace-nowrap px-4 py-3">
 							<FamiliarityDots

@@ -33,31 +33,31 @@
 	</svg>
 {/snippet}
 
-<div class="min-h-screen bg-gray-50">
+<div class="min-h-screen bg-gray-50 dark:bg-slate-950">
 	<!-- No mobile-stacking fix needed: "Word Lists" is a fixed, short English
 	     string with no competing right-side content, same reasoning as
 	     analyze/+page.svelte's header. The tab bar below (overflow-x-auto +
 	     whitespace-nowrap) is a deliberate, separate exception to "stack
 	     instead of squeeze" and is untouched. -->
-	<nav class="bg-white shadow-sm px-6 py-4 flex items-center justify-between gap-4">
+	<nav class="bg-white dark:bg-slate-900 shadow-sm px-6 py-4 flex items-center justify-between gap-4">
 		<div class="flex items-center gap-4">
-			<a href="/" class="text-gray-400 hover:text-blue-600" aria-label="Home" title="Home">
+			<a href="/" class="text-gray-400 dark:text-slate-500 hover:text-blue-600 dark:hover:text-blue-400" aria-label="Home" title="Home">
 				{@render iconHome()}
 			</a>
-			<h1 class="text-xl font-bold text-gray-800">Word Lists</h1>
+			<h1 class="text-xl font-bold text-gray-800 dark:text-slate-200">Word Lists</h1>
 		</div>
 		<AccountMenu />
 	</nav>
 
-	<div class="bg-white border-b border-gray-200 px-6">
+	<div class="bg-white dark:bg-slate-900 border-b border-gray-200 dark:border-slate-800 px-6">
 		<div class="max-w-5xl mx-auto flex gap-1 overflow-x-auto">
 			{#each tabs as tab}
 				<a
 					href={tab.href}
 					class="px-4 py-2.5 text-sm font-medium border-b-2 whitespace-nowrap
 					{$page.url.pathname === tab.href
-						? 'border-blue-600 text-blue-600'
-						: 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'}"
+						? 'border-blue-600 dark:border-blue-500 text-blue-600 dark:text-blue-400'
+						: 'border-transparent text-gray-500 dark:text-slate-400 hover:text-gray-700 dark:hover:text-slate-300 hover:border-gray-300 dark:hover:border-slate-500'}"
 				>
 					{tab.label}
 				</a>

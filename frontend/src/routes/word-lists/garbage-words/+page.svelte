@@ -6,6 +6,7 @@
 	import { goto } from '$app/navigation';
 	import WordDetailModal from '$lib/components/WordDetailModal.svelte';
 	import type { WordDetailContext } from '$lib/wordDetailContext';
+	import { saveOpenWordPanel, loadOpenWordPanel } from '$lib/panelWordPersistence';
 
 	// Persisted filter preferences - see known-words/+page.svelte's own
 	// FILTER_STORAGE_KEY comment for the full pattern and why search is
@@ -32,7 +33,12 @@
 
 	// Global list page - see the matching comment in known-words/+page.svelte.
 	const panelContext: WordDetailContext = { type: 'global' };
-	let selectedWordForPanel: string | null = $state(null);
+	// See panelWordPersistence.ts's docstring - recovers which word's panel
+	// was open across a mobile browser's involuntary page reload.
+	let selectedWordForPanel: string | null = $state(loadOpenWordPanel());
+	$effect(() => {
+		saveOpenWordPanel(selectedWordForPanel);
+	});
 
 	interface GarbageWordRow {
 		id: number;
@@ -262,7 +268,7 @@
 <svelte:head><title>Garbage Words - Mandarin Tools</title></svelte:head>
 
 {#if error}
-	<div class="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded mb-4">
+	<div class="bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/30 text-red-700 dark:text-red-400 px-4 py-3 rounded mb-4">
 		{error}
 	</div>
 {/if}
@@ -272,8 +278,8 @@
      default client-side (see WordResult.is_garbage's docstring, schemas.py).
      This page manages the underlying marking, not any one analysis's view
      of it. -->
-<div class="bg-white rounded-lg shadow-sm p-4 mb-4">
-	<p class="text-sm font-medium text-gray-600 mb-2">Mark a word as garbage</p>
+<div class="bg-white dark:bg-slate-900 rounded-lg shadow-sm p-4 mb-4">
+	<p class="text-sm font-medium text-gray-600 dark:text-slate-400 mb-2">Mark a word as garbage</p>
 	<div class="flex items-center gap-2">
 		<input
 			type="text"
@@ -285,7 +291,7 @@
 		<button
 			onclick={addWord}
 			disabled={!newWord.trim() || adding || !!existingActiveGarbage}
-			class="text-sm px-3 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50"
+			class="text-sm px-3 py-1.5 bg-blue-600 dark:bg-blue-500 text-white rounded hover:bg-blue-700 dark:hover:bg-blue-600 disabled:opacity-50"
 		>
 			{adding ? 'Adding...' : existingActiveGarbage ? 'Already marked' : isCurrentlyExcluded ? 'Re-mark as garbage' : 'Add'}
 		</button>
@@ -295,7 +301,7 @@
 			"{existingActiveGarbage.word}" is already marked as garbage.
 		</p>
 	{:else if isCurrentlyExcluded}
-		<p class="text-xs text-blue-600 mt-2">
+		<p class="text-xs text-blue-600 dark:text-blue-400 mt-2">
 			"{newWord.trim()}" is currently excluded from garbage - adding it here will re-mark it as garbage (same as "Re-mark as garbage" below).
 		</p>
 	{/if}
@@ -308,7 +314,7 @@
 		placeholder="Search words..."
 		class="border border-gray-300 rounded px-2 py-1 text-sm w-48"
 	/>
-	<span class="text-sm text-gray-400">{filteredGarbage().length} of {resolvedGarbage().length} words</span>
+	<span class="text-sm text-gray-400 dark:text-slate-500">{filteredGarbage().length} of {resolvedGarbage().length} words</span>
 </div>
 
 <!-- Shared flex row with the panel below (lg and up) - same mechanism as
@@ -319,38 +325,38 @@
      block child at the bottom of the page instead of the docked panel it's
      everywhere else - hence rows appearing not to open anything). -->
 <div class="flex flex-col lg:flex-row gap-4">
-<div class="flex-1 min-w-0 bg-white rounded-lg shadow-sm overflow-hidden mb-6">
+<div class="flex-1 min-w-0 bg-white dark:bg-slate-900 rounded-lg shadow-sm overflow-hidden mb-6">
 	{#if loading}
-		<p class="text-gray-500 p-4">Loading...</p>
+		<p class="text-gray-500 dark:text-slate-400 p-4">Loading...</p>
 	{:else if resolvedGarbage().length === 0}
-		<p class="text-gray-500 p-4">No garbage words currently marked.</p>
+		<p class="text-gray-500 dark:text-slate-400 p-4">No garbage words currently marked.</p>
 	{:else if filteredGarbage().length === 0}
-		<p class="text-gray-500 p-4">No words match.</p>
+		<p class="text-gray-500 dark:text-slate-400 p-4">No words match.</p>
 	{:else}
-		<div class="bg-gray-50 border-b border-gray-200 px-4 py-3">
-			<button onclick={() => toggleSort('word')} class="inline-flex items-center gap-1 text-sm font-medium text-gray-700 hover:text-blue-600 {sortColumn === 'word' ? 'text-blue-600' : ''}">
+		<div class="bg-gray-50 dark:bg-slate-950 border-b border-gray-200 dark:border-slate-800 px-4 py-3">
+			<button onclick={() => toggleSort('word')} class="inline-flex items-center gap-1 text-sm font-medium text-gray-700 dark:text-slate-300 hover:text-blue-600 dark:hover:text-blue-400 {sortColumn === 'word' ? 'text-blue-600 dark:text-blue-400' : ''}">
 				Word {#if sortColumn === 'word'}{@render iconChevron(sortDirection === 'asc')}{/if}
 			</button>
 		</div>
-		<div class="divide-y divide-gray-100">
+		<div class="divide-y divide-gray-100 dark:divide-slate-800">
 			{#each filteredGarbage() as g (g.word)}
 				<div
 					role="button"
 					tabindex="0"
 					onclick={(e) => handleRowClick(e, g.word)}
 					onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleRowClick(e, g.word); } }}
-					class="flex items-center justify-between px-4 py-2.5 cursor-pointer hover:bg-gray-50"
+					class="flex items-center justify-between px-4 py-2.5 cursor-pointer hover:bg-gray-50 dark:hover:bg-slate-800"
 				>
 					<div class="flex items-center gap-2">
 						<span class="text-base">{g.word}</span>
 						{#if g.systemDefault}
-							<span class="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-500">system default</span>
+							<span class="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-500 dark:bg-slate-500/15 dark:text-slate-400">system default</span>
 						{/if}
 					</div>
 					<button
 						onclick={() => unmark(g.word)}
 						disabled={updating === g.word}
-						class="p-1 rounded text-red-600 hover:text-red-800 hover:bg-red-50 disabled:opacity-50"
+						class="p-1 rounded text-red-600 dark:text-red-400 hover:text-red-800 dark:hover:text-red-300 hover:bg-red-50 dark:hover:bg-red-500/10 disabled:opacity-50"
 						title="Marked as garbage — click to unmark"
 						aria-label="Marked as garbage — click to unmark"
 					>
@@ -380,19 +386,19 @@
 </div>
 
 {#if excluded().length > 0}
-	<h2 class="text-sm font-semibold text-gray-600 mb-2">Excluded from garbage</h2>
-	<p class="text-xs text-gray-400 mb-2">
+	<h2 class="text-sm font-semibold text-gray-600 dark:text-slate-400 mb-2">Excluded from garbage</h2>
+	<p class="text-xs text-gray-400 dark:text-slate-500 mb-2">
 		Words you've explicitly said aren't garbage, overriding a system default or an earlier marking.
 	</p>
-	<div class="bg-white rounded-lg shadow-sm overflow-hidden">
-		<div class="divide-y divide-gray-100">
+	<div class="bg-white dark:bg-slate-900 rounded-lg shadow-sm overflow-hidden">
+		<div class="divide-y divide-gray-100 dark:divide-slate-800">
 			{#each excluded() as word}
 				<div class="flex items-center justify-between px-4 py-2.5">
 					<span class="text-base">{word}</span>
 					<button
 						onclick={() => remark(word)}
 						disabled={updating === word}
-						class="text-xs text-blue-600 hover:text-blue-800 disabled:opacity-50"
+						class="text-xs text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 disabled:opacity-50"
 					>
 						Re-mark as garbage
 					</button>

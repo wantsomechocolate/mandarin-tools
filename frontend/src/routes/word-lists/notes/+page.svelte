@@ -6,10 +6,16 @@
 	import { goto } from '$app/navigation';
 	import WordDetailModal from '$lib/components/WordDetailModal.svelte';
 	import type { WordDetailContext } from '$lib/wordDetailContext';
+	import { saveOpenWordPanel, loadOpenWordPanel } from '$lib/panelWordPersistence';
 
 	// Global list page - see the matching comment in known-words/+page.svelte.
 	const panelContext: WordDetailContext = { type: 'global' };
-	let selectedWordForPanel: string | null = $state(null);
+	// See panelWordPersistence.ts's docstring - recovers which word's panel
+	// was open across a mobile browser's involuntary page reload.
+	let selectedWordForPanel: string | null = $state(loadOpenWordPanel());
+	$effect(() => {
+		saveOpenWordPanel(selectedWordForPanel);
+	});
 
 	// Persisted filter preferences - see known-words/+page.svelte's own
 	// FILTER_STORAGE_KEY comment for the full pattern and why search is
@@ -237,7 +243,7 @@
 <svelte:head><title>Notes - Mandarin Tools</title></svelte:head>
 
 {#if error}
-	<div class="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded mb-4">
+	<div class="bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/30 text-red-700 dark:text-red-400 px-4 py-3 rounded mb-4">
 		{error}
 	</div>
 {/if}
@@ -247,8 +253,8 @@
      (an empty note is a no-op server-side, see upsertWordNote's docstring,
      api.ts), so this form takes both fields at once rather than just a
      bare word like those other pages' forms do. -->
-<div class="bg-white rounded-lg shadow-sm p-4 mb-4">
-	<p class="text-sm font-medium text-gray-600 mb-2">Add a note</p>
+<div class="bg-white dark:bg-slate-900 rounded-lg shadow-sm p-4 mb-4">
+	<p class="text-sm font-medium text-gray-600 dark:text-slate-400 mb-2">Add a note</p>
 	<div class="flex flex-wrap items-start gap-2">
 		<input
 			type="text"
@@ -265,7 +271,7 @@
 		<button
 			onclick={addNote}
 			disabled={!newWord.trim() || !newNote.trim() || adding}
-			class="text-sm px-3 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50"
+			class="text-sm px-3 py-1.5 bg-blue-600 dark:bg-blue-500 text-white rounded hover:bg-blue-700 dark:hover:bg-blue-600 disabled:opacity-50"
 		>
 			{adding ? 'Adding...' : existingNoteForNewWord ? 'Replace note' : 'Add'}
 		</button>
@@ -288,7 +294,7 @@
 		placeholder="Search words or notes..."
 		class="border border-gray-300 rounded px-2 py-1 text-sm w-56"
 	/>
-	<span class="text-sm text-gray-400">{filtered().length} of {rows.length} words</span>
+	<span class="text-sm text-gray-400 dark:text-slate-500">{filtered().length} of {rows.length} words</span>
 </div>
 
 <!-- Shared flex row with the panel below (lg and up) - same mechanism as
@@ -296,32 +302,32 @@
      to `display: contents` at `lg`, so its child joins this row as a
      sticky-positioned sibling instead of floating as a modal. -->
 <div class="flex flex-col lg:flex-row gap-4">
-<div class="flex-1 min-w-0 bg-white rounded-lg shadow-sm overflow-hidden">
+<div class="flex-1 min-w-0 bg-white dark:bg-slate-900 rounded-lg shadow-sm overflow-hidden">
 	{#if loading}
-		<p class="text-gray-500 p-4">Loading...</p>
+		<p class="text-gray-500 dark:text-slate-400 p-4">Loading...</p>
 	{:else if rows.length === 0}
-		<p class="text-gray-500 p-4">No notes yet - add one from any word's info pane.</p>
+		<p class="text-gray-500 dark:text-slate-400 p-4">No notes yet - add one from any word's info pane.</p>
 	{:else if filtered().length === 0}
-		<p class="text-gray-500 p-4">No words match.</p>
+		<p class="text-gray-500 dark:text-slate-400 p-4">No words match.</p>
 	{:else}
 		<table class="w-full">
-			<thead class="bg-gray-50 border-b border-gray-200">
+			<thead class="bg-gray-50 dark:bg-slate-950 border-b border-gray-200 dark:border-slate-800">
 				<tr>
-					<th class="text-left px-4 py-3 text-sm font-medium text-gray-700">
-						<button onclick={() => toggleSort('word')} class="inline-flex items-center gap-1 hover:text-blue-600 {sortColumn === 'word' ? 'text-blue-600' : ''}">
+					<th class="text-left px-4 py-3 text-sm font-medium text-gray-700 dark:text-slate-300">
+						<button onclick={() => toggleSort('word')} class="inline-flex items-center gap-1 hover:text-blue-600 dark:hover:text-blue-400 {sortColumn === 'word' ? 'text-blue-600 dark:text-blue-400' : ''}">
 							Word {#if sortColumn === 'word'}{@render iconChevron(sortDirection === 'asc')}{/if}
 						</button>
 					</th>
-					<th class="text-left px-4 py-3 text-sm font-medium text-gray-700">
-						<button onclick={() => toggleSort('note')} class="inline-flex items-center gap-1 hover:text-blue-600 {sortColumn === 'note' ? 'text-blue-600' : ''}">
+					<th class="text-left px-4 py-3 text-sm font-medium text-gray-700 dark:text-slate-300">
+						<button onclick={() => toggleSort('note')} class="inline-flex items-center gap-1 hover:text-blue-600 dark:hover:text-blue-400 {sortColumn === 'note' ? 'text-blue-600 dark:text-blue-400' : ''}">
 							Note {#if sortColumn === 'note'}{@render iconChevron(sortDirection === 'asc')}{/if}
 						</button>
 					</th>
 				</tr>
 			</thead>
-			<tbody class="divide-y divide-gray-100">
+			<tbody class="divide-y divide-gray-100 dark:divide-slate-800">
 				{#each filtered() as row (row.id)}
-					<tr class="hover:bg-gray-50">
+					<tr class="hover:bg-gray-50 dark:hover:bg-slate-800">
 						<td class="px-4 py-3 align-top cursor-pointer" onclick={(e) => handleWordClick(e, row.word)}>
 							<p class="text-lg font-medium">{row.word}</p>
 						</td>
@@ -334,15 +340,15 @@
 										class="border border-gray-300 rounded px-2 py-1 text-sm resize-none"
 									></textarea>
 									<div class="flex items-center gap-2">
-										<button onclick={() => saveNote(row.word)} disabled={saving === row.word} class="text-xs px-3 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50">
+										<button onclick={() => saveNote(row.word)} disabled={saving === row.word} class="text-xs px-3 py-1.5 bg-blue-600 dark:bg-blue-500 text-white rounded hover:bg-blue-700 dark:hover:bg-blue-600 disabled:opacity-50">
 											{saving === row.word ? 'Saving...' : 'Save'}
 										</button>
-										<button onclick={() => editingWord = null} disabled={saving === row.word} class="text-xs text-gray-500 hover:text-gray-700">Cancel</button>
-										<button onclick={() => removeNote(row.word)} disabled={saving === row.word} class="text-xs text-red-500 hover:text-red-700 ml-auto">Delete</button>
+										<button onclick={() => editingWord = null} disabled={saving === row.word} class="text-xs text-gray-500 dark:text-slate-400 hover:text-gray-700 dark:hover:text-slate-300">Cancel</button>
+										<button onclick={() => removeNote(row.word)} disabled={saving === row.word} class="text-xs text-red-500 dark:text-red-400 hover:text-red-700 dark:hover:text-red-400 ml-auto">Delete</button>
 									</div>
 								</div>
 							{:else}
-								<p class="text-sm text-gray-700 whitespace-pre-wrap break-words">{row.note}</p>
+								<p class="text-sm text-gray-700 dark:text-slate-300 whitespace-pre-wrap break-words">{row.note}</p>
 							{/if}
 						</td>
 					</tr>

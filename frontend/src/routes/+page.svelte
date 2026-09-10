@@ -63,17 +63,17 @@
 	</svg>
 {/snippet}
 
-<div class="min-h-screen bg-gray-50">
+<div class="min-h-screen bg-gray-50 dark:bg-slate-950">
 	<!-- Static English title, no wrapping risk - so this row only needs
 	     flex-wrap on the right-side action group for very narrow widths,
 	     not the heavier two-row stacking analyze/[id] needs for its
 	     unpredictable-length Chinese title. Three short actions wrapping
 	     onto a second line reads fine here; don't "fix" this to match that
 	     page's full-stack treatment, the two pages have different problems. -->
-	<nav class="bg-white shadow-sm px-6 py-4 flex justify-between items-center flex-wrap gap-3">
-		<h1 class="text-xl font-bold text-gray-800">Mandarin Tools</h1>
+	<nav class="bg-white dark:bg-slate-900 shadow-sm px-6 py-4 flex justify-between items-center flex-wrap gap-3">
+		<h1 class="text-xl font-bold text-gray-800 dark:text-slate-200">Mandarin Tools</h1>
 		<div class="flex gap-4 items-center flex-wrap">
-			<a href="/analyze" class="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700 text-sm font-medium">
+			<a href="/analyze" class="bg-blue-600 dark:bg-blue-500 text-white px-4 py-2 rounded-md hover:bg-blue-700 dark:hover:bg-blue-600 text-sm font-medium">
 				New Analysis
 			</a>
 			<AccountMenu />
@@ -81,35 +81,35 @@
 	</nav>
 
 	<main class="max-w-4xl mx-auto px-6 py-8">
-		<h2 class="text-2xl font-bold text-gray-800 mb-6">Your Texts</h2>
+		<h2 class="text-2xl font-bold text-gray-800 dark:text-slate-200 mb-6">Your Texts</h2>
 
 		{#if error}
-			<div class="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded mb-4">
+			<div class="bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/30 text-red-700 dark:text-red-400 px-4 py-3 rounded mb-4">
 				{error}
 			</div>
 		{/if}
 
 		{#if loading}
-			<p class="text-gray-500">Loading...</p>
+			<p class="text-gray-500 dark:text-slate-400">Loading...</p>
 		{:else if inputTexts.length === 0}
-			<div class="text-center py-16 text-gray-500">
+			<div class="text-center py-16 text-gray-500 dark:text-slate-400">
 				<p class="text-lg mb-4">No texts yet.</p>
-				<a href="/analyze" class="bg-blue-600 text-white px-6 py-3 rounded-md hover:bg-blue-700 font-medium">
+				<a href="/analyze" class="bg-blue-600 dark:bg-blue-500 text-white px-6 py-3 rounded-md hover:bg-blue-700 dark:hover:bg-blue-600 font-medium">
 					Analyze your first text
 				</a>
 			</div>
 		{:else}
 			<div class="space-y-3">
 				{#each inputTexts as text}
-					<div class="bg-white rounded-lg shadow-sm p-4 flex justify-between items-center">
+					<div class="bg-white dark:bg-slate-900 rounded-lg shadow-sm p-4 flex justify-between items-center">
 						<div>
 							<a
 							href="/input-texts/{text.id}"
-							    class="font-medium text-blue-600 hover:underline"
+							    class="font-medium text-blue-600 dark:text-blue-400 hover:underline"
 							>
 							    {text.title ?? 'Untitled'}
 							</a>
-							<p class="text-sm text-gray-500 mt-1">
+							<p class="text-sm text-gray-500 dark:text-slate-400 mt-1">
 								{new Date(text.created_at).toLocaleDateString()}
 							</p>
 						</div>
@@ -117,7 +117,7 @@
 							{#if text.latest_analysis_id}
 								<a
 									href="/analyze/{text.latest_analysis_id}"
-									class="text-gray-400 hover:text-blue-600"
+									class="text-gray-400 dark:text-slate-500 hover:text-blue-600 dark:hover:text-blue-400"
 									aria-label="View latest results"
 									title="View latest results"
 								>
@@ -126,7 +126,7 @@
 							{/if}
 							<button
 								onclick={() => handleDelete(text.id)}
-								class="text-gray-400 hover:text-red-600"
+								class="text-gray-400 dark:text-slate-500 hover:text-red-600 dark:hover:text-red-400"
 								aria-label="Delete"
 								title="Delete"
 							>

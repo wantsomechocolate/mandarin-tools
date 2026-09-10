@@ -12,6 +12,7 @@
 	import FamiliarityDots from '$lib/components/FamiliarityDots.svelte';
 	import AccountMenu from '$lib/components/AccountMenu.svelte';
 	import { isEntryEditable, type WordDetailContext } from '$lib/wordDetailContext';
+	import { saveOpenWordPanel, loadOpenWordPanel } from '$lib/panelWordPersistence';
 
 	let { params }: PageProps = $props();
 
@@ -218,8 +219,14 @@
 	// internally now, this page just tracks which word (if any) to show it
 	// for and reacts to its change-callbacks (see handleUserWordEntriesChanged/
 	// handleVisibilityEntriesChanged below) to keep the row/card quick-
-	// action icons in sync.
-	let selectedWordForPanel: string | null = $state(null);
+	// action icons in sync. Initialized from panelWordPersistence.ts (and
+	// kept in sync with it below) rather than a bare `$state(null)` - see
+	// its docstring for why: recovering which word's panel was open across
+	// a mobile browser's involuntary page reload.
+	let selectedWordForPanel: string | null = $state(loadOpenWordPanel());
+	$effect(() => {
+		saveOpenWordPanel(selectedWordForPanel);
+	});
 	// Context (word-in-source-text) is keyed by word rather than tied to the
 	// panel, since it now lives at the row/card level and multiple rows can
 	// have their context expanded independently at once (desktop chevrons,
@@ -1049,7 +1056,7 @@
 {#snippet sortHeader(label: string, column: 'word' | 'count' | 'source' | 'familiarity')}
 	<button
 		onclick={() => toggleSort(column)}
-		class="w-full flex items-center justify-center gap-1 hover:text-blue-600 {sortColumn === column ? 'text-blue-600' : ''}"
+		class="w-full flex items-center justify-center gap-1 hover:text-blue-600 dark:hover:text-blue-400 {sortColumn === column ? 'text-blue-600 dark:text-blue-400' : ''}"
 		title="Sort by {label}"
 	>
 		{label}
@@ -1067,17 +1074,17 @@
 	     height + its own scroll so a word with dozens of occurrences doesn't
 	     take over the page/card. -->
 	{#if loadingContextFor.has(word)}
-		<p class="text-sm text-gray-400">Loading context...</p>
+		<p class="text-sm text-gray-400 dark:text-slate-500">Loading context...</p>
 	{:else if (contextByWord[word]?.length ?? 0) > 0}
 		<div class="space-y-2 max-h-64 overflow-y-auto pr-1">
 			{#each contextByWord[word] as occ}
 				<p class="text-sm leading-relaxed">
-					<span class="text-gray-500">{occ.before}</span><mark class="bg-yellow-200 rounded px-0.5">{occ.match}</mark><span class="text-gray-500">{occ.after}</span>
+					<span class="text-gray-500 dark:text-slate-400">{occ.before}</span><mark class="bg-yellow-200 rounded px-0.5">{occ.match}</mark><span class="text-gray-500">{occ.after}</span>
 				</p>
 			{/each}
 		</div>
 	{:else}
-		<p class="text-sm text-gray-400">Context not available for this word.</p>
+		<p class="text-sm text-gray-400 dark:text-slate-500">Context not available for this word.</p>
 	{/if}
 {/snippet}
 
@@ -1151,7 +1158,7 @@
 {#snippet scopeBadge(scope: string)}
 	{#if scope !== 'default'}
 		<span
-			class="absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full bg-white border border-current text-[8px] leading-[10px] font-bold flex items-center justify-center pointer-events-none"
+			class="absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full bg-white dark:bg-slate-900 border border-current text-[8px] leading-[10px] font-bold flex items-center justify-center pointer-events-none"
 			title={scope === 'global' ? 'Global' : scope === 'text' ? 'This text' : 'This analysis'}
 		>{scope === 'global' ? 'G' : scope === 'text' ? 'T' : 'A'}</span>
 	{/if}
@@ -1193,7 +1200,7 @@
 		{@const distanceFromCorner = present.length - 1 - i}
 		{@const value = scopeAffectsDag[scope]}
 		<span
-			class="absolute w-3 h-3 rounded-full text-[8px] leading-[10px] font-bold flex items-center justify-center pointer-events-none {value === 'increase' ? 'bg-emerald-100 text-emerald-700' : value === 'decrease' ? 'bg-red-100 text-red-700' : 'bg-slate-100 text-slate-600'}"
+			class="absolute w-3 h-3 rounded-full text-[8px] leading-[10px] font-bold flex items-center justify-center pointer-events-none {value === 'increase' ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300' : value === 'decrease' ? 'bg-red-100 text-red-700 dark:bg-red-500/20 dark:text-red-300' : 'bg-slate-100 text-slate-600 dark:bg-slate-500/20 dark:text-slate-400'}"
 			style="bottom: -0.125rem; right: {-0.125 + distanceFromCorner * 0.5}rem; z-index: {i + 1};"
 			title="{scope === 'global' ? 'Global' : scope === 'text' ? 'This text' : 'This analysis'}: {value === 'decrease' ? 'decreases segmentation weight' : value === 'neutral' ? 'neutral segmentation weight' : value === null ? 'no segmentation preference set' : 'boosts segmentation'}"
 		>{scope === 'global' ? 'G' : scope === 'text' ? 'T' : 'A'}</span>
@@ -1216,15 +1223,15 @@
 		onclick={() => cycleBucket(bucket.id)}
 		aria-pressed={state === 'iso'}
 		class="flex items-center gap-1.5 pl-2 pr-2.5 py-1.5 rounded-full text-sm border transition-colors
-		{state === 'iso' ? 'bg-blue-100 border-blue-300 text-blue-700' : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-100'}
+		{state === 'iso' ? 'bg-blue-100 dark:bg-blue-500/15 border-blue-300 dark:border-blue-500/40 text-blue-700 dark:text-blue-400' : 'bg-white dark:bg-slate-900 border-gray-200 dark:border-slate-800 text-gray-600 dark:text-slate-400 hover:bg-gray-100 dark:hover:bg-slate-800'}
 		{state === 'hide' ? 'opacity-60' : ''}"
 		title="{bucket.label}: {state === 'iso' ? 'isolated - showing only this' : state === 'hide' ? 'hidden' : 'shown'} — click to cycle Show → Isolate → Hide"
 	>
 		<span class="w-1.5 h-1.5 rounded-full {bucket.swatchColor}" aria-hidden="true"></span>
 		<span class={state === 'hide' ? 'line-through' : ''}>{bucket.label}</span>
-		<span class="text-xs {state === 'iso' ? 'text-blue-500' : 'text-gray-400'}">({count})</span>
+		<span class="text-xs {state === 'iso' ? 'text-blue-500 dark:text-blue-400' : 'text-gray-400 dark:text-slate-500'}">({count})</span>
 		{#if state === 'iso'}
-			<span class="text-[9px] font-bold uppercase tracking-wide text-blue-500">only</span>
+			<span class="text-[9px] font-bold uppercase tracking-wide text-blue-500 dark:text-blue-400">only</span>
 		{:else if state === 'hide'}
 			<span class="w-1.5 h-1.5 rounded-full bg-red-400" aria-hidden="true"></span>
 		{/if}
@@ -1236,13 +1243,13 @@
      from both, rather than duplicated. -->
 {#snippet visibilityMenuItems(result: WordResult)}
 	{#if loadingVisibilityFor.has(result.word)}
-		<p class="text-xs text-gray-400 px-3 py-2">Loading...</p>
+		<p class="text-xs text-gray-400 dark:text-slate-500 px-3 py-2">Loading...</p>
 	{:else}
 		{#each buildVisibilityMenu(result.is_hidden, visibilityRowsByWord[result.word] ?? []) as action}
 			<button
 				onclick={() => applyVisibilityAction(result.word, action)}
 				disabled={togglingVisibilityAction === result.word}
-				class="w-full text-left px-3 py-1.5 text-sm hover:bg-gray-50 disabled:opacity-50 {action.kind === 'remove' ? 'text-red-500' : 'text-gray-700'}"
+				class="w-full text-left px-3 py-1.5 text-sm hover:bg-gray-50 dark:hover:bg-slate-800 disabled:opacity-50 {action.kind === 'remove' ? 'text-red-500 dark:text-red-400' : 'text-gray-700 dark:text-slate-300'}"
 			>
 				{action.label}
 			</button>
@@ -1268,7 +1275,7 @@
 	<div class="relative inline-block">
 		<button
 			onclick={(e) => { e.stopPropagation(); toggleVisibilityMenu(result.word); }}
-			class="p-1.5 rounded {result.is_hidden ? 'text-slate-600' : 'text-gray-400'} hover:text-blue-600 hover:bg-blue-50"
+			class="p-1.5 rounded {result.is_hidden ? 'text-slate-600 dark:text-slate-300' : 'text-gray-400 dark:text-slate-500'} hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-500/10"
 			title={result.is_hidden ? 'Hidden — click for options' : 'Shown — click for options'}
 			aria-label="Visibility options"
 		>
@@ -1284,7 +1291,7 @@
 			     right after the popover closes. -->
 			<div class="hidden min-[700px]:block fixed inset-0 z-40" onclick={(e) => { e.stopPropagation(); visibilityMenuOpenFor = null; }} role="presentation"></div>
 			<div
-				class="hidden min-[700px]:block absolute right-0 top-full mt-1 z-50 w-56 bg-white rounded-lg shadow-lg border border-gray-100 py-1"
+				class="hidden min-[700px]:block absolute right-0 top-full mt-1 z-50 w-56 bg-white dark:bg-slate-900 rounded-lg shadow-lg border border-gray-100 dark:border-slate-800 py-1"
 				onclick={(e) => e.stopPropagation()}
 				role="presentation"
 			>
@@ -1295,13 +1302,13 @@
 			     stopPropagation reasoning as the dropdown backdrop above. -->
 			<div class="min-[700px]:hidden fixed inset-0 z-40 bg-black/30" onclick={(e) => { e.stopPropagation(); visibilityMenuOpenFor = null; }} role="presentation"></div>
 			<div
-				class="min-[700px]:hidden fixed inset-x-0 bottom-0 z-50 bg-white rounded-t-2xl shadow-sm p-4 max-h-[70vh] overflow-y-auto"
+				class="min-[700px]:hidden fixed inset-x-0 bottom-0 z-50 bg-white dark:bg-slate-900 rounded-t-2xl shadow-sm p-4 max-h-[70vh] overflow-y-auto"
 				onclick={(e) => e.stopPropagation()}
 				role="presentation"
 			>
 				<div class="flex items-center justify-between mb-2">
-					<p class="text-sm font-medium text-gray-700">{result.word}</p>
-					<button onclick={() => visibilityMenuOpenFor = null} class="text-sm text-blue-600 hover:text-blue-800">Close</button>
+					<p class="text-sm font-medium text-gray-700 dark:text-slate-300">{result.word}</p>
+					<button onclick={() => visibilityMenuOpenFor = null} class="text-sm text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300">Close</button>
 				</div>
 				{@render visibilityMenuItems(result)}
 			</div>
@@ -1314,19 +1321,19 @@
      from both, rather than duplicated. -->
 {#snippet userWordMenuItems(result: WordResult)}
 	{#if loadingUserWordFor.has(result.word)}
-		<p class="text-xs text-gray-400 px-3 py-2">Loading...</p>
+		<p class="text-xs text-gray-400 dark:text-slate-500 px-3 py-2">Loading...</p>
 	{:else}
 		{#each buildUserWordMenu(userWordRowsByWord[result.word] ?? []) as item}
 			{#if item.kind === 'entry'}
 				<div class="px-3 py-1.5 flex items-center justify-between gap-2">
 					<div class="min-w-0">
-						<p class="text-sm text-gray-700 truncate">{item.label}</p>
-						<p class="text-xs text-gray-400 truncate">{item.sublabel}</p>
+						<p class="text-sm text-gray-700 dark:text-slate-300 truncate">{item.label}</p>
+						<p class="text-xs text-gray-400 dark:text-slate-500 truncate">{item.sublabel}</p>
 					</div>
 					<button
 						onclick={() => removeUserWordEntry(result.word, item.entry!)}
 						disabled={togglingUserWordAction === result.word}
-						class="text-xs text-red-400 hover:text-red-600 disabled:opacity-50 shrink-0"
+						class="text-xs text-red-400 hover:text-red-600 dark:hover:text-red-400 disabled:opacity-50 shrink-0"
 					>
 						Remove
 					</button>
@@ -1335,14 +1342,14 @@
 				<button
 					onclick={() => addUserWordAtScope(result.word, item.scope!)}
 					disabled={togglingUserWordAction === result.word}
-					class="w-full text-left px-3 py-1.5 text-sm text-blue-600 hover:bg-gray-50 disabled:opacity-50"
+					class="w-full text-left px-3 py-1.5 text-sm text-blue-600 dark:text-blue-400 hover:bg-gray-50 dark:hover:bg-slate-800 disabled:opacity-50"
 				>
 					{item.label}
 				</button>
 			{:else}
 				<button
 					onclick={() => { userWordMenuOpenFor = null; openWordDetail(result.word); }}
-					class="w-full text-left px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50 border-t border-gray-100 mt-1"
+					class="w-full text-left px-3 py-1.5 text-sm text-gray-700 dark:text-slate-300 hover:bg-gray-50 dark:hover:bg-slate-800 border-t border-gray-100 dark:border-slate-800 mt-1"
 				>
 					{item.label}
 				</button>
@@ -1374,7 +1381,7 @@
 	<div class="relative inline-block">
 		<button
 			onclick={(e) => { e.stopPropagation(); toggleUserWordMenu(result.word); }}
-			class="p-1.5 rounded {result.userword_scopes.length > 0 ? 'text-slate-600' : 'text-gray-400'} hover:text-blue-600 hover:bg-blue-50"
+			class="p-1.5 rounded {result.userword_scopes.length > 0 ? 'text-slate-600 dark:text-slate-300' : 'text-gray-400 dark:text-slate-500'} hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-500/10"
 			title={result.userword_scopes.length > 0 ? 'In your dictionary — click for options' : 'Add to your custom dictionary — click for options'}
 			aria-label="User word options"
 		>
@@ -1389,7 +1396,7 @@
 			     up into the row's own onclick and reopens the detail panel). -->
 			<div class="hidden min-[700px]:block fixed inset-0 z-40" onclick={(e) => { e.stopPropagation(); userWordMenuOpenFor = null; }} role="presentation"></div>
 			<div
-				class="hidden min-[700px]:block absolute right-0 top-full mt-1 z-50 w-60 bg-white rounded-lg shadow-lg border border-gray-100 py-1"
+				class="hidden min-[700px]:block absolute right-0 top-full mt-1 z-50 w-60 bg-white dark:bg-slate-900 rounded-lg shadow-lg border border-gray-100 dark:border-slate-800 py-1"
 				onclick={(e) => e.stopPropagation()}
 				role="presentation"
 			>
@@ -1400,13 +1407,13 @@
 			     stopPropagation reasoning as the dropdown backdrop above. -->
 			<div class="min-[700px]:hidden fixed inset-0 z-40 bg-black/30" onclick={(e) => { e.stopPropagation(); userWordMenuOpenFor = null; }} role="presentation"></div>
 			<div
-				class="min-[700px]:hidden fixed inset-x-0 bottom-0 z-50 bg-white rounded-t-2xl shadow-sm p-4 max-h-[70vh] overflow-y-auto"
+				class="min-[700px]:hidden fixed inset-x-0 bottom-0 z-50 bg-white dark:bg-slate-900 rounded-t-2xl shadow-sm p-4 max-h-[70vh] overflow-y-auto"
 				onclick={(e) => e.stopPropagation()}
 				role="presentation"
 			>
 				<div class="flex items-center justify-between mb-2">
-					<p class="text-sm font-medium text-gray-700">{result.word}</p>
-					<button onclick={() => userWordMenuOpenFor = null} class="text-sm text-blue-600 hover:text-blue-800">Close</button>
+					<p class="text-sm font-medium text-gray-700 dark:text-slate-300">{result.word}</p>
+					<button onclick={() => userWordMenuOpenFor = null} class="text-sm text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300">Close</button>
 				</div>
 				{@render userWordMenuItems(result)}
 			</div>
@@ -1414,7 +1421,7 @@
 	</div>
 {/snippet}
 
-<div class="min-h-screen bg-gray-50">
+<div class="min-h-screen bg-gray-50 dark:bg-slate-950">
 	<!-- Title row: just the title cluster on the left and the account menu
 	     on the right, same simple two-item layout every other page's header
 	     uses - the word-count/Reading-view cluster used to share this row
@@ -1426,18 +1433,18 @@
 	     min-w-0 + truncate + a title= attribute) competing for space against
 	     one fixed-width thing (the account menu), a single row holds up
 	     fine at any width on its own. -->
-	<nav class="bg-white shadow-sm px-6 py-4 flex items-center justify-between gap-4">
+	<nav class="bg-white dark:bg-slate-900 shadow-sm px-6 py-4 flex items-center justify-between gap-4">
 		<div class="flex flex-wrap items-center gap-4 min-w-0">
-			<a href="/" class="text-gray-400 hover:text-blue-600 shrink-0" aria-label="Home" title="Home">
+			<a href="/" class="text-gray-400 dark:text-slate-500 hover:text-blue-600 dark:hover:text-blue-400 shrink-0" aria-label="Home" title="Home">
 				{@render iconHome()}
 			</a>
-			<h1 class="text-xl font-bold text-gray-800 min-w-0 truncate" title={analysis?.title ?? 'Analysis Results'}>
+			<h1 class="text-xl font-bold text-gray-800 dark:text-slate-200 min-w-0 truncate" title={analysis?.title ?? 'Analysis Results'}>
 				{analysis?.title ?? 'Analysis Results'}
 			</h1>
 			{#if analysis}
 				<a
 					href="/input-texts/{analysis.input_text_id}"
-					class="text-gray-400 hover:text-blue-600 shrink-0"
+					class="text-gray-400 dark:text-slate-500 hover:text-blue-600 dark:hover:text-blue-400 shrink-0"
 					title="View source text"
 					aria-label="View source text"
 				>
@@ -1449,8 +1456,8 @@
 	</nav>
 
 	{#if analysis}
-		<div class="bg-white border-t border-gray-100 px-6 py-2.5 flex flex-wrap items-center gap-4">
-			<div class="text-sm text-gray-500 flex flex-wrap gap-4">
+		<div class="bg-white dark:bg-slate-900 border-t border-gray-100 dark:border-slate-800 px-6 py-2.5 flex flex-wrap items-center gap-4">
+			<div class="text-sm text-gray-500 dark:text-slate-400 flex flex-wrap gap-4">
 				<span>{mainSegUniqueWords} unique words</span>
 				<span>{mainSegTotalWords} total</span>
 			</div>
@@ -1459,7 +1466,7 @@
 				onclick={() => readingViewOn = !readingViewOn}
 				aria-pressed={readingViewOn}
 				class="text-sm px-3 py-1.5 rounded-full border shrink-0 transition-colors
-				{readingViewOn ? 'bg-blue-100 border-blue-300 text-blue-700' : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-100'}"
+				{readingViewOn ? 'bg-blue-100 dark:bg-blue-500/15 border-blue-300 dark:border-blue-500/40 text-blue-700 dark:text-blue-400' : 'bg-white dark:bg-slate-900 border-gray-200 dark:border-slate-800 text-gray-600 dark:text-slate-400 hover:bg-gray-100 dark:hover:bg-slate-800'}"
 			>
 				Reading view
 			</button>
@@ -1468,7 +1475,7 @@
 
 	<main class="max-w-5xl lg:max-w-6xl 2xl:max-w-7xl mx-auto px-6 py-8">
 		{#if error}
-			<div class="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded mb-4">
+			<div class="bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/30 text-red-700 dark:text-red-400 px-4 py-3 rounded mb-4">
 				{error}
 			</div>
 		{/if}
@@ -1482,7 +1489,7 @@
 		     (Bucket/Source/Other, see BUCKETS above) collapse behind the
 		     Filters disclosure so this toolbar is the only thing always
 		     visible. -->
-		<div class="bg-white rounded-lg shadow-sm p-4 mb-4">
+		<div class="bg-white dark:bg-slate-900 rounded-lg shadow-sm p-4 mb-4">
 			<div class="flex flex-wrap items-center gap-3">
 				<div class="flex items-center gap-2 flex-1 min-w-[160px] max-w-xs">
 					<input
@@ -1503,7 +1510,7 @@
 					{/if}
 				</div>
 
-				<div class="flex items-center gap-2 text-sm text-gray-700">
+				<div class="flex items-center gap-2 text-sm text-gray-700 dark:text-slate-300">
 					<span>Hide familiarity ≥</span>
 					<select
 						bind:value={minFamiliarityFilter}
@@ -1523,7 +1530,7 @@
 				     mobile card list has no headers to click, so this dropdown is
 				     the only way to sort there. Word sorts by raw codepoint, not
 				     pinyin - see compareResults' comment. -->
-				<div class="flex items-center gap-2 text-sm text-gray-700">
+				<div class="flex items-center gap-2 text-sm text-gray-700 dark:text-slate-300">
 					<span>Sort by</span>
 					<select
 						value={sortColumn ?? ''}
@@ -1547,7 +1554,7 @@
 					{#if sortColumn}
 						<button
 							onclick={() => sortDirection = sortDirection === 'asc' ? 'desc' : 'asc'}
-							class="p-1 rounded text-gray-500 hover:text-blue-600 hover:bg-blue-50"
+							class="p-1 rounded text-gray-500 dark:text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-500/10"
 							title="Toggle sort direction"
 							aria-label="Toggle sort direction"
 						>
@@ -1556,7 +1563,7 @@
 					{/if}
 				</div>
 
-				<span class="text-sm text-gray-400 sm:ml-auto">
+				<span class="text-sm text-gray-400 dark:text-slate-500 sm:ml-auto">
 					Showing {filteredResults().length} of {analysis?.results.length ?? 0} words
 				</span>
 			</div>
@@ -1572,21 +1579,21 @@
 				onclick={() => filtersOpen = !filtersOpen}
 				aria-expanded={filtersOpen}
 				aria-controls="filter-groups"
-				class="mt-3 pt-3 border-t border-gray-100 w-full flex items-center gap-2 text-left"
+				class="mt-3 pt-3 border-t border-gray-100 dark:border-slate-800 w-full flex items-center gap-2 text-left"
 			>
-				<svg class="w-3.5 h-3.5 text-gray-400 shrink-0" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M3 4h14l-5.5 6.5v5L8.5 17v-6.5L3 4z"/></svg>
-				<span class="text-sm font-semibold text-gray-700">Filters</span>
-				<span class="text-xs font-bold rounded-full px-2 py-0.5 border {activeBucketCount > 0 ? 'text-blue-700 bg-blue-50 border-blue-200' : 'text-gray-400 bg-transparent border-gray-200'}">
+				<svg class="w-3.5 h-3.5 text-gray-400 dark:text-slate-500 shrink-0" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M3 4h14l-5.5 6.5v5L8.5 17v-6.5L3 4z"/></svg>
+				<span class="text-sm font-semibold text-gray-700 dark:text-slate-300">Filters</span>
+				<span class="text-xs font-bold rounded-full px-2 py-0.5 border {activeBucketCount > 0 ? 'text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-500/10 border-blue-200 dark:border-blue-500/30' : 'text-gray-400 dark:text-slate-500 bg-transparent border-gray-200 dark:border-slate-800'}">
 					{activeBucketCount > 0 ? `${activeBucketCount} active` : 'None active'}
 				</span>
-				<svg class="w-3.5 h-3.5 text-gray-400 ml-auto transition-transform {filtersOpen ? '' : '-rotate-90'}" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8l4 4 4-4"/></svg>
+				<svg class="w-3.5 h-3.5 text-gray-400 dark:text-slate-500 ml-auto transition-transform {filtersOpen ? '' : '-rotate-90'}" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8l4 4 4-4"/></svg>
 			</button>
 
 			{#if filtersOpen}
 				<div id="filter-groups" class="flex flex-col gap-1.5 mt-3">
 					{#each bucketGroups as { group, label, buckets } (group)}
-						<div class="flex flex-wrap items-center gap-1.5 bg-gray-50 border border-gray-200 rounded-lg px-2.5 py-2">
-							<span class="text-[10px] font-bold text-gray-400 uppercase tracking-wide pr-1">{label}</span>
+						<div class="flex flex-wrap items-center gap-1.5 bg-gray-50 dark:bg-slate-950 border border-gray-200 dark:border-slate-800 rounded-lg px-2.5 py-2">
+							<span class="text-[10px] font-bold text-gray-400 dark:text-slate-500 uppercase tracking-wide pr-1">{label}</span>
 							{#each buckets as bucket}
 								{@render filterChip(bucket)}
 							{/each}
@@ -1598,35 +1605,35 @@
 
 		<div class="flex flex-col min-[700px]:flex-row gap-4">
 			<!-- Results table (sm and up - see the mobile card list below for < sm) -->
-			<div class="hidden min-[700px]:block flex-1 min-w-0 bg-white rounded-lg shadow-sm overflow-hidden">
+			<div class="hidden min-[700px]:block flex-1 min-w-0 bg-white dark:bg-slate-900 rounded-lg shadow-sm overflow-hidden">
 				{#if loading}
-					<p class="text-gray-500 p-4">Loading...</p>
+					<p class="text-gray-500 dark:text-slate-400 p-4">Loading...</p>
 				{:else if analysis}
 					<div class="overflow-x-auto">
 					<table class="w-full">
-						<thead class="bg-gray-50 border-b border-gray-200">
+						<thead class="bg-gray-50 dark:bg-slate-950 border-b border-gray-200 dark:border-slate-800">
 							<tr>
-								<th class="text-center px-4 py-3 text-sm font-medium text-gray-700">{@render sortHeader('Word', 'word')}</th>
-								<th class="text-center px-4 py-3 text-sm font-medium text-gray-700">{@render sortHeader('Count', 'count')}</th>
-								<th class="text-center px-4 py-3 text-sm font-medium text-gray-700">Bucket</th>
-								<th class="text-center px-4 py-3 text-sm font-medium text-gray-700">{@render sortHeader('Source', 'source')}</th>
-								<th class="text-center px-4 py-3 text-sm font-medium text-gray-700">{@render sortHeader('Familiarity', 'familiarity')}</th>
-								<th class="text-center px-4 py-3 text-sm font-medium text-gray-700">Actions</th>
+								<th class="text-center px-4 py-3 text-sm font-medium text-gray-700 dark:text-slate-300">{@render sortHeader('Word', 'word')}</th>
+								<th class="text-center px-4 py-3 text-sm font-medium text-gray-700 dark:text-slate-300">{@render sortHeader('Count', 'count')}</th>
+								<th class="text-center px-4 py-3 text-sm font-medium text-gray-700 dark:text-slate-300">Bucket</th>
+								<th class="text-center px-4 py-3 text-sm font-medium text-gray-700 dark:text-slate-300">{@render sortHeader('Source', 'source')}</th>
+								<th class="text-center px-4 py-3 text-sm font-medium text-gray-700 dark:text-slate-300">{@render sortHeader('Familiarity', 'familiarity')}</th>
+								<th class="text-center px-4 py-3 text-sm font-medium text-gray-700 dark:text-slate-300">Actions</th>
 								<th class="px-2 py-3"><span class="sr-only">Open details</span></th>
 							</tr>
 						</thead>
-						<tbody class="divide-y divide-gray-100">
+						<tbody class="divide-y divide-gray-100 dark:divide-slate-800">
 							{#each filteredResults() as result}
 								<tr
 									data-word={result.word}
 									onclick={(e) => handleRowClick(e, result.word)}
-									class="group cursor-pointer hover:bg-gray-50 {result.source === 'longest_match_only' ? 'bg-amber-50/40' : ''} {garbageWords.has(result.word) ? 'bg-red-50/40' : ''} {selectedWordForPanel === result.word ? '!bg-blue-50 ring-1 ring-inset ring-blue-200' : ''}"
+									class="group cursor-pointer hover:bg-gray-50 dark:hover:bg-slate-800 {result.source === 'longest_match_only' ? 'bg-amber-50/40' : ''} {garbageWords.has(result.word) ? 'bg-red-50/40' : ''} {selectedWordForPanel === result.word ? '!bg-blue-50 ring-1 ring-inset ring-blue-200 dark:ring-blue-500/30' : ''}"
 								>
 									<td class="px-4 py-3 text-lg font-medium">
 										<div class="flex items-center justify-center gap-1.5">
 											<button
 												onclick={() => toggleContext(result.word)}
-												class="p-0.5 rounded text-gray-400 hover:text-blue-600 hover:bg-blue-50 shrink-0"
+												class="p-0.5 rounded text-gray-400 dark:text-slate-500 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-500/10 shrink-0"
 												title="Show where this word occurs in the text"
 												aria-label="Show context"
 											>
@@ -1635,7 +1642,7 @@
 											{result.word}
 										</div>
 									</td>
-									<td class="px-4 py-3 text-gray-600 text-center">{result.count}</td>
+									<td class="px-4 py-3 text-gray-600 dark:text-slate-400 text-center">{result.count}</td>
 									<td class="px-4 py-3 text-center">
 										<span
 											class="inline-block text-center text-xs px-2 py-1 rounded-full {bucketColor(result.source)}"
@@ -1666,7 +1673,7 @@
 												<button
 													onclick={() => unmarkStarred(result.word)}
 													disabled={togglingStarred === result.word}
-													class="p-1.5 rounded text-amber-500 hover:text-red-600 hover:bg-red-50 disabled:opacity-50"
+													class="p-1.5 rounded text-amber-500 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10 disabled:opacity-50"
 													title="Starred — click to unstar"
 													aria-label="Starred — click to unstar"
 												>
@@ -1676,7 +1683,7 @@
 												<button
 													onclick={() => markAsStarred(result.word)}
 													disabled={togglingStarred === result.word}
-													class="p-1.5 rounded text-gray-400 hover:text-amber-500 hover:bg-amber-50 disabled:opacity-50"
+													class="p-1.5 rounded text-gray-400 dark:text-slate-500 hover:text-amber-500 hover:bg-amber-50 disabled:opacity-50"
 													title="Star as interesting"
 													aria-label="Star as interesting"
 												>
@@ -1687,7 +1694,7 @@
 												<button
 													onclick={() => unmarkGarbage(result.word)}
 													disabled={togglingGarbage === result.word}
-													class="p-1.5 rounded text-red-600 hover:text-red-800 hover:bg-red-50 disabled:opacity-50"
+													class="p-1.5 rounded text-red-600 dark:text-red-400 hover:text-red-800 dark:hover:text-red-300 hover:bg-red-50 dark:hover:bg-red-500/10 disabled:opacity-50"
 													title="Marked as garbage — click to unmark"
 													aria-label="Marked as garbage — click to unmark"
 												>
@@ -1697,7 +1704,7 @@
 												<button
 													onclick={() => markAsGarbage(result.word)}
 													disabled={togglingGarbage === result.word}
-													class="p-1.5 rounded text-gray-400 hover:text-red-600 hover:bg-red-50 disabled:opacity-50"
+													class="p-1.5 rounded text-gray-400 dark:text-slate-500 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10 disabled:opacity-50"
 													title="Mark as garbage — hidden by default, but kept in the results"
 													aria-label="Mark as garbage"
 												>
@@ -1710,7 +1717,7 @@
 										<div class="flex justify-end">
 											<button
 												onclick={() => openWordDetail(result.word)}
-												class="p-1 rounded text-gray-300 hover:text-blue-600 group-hover:text-gray-400"
+												class="p-1 rounded text-gray-300 dark:text-slate-600 hover:text-blue-600 dark:hover:text-blue-400 group-hover:text-gray-400 dark:group-hover:text-slate-500"
 												aria-label="View details for {result.word}"
 											>
 												<svg class="w-4 h-4" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
@@ -1721,8 +1728,8 @@
 									</td>
 								</tr>
 								{#if expandedContext.has(result.word)}
-									<tr class="bg-gray-50">
-										<td colspan="7" class="px-4 py-3 border-t border-gray-100">
+									<tr class="bg-gray-50 dark:bg-slate-950">
+										<td colspan="7" class="px-4 py-3 border-t border-gray-100 dark:border-slate-800">
 											{@render contextList(result.word)}
 										</td>
 									</tr>
@@ -1739,9 +1746,9 @@
 			     controls. Independent per-word toggles (expandedInfo/expandedActions),
 			     everything below reuses the exact same handlers/derived helpers
 			     and icon snippets the desktop table above uses. -->
-			<div class="min-[700px]:hidden bg-white rounded-lg shadow-sm overflow-hidden divide-y divide-gray-100">
+			<div class="min-[700px]:hidden bg-white dark:bg-slate-900 rounded-lg shadow-sm overflow-hidden divide-y divide-gray-100 dark:divide-slate-800">
 				{#if loading}
-					<p class="text-gray-500 p-4">Loading...</p>
+					<p class="text-gray-500 dark:text-slate-400 p-4">Loading...</p>
 				{:else if analysis}
 					{#each filteredResults() as result}
 						<div
@@ -1758,7 +1765,7 @@
 								<div class="flex items-center gap-0.5 shrink-0">
 									<button
 										onclick={() => toggleInfo(result.word)}
-										class="p-1.5 rounded text-gray-400 hover:text-blue-600 hover:bg-blue-50"
+										class="p-1.5 rounded text-gray-400 dark:text-slate-500 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-500/10"
 										title="Show count, source, familiarity"
 										aria-label="Show details"
 									>
@@ -1766,7 +1773,7 @@
 									</button>
 									<button
 										onclick={() => toggleActions(result.word)}
-										class="p-1.5 rounded text-gray-400 hover:text-blue-600 hover:bg-blue-50"
+										class="p-1.5 rounded text-gray-400 dark:text-slate-500 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-500/10"
 										title="Show options"
 										aria-label="Show options"
 									>
@@ -1776,8 +1783,8 @@
 							</div>
 
 							{#if expandedInfo.has(result.word)}
-								<div class="flex flex-wrap items-center gap-2 border-t border-gray-50 px-4 pt-2 pb-3 text-sm">
-									<span class="text-gray-600">Count: {result.count}</span>
+								<div class="flex flex-wrap items-center gap-2 border-t border-gray-50 dark:border-slate-800 px-4 pt-2 pb-3 text-sm">
+									<span class="text-gray-600 dark:text-slate-400">Count: {result.count}</span>
 									<span
 										class="inline-block text-center text-xs px-2 py-1 rounded-full {bucketColor(result.source)}"
 										title={result.source === 'longest_match_only' ? 'Found only by the legacy longest-matching pass — not confirmed by the main segmenter. Likely a dictionary gap; review before trusting it.' : ''}
@@ -1791,14 +1798,14 @@
 										{familiarityLabel(currentFamiliarity(result))}
 									</span>
 								</div>
-								<div class="border-t border-gray-50 px-4 pt-2 pb-3">
-									<p class="text-xs font-medium text-gray-400 uppercase tracking-wide mb-1">Context</p>
+								<div class="border-t border-gray-50 dark:border-slate-800 px-4 pt-2 pb-3">
+									<p class="text-xs font-medium text-gray-400 dark:text-slate-500 uppercase tracking-wide mb-1">Context</p>
 									{@render contextList(result.word)}
 								</div>
 							{/if}
 
 							{#if expandedActions.has(result.word)}
-								<div class="space-y-2 border-t border-gray-50 px-4 pt-2 pb-3">
+								<div class="space-y-2 border-t border-gray-50 dark:border-slate-800 px-4 pt-2 pb-3">
 									<div class="flex gap-1">
 										{#each [1, 2, 3, 4, 5] as score}
 											<button
@@ -1806,8 +1813,8 @@
 												disabled={updatingWord === result.word}
 												class="w-7 h-7 rounded text-xs font-medium disabled:opacity-50
 												{currentFamiliarity(result) === score
-													? 'bg-blue-600 text-white'
-													: 'bg-gray-100 text-gray-600 hover:bg-gray-200'}"
+													? 'bg-blue-600 dark:bg-blue-500 text-white'
+													: 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700'}"
 											>
 												{score}
 											</button>
@@ -1816,7 +1823,7 @@
 											<button
 												onclick={() => setFamiliarity(result.word, null)}
 												disabled={updatingWord === result.word}
-												class="w-7 h-7 rounded text-xs font-medium bg-gray-100 text-gray-400 hover:bg-gray-200 disabled:opacity-50"
+												class="w-7 h-7 rounded text-xs font-medium bg-gray-100 text-gray-400 hover:bg-gray-200 dark:bg-slate-800 dark:text-slate-500 dark:hover:bg-slate-700 disabled:opacity-50"
 											>
 												✕
 											</button>
@@ -1829,7 +1836,7 @@
 											<button
 												onclick={() => unmarkStarred(result.word)}
 												disabled={togglingStarred === result.word}
-												class="p-1.5 rounded text-amber-500 hover:text-red-600 hover:bg-red-50 disabled:opacity-50"
+												class="p-1.5 rounded text-amber-500 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10 disabled:opacity-50"
 												title="Starred — click to unstar"
 												aria-label="Starred — click to unstar"
 											>
@@ -1839,7 +1846,7 @@
 											<button
 												onclick={() => markAsStarred(result.word)}
 												disabled={togglingStarred === result.word}
-												class="p-1.5 rounded text-gray-400 hover:text-amber-500 hover:bg-amber-50 disabled:opacity-50"
+												class="p-1.5 rounded text-gray-400 dark:text-slate-500 hover:text-amber-500 hover:bg-amber-50 disabled:opacity-50"
 												title="Star as interesting"
 												aria-label="Star as interesting"
 											>
@@ -1850,7 +1857,7 @@
 											<button
 												onclick={() => unmarkGarbage(result.word)}
 												disabled={togglingGarbage === result.word}
-												class="p-1.5 rounded text-red-600 hover:text-red-800 hover:bg-red-50 disabled:opacity-50"
+												class="p-1.5 rounded text-red-600 dark:text-red-400 hover:text-red-800 dark:hover:text-red-300 hover:bg-red-50 dark:hover:bg-red-500/10 disabled:opacity-50"
 												title="Marked as garbage — click to unmark"
 												aria-label="Marked as garbage — click to unmark"
 											>
@@ -1860,7 +1867,7 @@
 											<button
 												onclick={() => markAsGarbage(result.word)}
 												disabled={togglingGarbage === result.word}
-												class="p-1.5 rounded text-gray-400 hover:text-red-600 hover:bg-red-50 disabled:opacity-50"
+												class="p-1.5 rounded text-gray-400 dark:text-slate-500 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10 disabled:opacity-50"
 												title="Mark as garbage — hidden by default, but kept in the results"
 												aria-label="Mark as garbage"
 											>

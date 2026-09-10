@@ -110,54 +110,54 @@
 
 <svelte:head><title>Account - Mandarin Tools</title></svelte:head>
 
-<div class="min-h-screen bg-gray-50">
-	<nav class="bg-white shadow-sm px-6 py-4 flex items-center justify-between gap-4">
+<div class="min-h-screen bg-gray-50 dark:bg-slate-950">
+	<nav class="bg-white dark:bg-slate-900 shadow-sm px-6 py-4 flex items-center justify-between gap-4">
 		<div class="flex items-center gap-4">
-			<a href="/" class="text-gray-400 hover:text-blue-600" aria-label="Home" title="Home">
+			<a href="/" class="text-gray-400 dark:text-slate-500 hover:text-blue-600 dark:hover:text-blue-400" aria-label="Home" title="Home">
 				{@render iconHome()}
 			</a>
-			<h1 class="text-xl font-bold text-gray-800">Account</h1>
+			<h1 class="text-xl font-bold text-gray-800 dark:text-slate-200">Account</h1>
 		</div>
 		<AccountMenu />
 	</nav>
 
 	<main class="max-w-2xl mx-auto px-6 py-8">
 		{#if loadError}
-			<div class="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded mb-4">
+			<div class="bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/30 text-red-700 dark:text-red-400 px-4 py-3 rounded mb-4">
 				{loadError}
 			</div>
 		{/if}
 
 		{#if loading}
-			<p class="text-gray-500">Loading...</p>
+			<p class="text-gray-500 dark:text-slate-400">Loading...</p>
 		{:else if user}
 			<!-- Identity - read-only. Editing username/email raises its own
 			     questions (uniqueness checks, whether an email change needs
 			     re-verification) deliberately left for a later pass, not built
 			     into this one - see the plan this page came from. -->
-			<div class="bg-white rounded-lg shadow-sm p-6 mb-6">
-				<h2 class="text-sm font-semibold text-gray-700 mb-4">Account details</h2>
+			<div class="bg-white dark:bg-slate-900 rounded-lg shadow-sm p-6 mb-6">
+				<h2 class="text-sm font-semibold text-gray-700 dark:text-slate-300 mb-4">Account details</h2>
 				<dl class="space-y-3 text-sm">
 					<div class="flex justify-between">
-						<dt class="text-gray-500">Username</dt>
-						<dd class="text-gray-800 font-medium">{user.username}</dd>
+						<dt class="text-gray-500 dark:text-slate-400">Username</dt>
+						<dd class="text-gray-800 dark:text-slate-200 font-medium">{user.username}</dd>
 					</div>
 					<div class="flex justify-between">
-						<dt class="text-gray-500">Email</dt>
-						<dd class="text-gray-800 font-medium">{user.email}</dd>
+						<dt class="text-gray-500 dark:text-slate-400">Email</dt>
+						<dd class="text-gray-800 dark:text-slate-200 font-medium">{user.email}</dd>
 					</div>
 					<div class="flex justify-between">
-						<dt class="text-gray-500">Member since</dt>
-						<dd class="text-gray-800 font-medium">{new Date(user.created_at).toLocaleDateString()}</dd>
+						<dt class="text-gray-500 dark:text-slate-400">Member since</dt>
+						<dd class="text-gray-800 dark:text-slate-200 font-medium">{new Date(user.created_at).toLocaleDateString()}</dd>
 					</div>
 				</dl>
 			</div>
 
 			<!-- Change password -->
-			<div class="bg-white rounded-lg shadow-sm p-6 mb-6">
-				<h2 class="text-sm font-semibold text-gray-700 mb-4">Change password</h2>
+			<div class="bg-white dark:bg-slate-900 rounded-lg shadow-sm p-6 mb-6">
+				<h2 class="text-sm font-semibold text-gray-700 dark:text-slate-300 mb-4">Change password</h2>
 				{#if passwordError}
-					<div class="bg-red-50 border border-red-200 text-red-700 px-3 py-2 rounded text-sm mb-3">
+					<div class="bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/30 text-red-700 dark:text-red-400 px-3 py-2 rounded text-sm mb-3">
 						{passwordError}
 					</div>
 				{/if}
@@ -168,7 +168,7 @@
 				{/if}
 				<div class="space-y-3">
 					<div>
-						<label for="current-password" class="block text-xs text-gray-500 mb-1">Current password</label>
+						<label for="current-password" class="block text-xs text-gray-500 dark:text-slate-400 mb-1">Current password</label>
 						<input
 							id="current-password"
 							type="password"
@@ -177,7 +177,7 @@
 						/>
 					</div>
 					<div>
-						<label for="new-password" class="block text-xs text-gray-500 mb-1">New password</label>
+						<label for="new-password" class="block text-xs text-gray-500 dark:text-slate-400 mb-1">New password</label>
 						<input
 							id="new-password"
 							type="password"
@@ -186,22 +186,22 @@
 						/>
 					</div>
 					<div>
-						<label for="confirm-password" class="block text-xs text-gray-500 mb-1">Confirm new password</label>
+						<label for="confirm-password" class="block text-xs text-gray-500 dark:text-slate-400 mb-1">Confirm new password</label>
 						<input
 							id="confirm-password"
 							type="password"
 							bind:value={confirmPassword}
-							class="w-full border border-gray-300 rounded px-2 py-1.5 text-sm {passwordMismatch ? 'border-red-300' : ''}"
+							class="w-full border border-gray-300 rounded px-2 py-1.5 text-sm {passwordMismatch ? 'border-red-300 dark:border-red-500/40' : ''}"
 							onkeydown={(e) => { if (e.key === 'Enter') submitPasswordChange(); }}
 						/>
 						{#if passwordMismatch}
-							<p class="text-xs text-red-600 mt-1">Passwords do not match.</p>
+							<p class="text-xs text-red-600 dark:text-red-400 mt-1">Passwords do not match.</p>
 						{/if}
 					</div>
 					<button
 						onclick={submitPasswordChange}
 						disabled={!currentPassword || !newPassword || !confirmPassword || passwordMismatch || changingPassword}
-						class="text-sm px-4 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50"
+						class="text-sm px-4 py-1.5 bg-blue-600 dark:bg-blue-500 text-white rounded hover:bg-blue-700 dark:hover:bg-blue-600 disabled:opacity-50"
 					>
 						{changingPassword ? 'Changing...' : 'Change password'}
 					</button>
@@ -211,21 +211,21 @@
 			<!-- Danger zone - visually distinct (red border/heading) from
 			     everything else on the page, matching the convention that this
 			     is a different category of action, not just another form. -->
-			<div class="bg-white rounded-lg shadow-sm p-6 border-2 border-red-200">
-				<h2 class="text-sm font-semibold text-red-700 mb-1">Delete account</h2>
-				<p class="text-xs text-gray-500 mb-4">
+			<div class="bg-white dark:bg-slate-900 rounded-lg shadow-sm p-6 border-2 border-red-200 dark:border-red-500/30">
+				<h2 class="text-sm font-semibold text-red-700 dark:text-red-400 mb-1">Delete account</h2>
+				<p class="text-xs text-gray-500 dark:text-slate-400 mb-4">
 					Permanently deletes your account and everything tied to it - every text, analysis,
 					known/user/starred word, note, and stopword/garbage-word customization. This cannot
 					be undone.
 				</p>
 				{#if deleteError}
-					<div class="bg-red-50 border border-red-200 text-red-700 px-3 py-2 rounded text-sm mb-3">
+					<div class="bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/30 text-red-700 dark:text-red-400 px-3 py-2 rounded text-sm mb-3">
 						{deleteError}
 					</div>
 				{/if}
 				<div class="flex flex-wrap items-end gap-2">
 					<div>
-						<label for="delete-password" class="block text-xs text-gray-500 mb-1">Enter your password to confirm</label>
+						<label for="delete-password" class="block text-xs text-gray-500 dark:text-slate-400 mb-1">Enter your password to confirm</label>
 						<input
 							id="delete-password"
 							type="password"
@@ -237,7 +237,7 @@
 					<button
 						onclick={submitDeleteAccount}
 						disabled={!deletePassword || deleting}
-						class="text-sm px-4 py-1.5 bg-red-600 text-white rounded hover:bg-red-700 disabled:opacity-50"
+						class="text-sm px-4 py-1.5 bg-red-600 dark:bg-red-500 text-white rounded hover:bg-red-700 dark:hover:bg-red-600 disabled:opacity-50"
 					>
 						{deleting ? 'Deleting...' : 'Delete my account'}
 					</button>

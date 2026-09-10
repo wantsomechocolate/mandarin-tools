@@ -86,21 +86,21 @@
 	</svg>
 {/snippet}
 
-<div class="min-h-screen bg-gray-50">
+<div class="min-h-screen bg-gray-50 dark:bg-slate-950">
 	<!-- Same dynamic-title risk as analyze/[id] (a Chinese title has no
 	     spaces to wrap on) - min-w-0 + truncate + title= protects it. -->
-	<nav class="bg-white shadow-sm px-6 py-4 flex items-center justify-between gap-4">
+	<nav class="bg-white dark:bg-slate-900 shadow-sm px-6 py-4 flex items-center justify-between gap-4">
 		<div class="flex items-center gap-4 min-w-0">
-			<a href="/" class="text-gray-400 hover:text-blue-600 shrink-0" aria-label="Home" title="Home">
+			<a href="/" class="text-gray-400 dark:text-slate-500 hover:text-blue-600 dark:hover:text-blue-400 shrink-0" aria-label="Home" title="Home">
 				{@render iconHome()}
 			</a>
-			<h1 class="text-xl font-bold text-gray-800 min-w-0 truncate" title={inputText?.title ?? 'Untitled'}>
+			<h1 class="text-xl font-bold text-gray-800 dark:text-slate-200 min-w-0 truncate" title={inputText?.title ?? 'Untitled'}>
 				{inputText?.title ?? 'Untitled'}
 			</h1>
 			{#if inputText && inputText.analyses.length > 0}
 				<a
 					href="/analyze/{inputText.analyses[0].id}"
-					class="text-gray-400 hover:text-blue-600 shrink-0"
+					class="text-gray-400 dark:text-slate-500 hover:text-blue-600 dark:hover:text-blue-400 shrink-0"
 					aria-label="View latest results"
 					title="View latest results"
 				>
@@ -113,58 +113,58 @@
 
 	<main class="max-w-3xl mx-auto px-6 py-8">
 		{#if error}
-			<div class="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded mb-4">
+			<div class="bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/30 text-red-700 dark:text-red-400 px-4 py-3 rounded mb-4">
 				{error}
 			</div>
 		{/if}
 
 		{#if loading}
-			<p class="text-gray-500">Loading...</p>
+			<p class="text-gray-500 dark:text-slate-400">Loading...</p>
 		{:else if inputText}
 			<!-- Source text -->
-			<div class="bg-white rounded-lg shadow-sm p-6 mb-6">
+			<div class="bg-white dark:bg-slate-900 rounded-lg shadow-sm p-6 mb-6">
 				<div class="flex justify-between items-start mb-4">
-					<p class="text-xs font-medium text-gray-400 uppercase tracking-wide">Source text</p>
-					<p class="text-xs text-gray-400">
+					<p class="text-xs font-medium text-gray-400 dark:text-slate-500 uppercase tracking-wide">Source text</p>
+					<p class="text-xs text-gray-400 dark:text-slate-500">
 						Added {new Date(inputText.created_at).toLocaleDateString()}
 					</p>
 				</div>
-				<p class="whitespace-pre-wrap leading-relaxed text-gray-800">{inputText.body}</p>
+				<p class="whitespace-pre-wrap leading-relaxed text-gray-800 dark:text-slate-200">{inputText.body}</p>
 			</div>
 
 			<!-- Analyses -->
-			<div class="bg-white rounded-lg shadow-sm p-6">
+			<div class="bg-white dark:bg-slate-900 rounded-lg shadow-sm p-6">
 				<div class="flex justify-between items-center mb-4">
-					<h2 class="text-lg font-semibold text-gray-800">
+					<h2 class="text-lg font-semibold text-gray-800 dark:text-slate-200">
 						Analyses ({inputText.analyses.length})
 					</h2>
 					<button
 						onclick={handleReanalyze}
 						disabled={reanalyzing}
-						class="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700 disabled:opacity-50 text-sm font-medium"
+						class="bg-blue-600 dark:bg-blue-500 text-white px-4 py-2 rounded-md hover:bg-blue-700 dark:hover:bg-blue-600 disabled:opacity-50 text-sm font-medium"
 					>
 						{reanalyzing ? 'Analyzing...' : '+ Re-analyze'}
 					</button>
 				</div>
 
 				{#if inputText.analyses.length === 0}
-					<p class="text-gray-400 text-sm">No analyses yet.</p>
+					<p class="text-gray-400 dark:text-slate-500 text-sm">No analyses yet.</p>
 				{:else}
 					<div class="space-y-2">
 						{#each inputText.analyses as analysis}
 							<a
 								href="/analyze/{analysis.id}"
-								class="flex justify-between items-center border border-gray-100 rounded-md px-4 py-3 hover:bg-gray-50"
+								class="flex justify-between items-center border border-gray-100 dark:border-slate-800 rounded-md px-4 py-3 hover:bg-gray-50 dark:hover:bg-slate-800"
 							>
 								<div>
-									<p class="text-sm font-medium text-gray-800">
+									<p class="text-sm font-medium text-gray-800 dark:text-slate-200">
 										{new Date(analysis.created_at).toLocaleString()}
 									</p>
-									<p class="text-xs text-gray-500 mt-0.5">
+									<p class="text-xs text-gray-500 dark:text-slate-400 mt-0.5">
 										{analysis.unique_words} unique words · {analysis.total_words} total
 									</p>
 								</div>
-								<span class="text-gray-400" title="View results">
+								<span class="text-gray-400 dark:text-slate-500" title="View results">
 									{@render iconBarChart('w-7 h-7')}
 									<span class="sr-only">View results</span>
 								</span>

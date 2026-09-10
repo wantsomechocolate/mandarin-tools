@@ -30,46 +30,46 @@
 	}
 </script>
 
-<div class="min-h-screen bg-gray-50 flex items-center justify-center">
-	<div class="bg-white p-8 rounded-lg shadow-md w-full max-w-md">
-		<h1 class="text-2xl font-bold text-gray-800 mb-6">Create an account</h1>
+<div class="min-h-screen bg-gray-50 dark:bg-slate-950 flex items-center justify-center">
+	<div class="bg-white dark:bg-slate-900 p-8 rounded-lg shadow-md w-full max-w-md">
+		<h1 class="text-2xl font-bold text-gray-800 dark:text-slate-200 mb-6">Create an account</h1>
 
 		{#if error}
-			<div class="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded mb-4">
+			<div class="bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/30 text-red-700 dark:text-red-400 px-4 py-3 rounded mb-4">
 				{error}
 			</div>
 		{/if}
 
 		<div class="space-y-4">
 			<div>
-				<label class="block text-sm font-medium text-gray-700 mb-1" for="email">Email</label>
+				<label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1" for="email">Email</label>
 				<input
 					id="email"
 					type="email"
 					bind:value={email}
-					class="w-full border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+					class="w-full border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400"
 					placeholder="you@example.com"
 				/>
 			</div>
 
 			<div>
-				<label class="block text-sm font-medium text-gray-700 mb-1" for="username">Username</label>
+				<label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1" for="username">Username</label>
 				<input
 					id="username"
 					type="text"
 					bind:value={username}
-					class="w-full border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+					class="w-full border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400"
 					placeholder="yourname"
 				/>
 			</div>
 
 			<div>
-				<label class="block text-sm font-medium text-gray-700 mb-1" for="password">Password</label>
+				<label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1" for="password">Password</label>
 				<input
 					id="password"
 					type="password"
 					bind:value={password}
-					class="w-full border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+					class="w-full border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400"
 					placeholder="••••••••"
 				/>
 			</div>
@@ -77,15 +77,15 @@
 			<button
 				onclick={handleSubmit}
 				disabled={loading}
-				class="w-full bg-blue-600 text-white py-2 px-4 rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed font-medium"
+				class="w-full bg-blue-600 dark:bg-blue-500 text-white py-2 px-4 rounded-md hover:bg-blue-700 dark:hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed font-medium"
 			>
 				{loading ? 'Creating account...' : 'Create account'}
 			</button>
 		</div>
 
-		<p class="mt-4 text-sm text-gray-600 text-center">
+		<p class="mt-4 text-sm text-gray-600 dark:text-slate-400 text-center">
 			Already have an account?
-			<a href="/login" class="text-blue-600 hover:underline">Sign in</a>
+			<a href="/login" class="text-blue-600 dark:text-blue-400 hover:underline">Sign in</a>
 		</p>
 	</div>
 </div>

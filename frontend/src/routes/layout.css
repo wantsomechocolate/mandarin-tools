@@ -1,1 +1,18 @@
 @import 'tailwindcss';
+
+/* Class-based dark mode (not media-query-only) - a `dark` class on <html>,
+   toggled via theme.svelte.ts and set on first paint by the inline script
+   in app.html, so a user's explicit Light/Dark choice can override their
+   OS preference (System just means "not overridden," see theme.svelte.ts's
+   docstring). */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* Hints the browser to render its OWN chrome (scrollbars, default
+   checkbox/radio styling, form-control focus rings) in the matching
+   palette too, not just the classes this app controls directly. */
+:root {
+	color-scheme: light;
+}
+:root.dark {
+	color-scheme: dark;
+}

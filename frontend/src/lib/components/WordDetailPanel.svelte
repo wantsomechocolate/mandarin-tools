@@ -2,6 +2,7 @@
 	import * as api from '$lib/api';
 	import { familiarityLabel, familiarityColor, rarityLabel, rarityColor } from '$lib/wordDisplay';
 	import { isEntryEditable, type WordDetailContext } from '$lib/wordDetailContext';
+	import { saveWordDraft, loadWordDraft, clearWordDraft } from '$lib/wordDraftPersistence';
 
 	interface HskForm {
 		traditional: string | null;
@@ -190,6 +191,13 @@
 	let visAddingText = $state(false);
 	let visAddingAnalysis = $state(false);
 
+	// Tracks which word draft-restoration has already run for, so it fires
+	// exactly once per genuine visit to a word - see load()'s own comment
+	// below for why this can't just be "every call to load()". Plain
+	// (non-$state) - this is internal bookkeeping load() reads/writes
+	// itself, never read reactively/from the template.
+	let restoredDraftForWord: string | null = null;
+
 	async function load() {
 		loading = true;
 		error = '';
@@ -203,6 +211,37 @@
 		visAddingAnalysis = false;
 		editingNote = false;
 		noteDraft = '';
+		newSentenceDraft = '';
+		// Restore an in-progress draft for this word, if one was saved before
+		// an interruption (e.g. a mobile browser discarding/reloading the page
+		// while backgrounded - see wordDraftPersistence.ts's docstring).
+		// Applied AFTER the resets above so a genuine switch to a different
+		// word (no saved draft for it) still starts clean, exactly as before.
+		//
+		// Gated to run only the FIRST time load() runs for this particular
+		// word, not on every call - load() is also called directly by
+		// refreshEntries() after a save/delete, on the SAME word, and by
+		// then the draft has already been (or is about to be) cleared by
+		// the persistence $effect below reacting to cancelEditingUserWord's
+		// own reset. Without this gate, restoring unconditionally here would
+		// race that clear - reading sessionStorage before the effect has
+		// flushed - and immediately reopen the just-saved edit form with the
+		// stale pre-save draft, undoing the save.
+		if (restoredDraftForWord !== word) {
+			restoredDraftForWord = word;
+			const savedDraft = loadWordDraft(word);
+			if (savedDraft) {
+				newSentenceDraft = savedDraft.newSentenceDraft;
+				editingNote = savedDraft.editingNote;
+				noteDraft = savedDraft.noteDraft;
+				uwAddingGlobal = savedDraft.uwAddingGlobal;
+				uwAddingText = savedDraft.uwAddingText;
+				uwAddingAnalysis = savedDraft.uwAddingAnalysis;
+				uwNewDraft = savedDraft.uwNewDraft;
+				uwEditingIds = new Set(savedDraft.uwEditingIds);
+				uwDrafts = savedDraft.uwDrafts;
+			}
+		}
 		try {
 			detail = await api.getWordDetail(word) as WordDetail;
 		} catch (e: unknown) {
@@ -258,6 +297,30 @@
 		word;
 		load();
 		loadEnrichment();
+	});
+
+	// Persists the in-progress UserWord/Note/sample-sentence drafts for this
+	// word to sessionStorage as they change (see wordDraftPersistence.ts's
+	// docstring for why - recovering from a mobile browser discarding/
+	// reloading this page mid-edit) - load()'s restoration above is the
+	// other half. Cleared automatically once nothing is actually in
+	// progress (every add/edit mode closed, no unsaved sentence text), so
+	// this never lingers after a normal Save or Cancel - both already reset
+	// the fields this checks.
+	$effect(() => {
+		const isEmpty = !newSentenceDraft.trim() && !editingNote
+			&& !uwAddingGlobal && !uwAddingText && !uwAddingAnalysis && uwEditingIds.size === 0;
+		if (isEmpty) {
+			clearWordDraft(word);
+			return;
+		}
+		saveWordDraft(word, {
+			newSentenceDraft,
+			editingNote, noteDraft,
+			uwAddingGlobal, uwAddingText, uwAddingAnalysis, uwNewDraft: { ...uwNewDraft },
+			uwEditingIds: [...uwEditingIds],
+			uwDrafts: Object.fromEntries([...uwEditingIds].map((id) => [id, uwDrafts[id]])),
+		});
 	});
 
 	const globalUserWord = $derived(detail?.user_word_entries.find((e: UserWordEntry) => e.scope === 'global') ?? null);
@@ -610,33 +673,33 @@
 	text/analysis" affordance appears - this falls out of isEntryEditable's
 	rule with no special case, not a separate "global page" branch.
 -->
-<div class="w-full lg:w-72 max-h-[85vh] overflow-y-auto bg-white rounded-t-2xl lg:rounded-lg shadow-sm p-4">
+<div class="w-full lg:w-72 max-h-[85vh] overflow-y-auto bg-white dark:bg-slate-900 rounded-t-2xl lg:rounded-lg shadow-sm p-4">
 	{#if loading}
-		<p class="text-gray-500 text-sm">Loading...</p>
+		<p class="text-gray-500 dark:text-slate-400 text-sm">Loading...</p>
 	{:else if error && !detail}
-		<div class="bg-red-50 border border-red-200 text-red-700 px-3 py-2 rounded text-sm mb-2">{error}</div>
-		<button onclick={onClose} class="text-sm text-gray-500 hover:text-gray-700">Close</button>
+		<div class="bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/30 text-red-700 dark:text-red-400 px-3 py-2 rounded text-sm mb-2">{error}</div>
+		<button onclick={onClose} class="text-sm text-gray-500 dark:text-slate-400 hover:text-gray-700 dark:hover:text-slate-300">Close</button>
 	{:else if detail}
 		<div class="flex justify-between items-start mb-3">
 			<h2 class="text-3xl font-medium">{detail.word}</h2>
-			<button onclick={onClose} class="text-gray-400 hover:text-gray-600">✕</button>
+			<button onclick={onClose} class="text-gray-400 dark:text-slate-500 hover:text-gray-600 dark:hover:text-slate-300">✕</button>
 		</div>
 
 		{#if error}
-			<div class="bg-red-50 border border-red-200 text-red-700 px-3 py-2 rounded text-sm mb-3">{error}</div>
+			<div class="bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/30 text-red-700 dark:text-red-400 px-3 py-2 rounded text-sm mb-3">{error}</div>
 		{/if}
 
 		<!-- Familiarity + quick actions - always global, always fully
 		     editable regardless of context (see KnownWord/StarredWord's
 		     docstrings, models.py). -->
-		<div class="border-b border-gray-100 mb-4 pb-4">
+		<div class="border-b border-gray-100 dark:border-slate-800 mb-4 pb-4">
 			<div class="flex flex-wrap gap-1 mb-2">
 				{#each [1, 2, 3, 4, 5] as score}
 					<button
 						onclick={() => setFamiliarity(score)}
 						disabled={updatingFamiliarity}
 						class="w-8 h-8 rounded text-xs font-medium disabled:opacity-50
-						{detail.familiarity === score ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}"
+						{detail.familiarity === score ? 'bg-blue-600 dark:bg-blue-500 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700'}"
 					>
 						{score}
 					</button>
@@ -645,7 +708,7 @@
 					<button
 						onclick={() => setFamiliarity(null)}
 						disabled={updatingFamiliarity}
-						class="w-8 h-8 rounded text-xs font-medium bg-gray-100 text-gray-400 hover:bg-gray-200 disabled:opacity-50"
+						class="w-8 h-8 rounded text-xs font-medium bg-gray-100 text-gray-400 hover:bg-gray-200 dark:bg-slate-800 dark:text-slate-500 dark:hover:bg-slate-700 disabled:opacity-50"
 					>
 						✕
 					</button>
@@ -655,7 +718,7 @@
 				<button
 					onclick={toggleGlobalUserWord}
 					disabled={togglingGlobalUserWord}
-					class="p-1.5 rounded {globalUserWord ? 'text-emerald-600' : 'text-gray-400'} hover:text-blue-600 hover:bg-blue-50 disabled:opacity-50"
+					class="p-1.5 rounded {globalUserWord ? 'text-emerald-600' : 'text-gray-400 dark:text-slate-500'} hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-500/10 disabled:opacity-50"
 					title={globalUserWord ? 'In your dictionary globally — click to remove' : 'Add to your custom dictionary globally'}
 					aria-label="Global dictionary entry"
 				>
@@ -666,7 +729,7 @@
 				<button
 					onclick={toggleStarred}
 					disabled={togglingStarred}
-					class="p-1.5 rounded {detail.is_starred ? 'text-amber-500' : 'text-gray-400'} hover:text-amber-500 hover:bg-amber-50 disabled:opacity-50"
+					class="p-1.5 rounded {detail.is_starred ? 'text-amber-500' : 'text-gray-400 dark:text-slate-500'} hover:text-amber-500 hover:bg-amber-50 disabled:opacity-50"
 					title={detail.is_starred ? 'Starred — click to unstar' : 'Star as interesting'}
 					aria-label="Starred"
 				>
@@ -677,7 +740,7 @@
 				<button
 					onclick={toggleGarbage}
 					disabled={togglingGarbage}
-					class="p-1.5 rounded {detail.is_garbage ? 'text-red-600' : 'text-gray-400'} hover:text-red-600 hover:bg-red-50 disabled:opacity-50"
+					class="p-1.5 rounded {detail.is_garbage ? 'text-red-600 dark:text-red-400' : 'text-gray-400 dark:text-slate-500'} hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10 disabled:opacity-50"
 					title={detail.is_garbage ? 'Marked as garbage — click to unmark' : 'Mark as garbage'}
 					aria-label="Garbage"
 				>
@@ -690,7 +753,7 @@
 		</div>
 
 		<!-- Corpus frequency -->
-		<p class="text-xs font-medium text-gray-400 uppercase tracking-wide mb-2">Corpus frequency</p>
+		<p class="text-xs font-medium text-gray-400 dark:text-slate-500 uppercase tracking-wide mb-2">Corpus frequency</p>
 		{#if detail.rarity_tier}
 			<span
 				class="text-xs px-2 py-1 rounded-full {rarityColor(detail.rarity_tier)}"
@@ -701,81 +764,81 @@
 				{rarityLabel(detail.rarity_tier)}
 			</span>
 		{:else}
-			<p class="text-sm text-gray-400">No frequency data for this word.</p>
+			<p class="text-sm text-gray-400 dark:text-slate-500">No frequency data for this word.</p>
 		{/if}
 
 		<!-- HSK -->
-		<div class="border-t border-gray-100 mt-4 pt-3">
-			<p class="text-xs font-medium text-gray-400 uppercase tracking-wide mb-2">HSK</p>
+		<div class="border-t border-gray-100 dark:border-slate-800 mt-4 pt-3">
+			<p class="text-xs font-medium text-gray-400 dark:text-slate-500 uppercase tracking-wide mb-2">HSK</p>
 
 			{#if detail.hsk_v2_2012 || detail.hsk_v3_2021 || detail.hsk_v3_2026 || detail.forms.length > 0}
 				<div class="flex flex-wrap gap-1 mb-3">
 					{#if detail.hsk_v2_2012}
-						<span class="text-xs px-2 py-1 bg-blue-100 text-blue-700 rounded-full">HSK 2012: {detail.hsk_v2_2012}</span>
+						<span class="text-xs px-2 py-1 bg-blue-100 dark:bg-blue-500/15 text-blue-700 dark:text-blue-400 rounded-full">HSK 2012: {detail.hsk_v2_2012}</span>
 					{/if}
 					{#if detail.hsk_v3_2021}
-						<span class="text-xs px-2 py-1 bg-purple-100 text-purple-700 rounded-full">HSK 2021: {detail.hsk_v3_2021}</span>
+						<span class="text-xs px-2 py-1 bg-purple-100 text-purple-700 dark:bg-purple-500/15 dark:text-purple-300 rounded-full">HSK 2021: {detail.hsk_v3_2021}</span>
 					{/if}
 					{#if detail.hsk_v3_2026}
-						<span class="text-xs px-2 py-1 bg-green-100 text-green-700 rounded-full">HSK 2026: {detail.hsk_v3_2026}</span>
+						<span class="text-xs px-2 py-1 bg-green-100 text-green-700 dark:bg-green-500/15 dark:text-green-300 rounded-full">HSK 2026: {detail.hsk_v3_2026}</span>
 					{/if}
 				</div>
 
 				{#if detail.forms.length > 0}
 					<div class="space-y-3">
 						{#each detail.forms as form, i}
-							<div class="{i > 0 ? 'border-t border-gray-100 pt-3' : ''}">
+							<div class="{i > 0 ? 'border-t border-gray-100 dark:border-slate-800 pt-3' : ''}">
 								{#if detail.forms.length > 1}
-									<p class="text-xs text-gray-400 mb-1">Form {i + 1}</p>
+									<p class="text-xs text-gray-400 dark:text-slate-500 mb-1">Form {i + 1}</p>
 								{/if}
 								{#if form.traditional && form.traditional !== detail.word}
-									<p class="text-sm text-gray-600 mb-1">
+									<p class="text-sm text-gray-600 dark:text-slate-400 mb-1">
 										Traditional: <span class="font-medium">{form.traditional}</span>
 									</p>
 								{/if}
 								{#if form.pinyin}
-									<p class="text-sm text-blue-600 mb-1">{form.pinyin}</p>
+									<p class="text-sm text-blue-600 dark:text-blue-400 mb-1">{form.pinyin}</p>
 								{/if}
 								{#if form.meanings.length > 0}
-									<ul class="text-sm text-gray-700 space-y-0.5">
+									<ul class="text-sm text-gray-700 dark:text-slate-300 space-y-0.5">
 										{#each form.meanings as meaning}
 											<li>• {meaning}</li>
 										{/each}
 									</ul>
 								{/if}
 								{#if form.classifiers.length > 0}
-									<p class="text-xs text-gray-500 mt-1">Classifiers: {form.classifiers.join(', ')}</p>
+									<p class="text-xs text-gray-500 dark:text-slate-400 mt-1">Classifiers: {form.classifiers.join(', ')}</p>
 								{/if}
 							</div>
 						{/each}
 					</div>
 				{/if}
 			{:else}
-				<p class="text-sm text-gray-400">No HSK entry for this word.</p>
+				<p class="text-sm text-gray-400 dark:text-slate-500">No HSK entry for this word.</p>
 			{/if}
 		</div>
 
 		<!-- CC-CEDICT -->
-		<div class="border-t border-gray-100 mt-4 pt-3">
-			<p class="text-xs font-medium text-gray-400 uppercase tracking-wide mb-2">CC-CEDICT</p>
+		<div class="border-t border-gray-100 dark:border-slate-800 mt-4 pt-3">
+			<p class="text-xs font-medium text-gray-400 dark:text-slate-500 uppercase tracking-wide mb-2">CC-CEDICT</p>
 
 			{#if detail.cedict.length > 0}
 				<div class="space-y-3">
 					{#each detail.cedict as sense, i}
-						<div class="{i > 0 ? 'border-t border-gray-100 pt-3' : ''}">
+						<div class="{i > 0 ? 'border-t border-gray-100 dark:border-slate-800 pt-3' : ''}">
 							{#if detail.cedict.length > 1}
-								<p class="text-xs text-gray-400 mb-1">Sense {i + 1}</p>
+								<p class="text-xs text-gray-400 dark:text-slate-500 mb-1">Sense {i + 1}</p>
 							{/if}
 							{#if sense.traditional && sense.traditional !== detail.word}
-								<p class="text-sm text-gray-600 mb-1">
+								<p class="text-sm text-gray-600 dark:text-slate-400 mb-1">
 									Traditional: <span class="font-medium">{sense.traditional}</span>
 								</p>
 							{/if}
 							{#if sense.pinyin}
-								<p class="text-sm text-blue-600 mb-1">{sense.pinyin}</p>
+								<p class="text-sm text-blue-600 dark:text-blue-400 mb-1">{sense.pinyin}</p>
 							{/if}
 							{#if sense.definitions.length > 0}
-								<ul class="text-sm text-gray-700 space-y-0.5">
+								<ul class="text-sm text-gray-700 dark:text-slate-300 space-y-0.5">
 									{#each sense.definitions as definition}
 										<li>• {definition}</li>
 									{/each}
@@ -785,7 +848,7 @@
 					{/each}
 				</div>
 			{:else}
-				<p class="text-sm text-gray-400">No CC-CEDICT entry for this word.</p>
+				<p class="text-sm text-gray-400 dark:text-slate-500">No CC-CEDICT entry for this word.</p>
 			{/if}
 		</div>
 
@@ -796,24 +859,24 @@
 		     see WordEnrichment's docstring (models.py, backend) for the full
 		     design and why this is shared across every user. -->
 		{#if detail.cedict.length === 0 && detail.forms.length === 0}
-			<div class="border-t border-gray-100 mt-4 pt-3">
-				<p class="text-xs font-medium text-gray-400 uppercase tracking-wide mb-2">Auto-generated</p>
+			<div class="border-t border-gray-100 dark:border-slate-800 mt-4 pt-3">
+				<p class="text-xs font-medium text-gray-400 dark:text-slate-500 uppercase tracking-wide mb-2">Auto-generated</p>
 
 				{#if enrichmentError}
-					<p class="text-sm text-red-600 mb-2">{enrichmentError}</p>
+					<p class="text-sm text-red-600 dark:text-red-400 mb-2">{enrichmentError}</p>
 				{/if}
 
 				{#if enrichmentLoading}
-					<p class="text-sm text-gray-400">Loading...</p>
+					<p class="text-sm text-gray-400 dark:text-slate-500">Loading...</p>
 				{:else if enrichment?.pinyin || enrichment?.translation}
 					<div class="space-y-1 mb-2">
 						{#if enrichment.pinyin}
-							<p class="text-sm text-blue-600">{enrichment.pinyin}</p>
+							<p class="text-sm text-blue-600 dark:text-blue-400">{enrichment.pinyin}</p>
 						{/if}
 						{#if enrichment.translation}
-							<p class="text-sm text-gray-700">
+							<p class="text-sm text-gray-700 dark:text-slate-300">
 								{enrichment.translation}
-								<span class="text-xs text-gray-400">
+								<span class="text-xs text-gray-400 dark:text-slate-500">
 									— {enrichment.google_translation ? 'Google Translate' : 'local model'}
 								</span>
 							</p>
@@ -827,19 +890,19 @@
 					<button
 						onclick={generateFallback}
 						disabled={enrichmentGenerating}
-						class="text-xs text-blue-600 hover:text-blue-800 disabled:opacity-50"
+						class="text-xs text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 disabled:opacity-50"
 					>
 						{enrichmentGenerating ? 'Regenerating...' : enrichment.ctranslate2_stale ? 'Refresh' : 'Regenerate'}
 					</button>
 				{:else}
-					<p class="text-sm text-gray-400 mb-2">
+					<p class="text-sm text-gray-400 dark:text-slate-500 mb-2">
 						No dictionary entry for this word - pinyin and a rough translation can be generated
 						from a local model instead.
 					</p>
 					<button
 						onclick={generateFallback}
 						disabled={enrichmentGenerating}
-						class="text-sm px-3 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50"
+						class="text-sm px-3 py-1.5 bg-blue-600 dark:bg-blue-500 text-white rounded hover:bg-blue-700 dark:hover:bg-blue-600 disabled:opacity-50"
 					>
 						{enrichmentGenerating ? 'Generating...' : 'Generate'}
 					</button>
@@ -848,24 +911,24 @@
 		{/if}
 
 		<!-- Your entries (UserWord) -->
-		<div class="border-t border-gray-100 mt-4 pt-3">
-			<p class="text-xs font-medium text-gray-400 uppercase tracking-wide mb-2">Your entries</p>
+		<div class="border-t border-gray-100 dark:border-slate-800 mt-4 pt-3">
+			<p class="text-xs font-medium text-gray-400 dark:text-slate-500 uppercase tracking-wide mb-2">Your entries</p>
 
 			{#snippet uwFields(draftKey: string, draft: { pronunciation: string; meaning: string; notes: string; affectsDag: AffectsDag | null }, showAffectsDag: boolean, idPrefix: string)}
 				<div class="space-y-2">
 					<div>
-						<label for="{idPrefix}-pron" class="text-xs text-gray-500">Pronunciation</label>
+						<label for="{idPrefix}-pron" class="text-xs text-gray-500 dark:text-slate-400">Pronunciation</label>
 						<input id="{idPrefix}-pron" type="text" bind:value={draft.pronunciation} placeholder="e.g. dà yě láng" class="w-full border border-gray-300 rounded px-2 py-1 text-sm mt-0.5" />
 					</div>
 					<div>
-						<label for="{idPrefix}-meaning" class="text-xs text-gray-500">
+						<label for="{idPrefix}-meaning" class="text-xs text-gray-500 dark:text-slate-400">
 							Meaning / definition
-							<span class="text-gray-400 font-normal">- separate senses with "/", CC-CEDICT style</span>
+							<span class="text-gray-400 dark:text-slate-500 font-normal">- separate senses with "/", CC-CEDICT style</span>
 						</label>
 						<textarea id="{idPrefix}-meaning" bind:value={draft.meaning} placeholder="to run/to flee/(of a horse) to gallop" rows="2" class="w-full border border-gray-300 rounded px-2 py-1 text-sm mt-0.5"></textarea>
 					</div>
 					<div>
-						<label for="{idPrefix}-notes" class="text-xs text-gray-500">Notes</label>
+						<label for="{idPrefix}-notes" class="text-xs text-gray-500 dark:text-slate-400">Notes</label>
 						<textarea id="{idPrefix}-notes" bind:value={draft.notes} placeholder="Any other notes — context, mnemonics, etc." rows="2" class="w-full border border-gray-300 rounded px-2 py-1 text-sm mt-0.5"></textarea>
 					</div>
 					{#if showAffectsDag}
@@ -876,7 +939,7 @@
 						     docstring (models.py) for the full 3-state design.
 						     Hidden for an analysis-scoped entry - it can never have
 						     an observable effect there. -->
-						<div class="text-xs text-gray-500">
+						<div class="text-xs text-gray-500 dark:text-slate-400">
 							<span class="block mb-1">Segmentation weight</span>
 							<label class="flex items-center gap-1.5 mb-0.5">
 								<input type="radio" name="{idPrefix}-affects-dag" checked={draft.affectsDag === 'increase'} onchange={() => draft.affectsDag = 'increase'} />
@@ -903,44 +966,44 @@
 				{@const editing = uwEditingIds.has(entry.id)}
 				{@const editable = isEntryEditable(entry, context)}
 				{@const link = jumpLink(entry)}
-				<div class="mb-2 pb-2 border-b border-gray-50 last:border-0">
+				<div class="mb-2 pb-2 border-b border-gray-50 dark:border-slate-800 last:border-0">
 					<div class="flex justify-between items-center mb-1 gap-2">
-						<span class="text-xs font-medium text-gray-500 truncate">{entryLabel(entry)}</span>
+						<span class="text-xs font-medium text-gray-500 dark:text-slate-400 truncate">{entryLabel(entry)}</span>
 						{#if editable}
 							<div class="flex gap-2 shrink-0">
 								{#if !editing}
-									<button onclick={() => startEditingUserWord(entry)} class="text-xs text-blue-600 hover:text-blue-800">Edit</button>
+									<button onclick={() => startEditingUserWord(entry)} class="text-xs text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300">Edit</button>
 								{/if}
-								<button onclick={() => deleteUserWordEntry(entry)} disabled={uwSavingId === entry.id} class="text-xs text-red-400 hover:text-red-600 disabled:opacity-50">Delete</button>
+								<button onclick={() => deleteUserWordEntry(entry)} disabled={uwSavingId === entry.id} class="text-xs text-red-400 hover:text-red-600 dark:hover:text-red-400 disabled:opacity-50">Delete</button>
 							</div>
 						{:else if link}
-							<a href={link} class="text-xs text-blue-600 hover:text-blue-800 shrink-0">View →</a>
+							<a href={link} class="text-xs text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 shrink-0">View →</a>
 						{/if}
 					</div>
 
 					{#if editing}
 						{@render uwFields(`entry-${entry.id}`, uwDrafts[entry.id], entry.scope !== 'analysis', `uw-${entry.id}`)}
 						<div class="flex gap-2 pt-1">
-							<button onclick={() => saveUserWordEntry(entry)} disabled={uwSavingId === entry.id} class="text-xs px-3 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50">
+							<button onclick={() => saveUserWordEntry(entry)} disabled={uwSavingId === entry.id} class="text-xs px-3 py-1.5 bg-blue-600 dark:bg-blue-500 text-white rounded hover:bg-blue-700 dark:hover:bg-blue-600 disabled:opacity-50">
 								{uwSavingId === entry.id ? 'Saving...' : 'Save'}
 							</button>
-							<button onclick={() => cancelEditingUserWord(entry.id)} disabled={uwSavingId === entry.id} class="text-xs px-3 py-1.5 text-gray-500 hover:text-gray-700">Cancel</button>
+							<button onclick={() => cancelEditingUserWord(entry.id)} disabled={uwSavingId === entry.id} class="text-xs px-3 py-1.5 text-gray-500 dark:text-slate-400 hover:text-gray-700 dark:hover:text-slate-300">Cancel</button>
 						</div>
 					{:else}
 						<div class="space-y-1">
-							{#if entry.pronunciation}<p class="text-sm text-blue-600 break-words">{entry.pronunciation}</p>{/if}
-							{#if entry.meaning}<p class="text-sm text-gray-700 break-words">{entry.meaning}</p>{/if}
-							{#if entry.notes}<p class="text-xs text-gray-500 italic break-words">{entry.notes}</p>{/if}
-							{#if !entry.pronunciation && !entry.meaning && !entry.notes}<p class="text-sm text-gray-400">No details added yet.</p>{/if}
+							{#if entry.pronunciation}<p class="text-sm text-blue-600 dark:text-blue-400 break-words">{entry.pronunciation}</p>{/if}
+							{#if entry.meaning}<p class="text-sm text-gray-700 dark:text-slate-300 break-words">{entry.meaning}</p>{/if}
+							{#if entry.notes}<p class="text-xs text-gray-500 dark:text-slate-400 italic break-words">{entry.notes}</p>{/if}
+							{#if !entry.pronunciation && !entry.meaning && !entry.notes}<p class="text-sm text-gray-400 dark:text-slate-500">No details added yet.</p>{/if}
 							{#if entry.scope !== 'analysis' && entry.affects_dag === 'decrease'}
-								<span class="inline-block text-xs px-2 py-0.5 rounded-full bg-red-100 text-red-600">Decreased segmentation weight</span>
+								<span class="inline-block text-xs px-2 py-0.5 rounded-full bg-red-100 text-red-600 dark:bg-red-500/15 dark:text-red-300">Decreased segmentation weight</span>
 							{:else if entry.scope !== 'analysis' && entry.affects_dag === 'neutral'}
-								<span class="inline-block text-xs px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">Neutral segmentation weight</span>
+								<span class="inline-block text-xs px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 dark:bg-slate-500/15 dark:text-slate-400">Neutral segmentation weight</span>
 							{:else if entry.scope !== 'analysis' && entry.affects_dag === null}
-								<span class="inline-block text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-400">No segmentation preference (inherits)</span>
+								<span class="inline-block text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-400 dark:bg-slate-500/15 dark:text-slate-500">No segmentation preference (inherits)</span>
 							{/if}
 							{#if !editable}
-								<span class="inline-block text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-500">Read-only from here</span>
+								<span class="inline-block text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-500 dark:bg-slate-500/15 dark:text-slate-400">Read-only from here</span>
 							{/if}
 						</div>
 					{/if}
@@ -951,33 +1014,33 @@
 			{#if globalUserWord}
 				{@render uwEntryCard(globalUserWord)}
 			{:else if uwAddingGlobal}
-				<div class="mb-2 pb-2 border-b border-gray-50">
-					<span class="text-xs font-medium text-gray-500">Global</span>
+				<div class="mb-2 pb-2 border-b border-gray-50 dark:border-slate-800">
+					<span class="text-xs font-medium text-gray-500 dark:text-slate-400">Global</span>
 					{#if enrichment?.pinyin || enrichment?.translation}
-						<button onclick={fillFromEnrichment} class="block text-xs text-blue-600 hover:text-blue-800 mb-1.5">
+						<button onclick={fillFromEnrichment} class="block text-xs text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 mb-1.5">
 							Fill from auto-generated ({enrichment.pinyin}{enrichment.pinyin && enrichment.translation ? ' — ' : ''}{enrichment.translation})
 						</button>
 					{/if}
 					{@render uwFields('new-global', uwNewDraft, true, 'uw-new-global')}
 					<div class="flex gap-2 pt-1">
-						<button onclick={() => saveNewUserWord('global')} disabled={uwSavingId === -1} class="text-xs px-3 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50">
+						<button onclick={() => saveNewUserWord('global')} disabled={uwSavingId === -1} class="text-xs px-3 py-1.5 bg-blue-600 dark:bg-blue-500 text-white rounded hover:bg-blue-700 dark:hover:bg-blue-600 disabled:opacity-50">
 							{uwSavingId === -1 ? 'Saving...' : 'Save'}
 						</button>
-						<button onclick={() => cancelAddingUserWord('global')} disabled={uwSavingId === -1} class="text-xs px-3 py-1.5 text-gray-500 hover:text-gray-700">Cancel</button>
+						<button onclick={() => cancelAddingUserWord('global')} disabled={uwSavingId === -1} class="text-xs px-3 py-1.5 text-gray-500 dark:text-slate-400 hover:text-gray-700 dark:hover:text-slate-300">Cancel</button>
 					</div>
 				</div>
 			{:else}
-				<button onclick={() => startAddingUserWord('global')} class="text-xs text-blue-600 hover:text-blue-800 mb-2">+ Add global entry</button>
+				<button onclick={() => startAddingUserWord('global')} class="text-xs text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 mb-2">+ Add global entry</button>
 			{/if}
 
 			<!-- Text-specific -->
 			{#if textUserWords.length > 0}
-				<button onclick={() => uwTextExpanded = !uwTextExpanded} class="text-xs text-gray-500 hover:text-gray-700 flex items-center gap-1 mt-1">
+				<button onclick={() => uwTextExpanded = !uwTextExpanded} class="text-xs text-gray-500 dark:text-slate-400 hover:text-gray-700 dark:hover:text-slate-300 flex items-center gap-1 mt-1">
 					<span class="transition-transform {uwTextExpanded ? 'rotate-90' : ''}">▸</span>
 					Text-specific ({textUserWords.length})
 				</button>
 				{#if uwTextExpanded}
-					<div class="mt-1 pl-2 border-l-2 border-gray-100">
+					<div class="mt-1 pl-2 border-l-2 border-gray-100 dark:border-slate-800">
 						{#each textUserWords as entry (entry.id)}
 							{@render uwEntryCard(entry)}
 						{/each}
@@ -986,29 +1049,29 @@
 			{/if}
 			{#if context.type !== 'global' && !currentTextUserWord}
 				{#if uwAddingText}
-					<div class="mb-2 pb-2 border-b border-gray-50 mt-1">
-						<span class="text-xs font-medium text-gray-500">{context.textTitle ?? 'This text'}</span>
+					<div class="mb-2 pb-2 border-b border-gray-50 dark:border-slate-800 mt-1">
+						<span class="text-xs font-medium text-gray-500 dark:text-slate-400">{context.textTitle ?? 'This text'}</span>
 						{@render uwFields('new-text', uwNewDraft, true, 'uw-new-text')}
 						<div class="flex gap-2 pt-1">
-							<button onclick={() => saveNewUserWord('text')} disabled={uwSavingId === -1} class="text-xs px-3 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50">
+							<button onclick={() => saveNewUserWord('text')} disabled={uwSavingId === -1} class="text-xs px-3 py-1.5 bg-blue-600 dark:bg-blue-500 text-white rounded hover:bg-blue-700 dark:hover:bg-blue-600 disabled:opacity-50">
 								{uwSavingId === -1 ? 'Saving...' : 'Save'}
 							</button>
-							<button onclick={() => cancelAddingUserWord('text')} disabled={uwSavingId === -1} class="text-xs px-3 py-1.5 text-gray-500 hover:text-gray-700">Cancel</button>
+							<button onclick={() => cancelAddingUserWord('text')} disabled={uwSavingId === -1} class="text-xs px-3 py-1.5 text-gray-500 dark:text-slate-400 hover:text-gray-700 dark:hover:text-slate-300">Cancel</button>
 						</div>
 					</div>
 				{:else}
-					<button onclick={() => startAddingUserWord('text')} class="text-xs text-blue-600 hover:text-blue-800 mt-1 block">+ Add entry for this text</button>
+					<button onclick={() => startAddingUserWord('text')} class="text-xs text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 mt-1 block">+ Add entry for this text</button>
 				{/if}
 			{/if}
 
 			<!-- Analysis-specific -->
 			{#if analysisUserWords.length > 0}
-				<button onclick={() => uwAnalysisExpanded = !uwAnalysisExpanded} class="text-xs text-gray-500 hover:text-gray-700 flex items-center gap-1 mt-2">
+				<button onclick={() => uwAnalysisExpanded = !uwAnalysisExpanded} class="text-xs text-gray-500 dark:text-slate-400 hover:text-gray-700 dark:hover:text-slate-300 flex items-center gap-1 mt-2">
 					<span class="transition-transform {uwAnalysisExpanded ? 'rotate-90' : ''}">▸</span>
 					Analysis-specific ({analysisUserWords.length})
 				</button>
 				{#if uwAnalysisExpanded}
-					<div class="mt-1 pl-2 border-l-2 border-gray-100">
+					<div class="mt-1 pl-2 border-l-2 border-gray-100 dark:border-slate-800">
 						{#each analysisUserWords as entry (entry.id)}
 							{@render uwEntryCard(entry)}
 						{/each}
@@ -1017,18 +1080,18 @@
 			{/if}
 			{#if context.type === 'analysis' && !currentAnalysisUserWord}
 				{#if uwAddingAnalysis}
-					<div class="mb-2 pb-2 border-b border-gray-50 mt-1">
-						<span class="text-xs font-medium text-gray-500">This analysis</span>
+					<div class="mb-2 pb-2 border-b border-gray-50 dark:border-slate-800 mt-1">
+						<span class="text-xs font-medium text-gray-500 dark:text-slate-400">This analysis</span>
 						{@render uwFields('new-analysis', uwNewDraft, false, 'uw-new-analysis')}
 						<div class="flex gap-2 pt-1">
-							<button onclick={() => saveNewUserWord('analysis')} disabled={uwSavingId === -1} class="text-xs px-3 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50">
+							<button onclick={() => saveNewUserWord('analysis')} disabled={uwSavingId === -1} class="text-xs px-3 py-1.5 bg-blue-600 dark:bg-blue-500 text-white rounded hover:bg-blue-700 dark:hover:bg-blue-600 disabled:opacity-50">
 								{uwSavingId === -1 ? 'Saving...' : 'Save'}
 							</button>
-							<button onclick={() => cancelAddingUserWord('analysis')} disabled={uwSavingId === -1} class="text-xs px-3 py-1.5 text-gray-500 hover:text-gray-700">Cancel</button>
+							<button onclick={() => cancelAddingUserWord('analysis')} disabled={uwSavingId === -1} class="text-xs px-3 py-1.5 text-gray-500 dark:text-slate-400 hover:text-gray-700 dark:hover:text-slate-300">Cancel</button>
 						</div>
 					</div>
 				{:else}
-					<button onclick={() => startAddingUserWord('analysis')} class="text-xs text-blue-600 hover:text-blue-800 mt-2 block">+ Add entry for this analysis</button>
+					<button onclick={() => startAddingUserWord('analysis')} class="text-xs text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 mt-2 block">+ Add entry for this analysis</button>
 				{/if}
 			{/if}
 		</div>
@@ -1036,20 +1099,20 @@
 		<!-- Sample sentences - independent of Your entries above (see
 		     SampleSentence's docstring, models.py) - global per user+word,
 		     no scoping, so unaffected by this change. -->
-		<div class="border-t border-gray-100 mt-4 pt-3">
-			<p class="text-xs font-medium text-gray-400 uppercase tracking-wide mb-2">Sample sentences</p>
+		<div class="border-t border-gray-100 dark:border-slate-800 mt-4 pt-3">
+			<p class="text-xs font-medium text-gray-400 dark:text-slate-500 uppercase tracking-wide mb-2">Sample sentences</p>
 
 			{#if detail.sample_sentences.length}
 				<ul class="space-y-1.5 mb-2">
 					{#each detail.sample_sentences as s (s.id)}
 						<li class="flex items-start justify-between gap-2">
-							<p class="text-sm text-gray-700 min-w-0 break-words">{s.sentence}</p>
-							<button onclick={() => removeSampleSentence(s.id)} disabled={deletingSentenceId === s.id} class="text-gray-300 hover:text-red-600 disabled:opacity-50 shrink-0" title="Remove sample sentence" aria-label="Remove sample sentence">✕</button>
+							<p class="text-sm text-gray-700 dark:text-slate-300 min-w-0 break-words">{s.sentence}</p>
+							<button onclick={() => removeSampleSentence(s.id)} disabled={deletingSentenceId === s.id} class="text-gray-300 dark:text-slate-600 hover:text-red-600 dark:hover:text-red-400 disabled:opacity-50 shrink-0" title="Remove sample sentence" aria-label="Remove sample sentence">✕</button>
 						</li>
 					{/each}
 				</ul>
 			{:else}
-				<p class="text-sm text-gray-400 mb-2">No sample sentences yet.</p>
+				<p class="text-sm text-gray-400 dark:text-slate-500 mb-2">No sample sentences yet.</p>
 			{/if}
 
 			<div class="flex gap-1">
@@ -1060,7 +1123,7 @@
 					class="flex-1 border border-gray-300 rounded px-2 py-1 text-sm"
 					onkeydown={(e) => { if (e.key === 'Enter') addSampleSentence(); }}
 				/>
-				<button onclick={addSampleSentence} disabled={!newSentenceDraft.trim() || savingSentence} class="text-xs px-3 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 shrink-0">
+				<button onclick={addSampleSentence} disabled={!newSentenceDraft.trim() || savingSentence} class="text-xs px-3 py-1.5 bg-blue-600 dark:bg-blue-500 text-white rounded hover:bg-blue-700 dark:hover:bg-blue-600 disabled:opacity-50 shrink-0">
 					{savingSentence ? '...' : 'Add'}
 				</button>
 			</div>
@@ -1070,8 +1133,8 @@
 		     known/user-word status (see WordNote's docstring, models.py).
 		     Originally a StarredWord-only field ("+ Note" on the Starred
 		     Words profile page); generalized here so any word can have one. -->
-		<div class="border-t border-gray-100 mt-4 pt-3">
-			<p class="text-xs font-medium text-gray-400 uppercase tracking-wide mb-2">Note</p>
+		<div class="border-t border-gray-100 dark:border-slate-800 mt-4 pt-3">
+			<p class="text-xs font-medium text-gray-400 dark:text-slate-500 uppercase tracking-wide mb-2">Note</p>
 
 			{#if editingNote}
 				<div class="flex flex-col gap-1.5">
@@ -1082,20 +1145,20 @@
 						class="border border-gray-300 rounded px-2 py-1 text-sm resize-none"
 					></textarea>
 					<div class="flex items-center gap-2">
-						<button onclick={saveNote} disabled={savingNote} class="text-xs px-3 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50">
+						<button onclick={saveNote} disabled={savingNote} class="text-xs px-3 py-1.5 bg-blue-600 dark:bg-blue-500 text-white rounded hover:bg-blue-700 dark:hover:bg-blue-600 disabled:opacity-50">
 							{savingNote ? 'Saving...' : 'Save'}
 						</button>
-						<button onclick={() => { editingNote = false; noteDraft = detail?.note ?? ''; }} disabled={savingNote} class="text-xs text-gray-500 hover:text-gray-700">Cancel</button>
+						<button onclick={() => { editingNote = false; noteDraft = detail?.note ?? ''; }} disabled={savingNote} class="text-xs text-gray-500 dark:text-slate-400 hover:text-gray-700 dark:hover:text-slate-300">Cancel</button>
 						{#if detail.note}
-							<button onclick={removeNote} disabled={savingNote} class="text-xs text-red-500 hover:text-red-700 ml-auto">Delete</button>
+							<button onclick={removeNote} disabled={savingNote} class="text-xs text-red-500 dark:text-red-400 hover:text-red-700 dark:hover:text-red-400 ml-auto">Delete</button>
 						{/if}
 					</div>
 				</div>
 			{:else if detail.note}
-				<p class="text-sm text-gray-700 whitespace-pre-wrap break-words mb-1.5">{detail.note}</p>
-				<button onclick={() => { editingNote = true; noteDraft = detail?.note ?? ''; }} class="text-xs text-blue-600 hover:text-blue-800">Edit note</button>
+				<p class="text-sm text-gray-700 dark:text-slate-300 whitespace-pre-wrap break-words mb-1.5">{detail.note}</p>
+				<button onclick={() => { editingNote = true; noteDraft = detail?.note ?? ''; }} class="text-xs text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300">Edit note</button>
 			{:else}
-				<button onclick={() => { editingNote = true; noteDraft = ''; }} class="text-xs text-blue-600 hover:text-blue-800">+ Add note</button>
+				<button onclick={() => { editingNote = true; noteDraft = ''; }} class="text-xs text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300">+ Add note</button>
 			{/if}
 		</div>
 
@@ -1106,33 +1169,33 @@
 		     unlike an analysis-scoped affects_dag (see UserWord's docstring,
 		     models.py). Placed last, not grouped with the dictionary-ish
 		     sections above. -->
-		<div class="border-t border-gray-100 mt-4 pt-3">
-			<p class="text-xs font-medium text-gray-400 uppercase tracking-wide mb-2">Visibility</p>
+		<div class="border-t border-gray-100 dark:border-slate-800 mt-4 pt-3">
+			<p class="text-xs font-medium text-gray-400 dark:text-slate-500 uppercase tracking-wide mb-2">Visibility</p>
 
 			{#snippet visEntryRow(entry: VisibilityEntry)}
 				{@const editable = isEntryEditable(entry, context)}
 				{@const link = jumpLink(entry)}
 				<div class="flex items-center justify-between gap-2 py-1">
-					<span class="text-xs text-gray-500 truncate">{entryLabel(entry)}</span>
+					<span class="text-xs text-gray-500 dark:text-slate-400 truncate">{entryLabel(entry)}</span>
 					{#if editable}
 						<div class="flex items-center gap-2 shrink-0">
 							<button
 								onclick={() => setVisibility(entry, !entry.hidden)}
 								disabled={visSavingId === entry.id}
-								class="text-xs px-2 py-1 rounded-full disabled:opacity-50 {entry.hidden ? 'bg-slate-200 text-slate-700' : 'bg-emerald-100 text-emerald-700'}"
+								class="text-xs px-2 py-1 rounded-full disabled:opacity-50 {entry.hidden ? 'bg-slate-200 text-slate-700 dark:bg-slate-700 dark:text-slate-300' : 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300'}"
 							>
 								{entry.hidden ? 'Hidden' : 'Shown'}
 							</button>
-							<button onclick={() => removeVisibilityEntry(entry)} disabled={visSavingId === entry.id} class="text-xs text-red-400 hover:text-red-600 disabled:opacity-50">
+							<button onclick={() => removeVisibilityEntry(entry)} disabled={visSavingId === entry.id} class="text-xs text-red-400 hover:text-red-600 dark:text-red-500 dark:hover:text-red-400 disabled:opacity-50">
 								Remove
 							</button>
 						</div>
 					{:else}
 						<div class="flex items-center gap-2 shrink-0">
-							<span class="text-xs px-2 py-1 rounded-full {entry.hidden ? 'bg-slate-100 text-slate-600' : 'bg-gray-100 text-gray-500'}">
+							<span class="text-xs px-2 py-1 rounded-full {entry.hidden ? 'bg-slate-100 text-slate-600 dark:bg-slate-500/15 dark:text-slate-400' : 'bg-gray-100 text-gray-500 dark:bg-slate-500/15 dark:text-slate-400'}">
 								{entry.hidden ? 'Hidden' : 'Shown'}
 							</span>
-							{#if link}<a href={link} class="text-xs text-blue-600 hover:text-blue-800">View →</a>{/if}
+							{#if link}<a href={link} class="text-xs text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300">View →</a>{/if}
 						</div>
 					{/if}
 				</div>
@@ -1140,17 +1203,17 @@
 
 			{#snippet visAddRow(scope: 'global' | 'text' | 'analysis', label: string, adding: boolean, setAdding: (v: boolean) => void, newKey: 'new-global' | 'new-text' | 'new-analysis')}
 				<div class="flex items-center justify-between gap-2 py-1">
-					<span class="text-xs text-gray-500 truncate">{label}</span>
+					<span class="text-xs text-gray-500 dark:text-slate-400 truncate">{label}</span>
 					{#if adding}
 						<div class="flex items-center gap-1 shrink-0">
-							<button onclick={() => setVisibility(newKey, false)} disabled={visSavingId === -1} class="text-xs px-2 py-1 rounded-full bg-emerald-100 text-emerald-700 hover:bg-emerald-200 disabled:opacity-50">Shown</button>
-							<button onclick={() => setVisibility(newKey, true)} disabled={visSavingId === -1} class="text-xs px-2 py-1 rounded-full bg-slate-200 text-slate-700 hover:bg-slate-300 disabled:opacity-50">Hidden</button>
-							<button onclick={() => setAdding(false)} class="text-xs text-gray-400 hover:text-gray-600">Cancel</button>
+							<button onclick={() => setVisibility(newKey, false)} disabled={visSavingId === -1} class="text-xs px-2 py-1 rounded-full bg-emerald-100 text-emerald-700 hover:bg-emerald-200 dark:bg-emerald-500/15 dark:text-emerald-300 dark:hover:bg-emerald-500/25 disabled:opacity-50">Shown</button>
+							<button onclick={() => setVisibility(newKey, true)} disabled={visSavingId === -1} class="text-xs px-2 py-1 rounded-full bg-slate-200 text-slate-700 hover:bg-slate-300 dark:bg-slate-700 dark:text-slate-300 dark:hover:bg-slate-600 disabled:opacity-50">Hidden</button>
+							<button onclick={() => setAdding(false)} class="text-xs text-gray-400 hover:text-gray-600 dark:text-slate-500 dark:hover:text-slate-300">Cancel</button>
 						</div>
 					{:else}
 						<div class="flex items-center gap-2 shrink-0">
-							<span class="text-xs text-gray-400">Not set - inherits</span>
-							<button onclick={() => setAdding(true)} class="text-xs text-blue-600 hover:text-blue-800">+ Override</button>
+							<span class="text-xs text-gray-400 dark:text-slate-500">Not set - inherits</span>
+							<button onclick={() => setAdding(true)} class="text-xs text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300">+ Override</button>
 						</div>
 					{/if}
 				</div>
@@ -1165,12 +1228,12 @@
 
 			<!-- Text-specific -->
 			{#if textVisibility.length > 0}
-				<button onclick={() => visTextExpanded = !visTextExpanded} class="text-xs text-gray-500 hover:text-gray-700 flex items-center gap-1 mt-1">
+				<button onclick={() => visTextExpanded = !visTextExpanded} class="text-xs text-gray-500 dark:text-slate-400 hover:text-gray-700 dark:hover:text-slate-300 flex items-center gap-1 mt-1">
 					<span class="transition-transform {visTextExpanded ? 'rotate-90' : ''}">▸</span>
 					Text-specific ({textVisibility.length})
 				</button>
 				{#if visTextExpanded}
-					<div class="mt-1 pl-2 border-l-2 border-gray-100">
+					<div class="mt-1 pl-2 border-l-2 border-gray-100 dark:border-slate-800">
 						{#each textVisibility as entry (entry.id)}
 							{@render visEntryRow(entry)}
 						{/each}
@@ -1183,12 +1246,12 @@
 
 			<!-- Analysis-specific -->
 			{#if analysisVisibility.length > 0}
-				<button onclick={() => visAnalysisExpanded = !visAnalysisExpanded} class="text-xs text-gray-500 hover:text-gray-700 flex items-center gap-1 mt-2">
+				<button onclick={() => visAnalysisExpanded = !visAnalysisExpanded} class="text-xs text-gray-500 dark:text-slate-400 hover:text-gray-700 dark:hover:text-slate-300 flex items-center gap-1 mt-2">
 					<span class="transition-transform {visAnalysisExpanded ? 'rotate-90' : ''}">▸</span>
 					Analysis-specific ({analysisVisibility.length})
 				</button>
 				{#if visAnalysisExpanded}
-					<div class="mt-1 pl-2 border-l-2 border-gray-100">
+					<div class="mt-1 pl-2 border-l-2 border-gray-100 dark:border-slate-800">
 						{#each analysisVisibility as entry (entry.id)}
 							{@render visEntryRow(entry)}
 						{/each}

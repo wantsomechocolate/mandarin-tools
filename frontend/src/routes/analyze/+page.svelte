@@ -31,48 +31,48 @@
 	}
 </script>
 
-<div class="min-h-screen bg-gray-50">
+<div class="min-h-screen bg-gray-50 dark:bg-slate-950">
 	<!-- No mobile-stacking fix needed: "New Analysis" is a fixed, short
 	     English string (no dynamic title, no per-text length risk) and
 	     there's no competing right-side cluster - the one-character-per-
 	     line failure mode this pass fixes elsewhere can't occur here. -->
-	<nav class="bg-white shadow-sm px-6 py-4 flex justify-between items-center">
+	<nav class="bg-white dark:bg-slate-900 shadow-sm px-6 py-4 flex justify-between items-center">
 		<div class="flex items-center gap-4">
-			<a href="/" class="text-gray-600 hover:text-gray-800 text-sm">← Back</a>
-			<h1 class="text-xl font-bold text-gray-800">New Analysis</h1>
+			<a href="/" class="text-gray-600 dark:text-slate-400 hover:text-gray-800 dark:hover:text-slate-200 text-sm">← Back</a>
+			<h1 class="text-xl font-bold text-gray-800 dark:text-slate-200">New Analysis</h1>
 		</div>
 	</nav>
 
 	<main class="max-w-3xl mx-auto px-6 py-8">
 		{#if error}
-			<div class="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded mb-4">
+			<div class="bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/30 text-red-700 dark:text-red-400 px-4 py-3 rounded mb-4">
 				{error}
 			</div>
 		{/if}
 
-		<div class="bg-white rounded-lg shadow-sm p-6 space-y-4">
+		<div class="bg-white dark:bg-slate-900 rounded-lg shadow-sm p-6 space-y-4">
 			<div>
-				<label class="block text-sm font-medium text-gray-700 mb-1" for="title">
-					Title <span class="text-gray-400 font-normal">(optional)</span>
+				<label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1" for="title">
+					Title <span class="text-gray-400 dark:text-slate-500 font-normal">(optional)</span>
 				</label>
 				<input
 					id="title"
 					type="text"
 					bind:value={title}
-					class="w-full border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+					class="w-full border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400"
 					placeholder="e.g. Chapter 1 of my textbook"
 				/>
 			</div>
 
 			<div>
-				<label class="block text-sm font-medium text-gray-700 mb-1" for="body">
+				<label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1" for="body">
 					Chinese text
 				</label>
 				<textarea
 					id="body"
 					bind:value={body}
 					rows="12"
-					class="w-full border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 font-sans"
+					class="w-full border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 font-sans"
 					placeholder="Paste your Chinese text here..."
 				></textarea>
 			</div>
@@ -80,7 +80,7 @@
 			<button
 				onclick={handleSubmit}
 				disabled={loading}
-				class="w-full bg-blue-600 text-white py-2 px-4 rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed font-medium"
+				class="w-full bg-blue-600 dark:bg-blue-500 text-white py-2 px-4 rounded-md hover:bg-blue-700 dark:hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed font-medium"
 			>
 				{loading ? 'Analyzing...' : 'Analyze'}
 			</button>

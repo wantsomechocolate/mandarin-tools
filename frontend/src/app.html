@@ -4,6 +4,23 @@
 		<meta charset="utf-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
 		<meta name="text-scale" content="scale" />
+		<script>
+			// Applies the stored/system theme before first paint, so there's no
+			// flash of the wrong theme on load - same localStorage/try-catch
+			// pattern as this app's other client-only storage reads (see e.g.
+			// user-words/+page.svelte's loadStoredFilters), just run inline here
+			// instead of from a mounted component, since a component-level
+			// effect would run after the first paint. Mirrors theme.svelte.ts's
+			// own resolution logic (stored 'light'/'dark' wins outright; no
+			// stored value, or stored 'system', falls back to
+			// prefers-color-scheme) - kept in sync by hand since this script
+			// can't import that module.
+			try {
+				var stored = localStorage.getItem('mandarin_tools_theme');
+				var dark = stored === 'dark' || (stored !== 'light' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+				document.documentElement.classList.toggle('dark', dark);
+			} catch (e) {}
+		</script>
 		%sveltekit.head%
 	</head>
 	<body data-sveltekit-preload-data="hover">

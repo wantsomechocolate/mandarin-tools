@@ -42,18 +42,18 @@
 		<button
 			onclick={() => onSetFamiliarity(score)}
 			{disabled}
-			class="p-1 rounded hover:bg-gray-100 disabled:opacity-50 inline-flex items-center justify-center"
+			class="p-1 rounded hover:bg-gray-100 dark:hover:bg-slate-800 disabled:opacity-50 inline-flex items-center justify-center"
 			title={familiarityLabel(score)}
 			aria-label={familiarityLabel(score)}
 			aria-pressed={familiarity === score}
 		>
-			<span class="block {dotSize} rounded-full {familiarity !== null && score <= familiarity ? familiarityDotColor(familiarity) : 'bg-gray-200'}"></span>
+			<span class="block {dotSize} rounded-full {familiarity !== null && score <= familiarity ? familiarityDotColor(familiarity) : 'bg-gray-200 dark:bg-slate-700'}"></span>
 		</button>
 	{/each}
 	<button
 		onclick={() => onSetFamiliarity(null)}
 		disabled={disabled || familiarity === null}
-		class="p-1 rounded hover:bg-gray-100 disabled:opacity-50 inline-flex items-center justify-center text-gray-500 hover:text-gray-700 ml-0.5 {familiarity === null ? 'invisible' : ''}"
+		class="p-1 rounded hover:bg-gray-100 dark:hover:bg-slate-800 disabled:opacity-50 inline-flex items-center justify-center text-gray-500 hover:text-gray-700 dark:text-slate-500 dark:hover:text-slate-300 ml-0.5 {familiarity === null ? 'invisible' : ''}"
 		title="Clear familiarity"
 		aria-label="Clear familiarity"
 	>
