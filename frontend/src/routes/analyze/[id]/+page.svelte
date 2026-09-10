@@ -1066,6 +1066,49 @@
 	</button>
 {/snippet}
 
+<!-- Compact counterpart to sortHeader, for the mobile card list's own
+     header row (added so sorting doesn't require scrolling back up to the
+     "Sort by" dropdown in the filter bar - see that control's own comment).
+     Same toggleSort/sortColumn wiring, just a short glyph/abbreviation
+     instead of a full column name, since a phone-width row has no room
+     for "Familiarity" spelled out. The full name still surfaces via
+     title/aria-label for anyone who wants it (or is using a screen
+     reader). Bucket/Source stay out of this row entirely per their own
+     comment below, so there's no compact header for them. -->
+{#snippet compactSortHeader(shortLabel: string, fullLabel: string, column: 'word' | 'count' | 'familiarity')}
+	<button
+		onclick={() => toggleSort(column)}
+		class="flex items-center gap-0.5 hover:text-blue-600 dark:hover:text-blue-400 {sortColumn === column ? 'text-blue-600 dark:text-blue-400' : ''}"
+		title="Sort by {fullLabel}"
+		aria-label="Sort by {fullLabel}"
+	>
+		{shortLabel}
+		{#if sortColumn === column}
+			{@render iconChevron(sortDirection === 'asc')}
+		{/if}
+	</button>
+{/snippet}
+
+<!-- Compact, read-only familiarity indicator for the mobile card list's
+     summary row - FamiliarityDots itself (5 clickable dots + a ✕ button)
+     is too wide for a phone-width row and duplicates the editable version
+     already one tap away in the "..." accordion below, so this is purely
+     a glance-able readout: the score as a number in a small colored
+     circle, or a dash when nothing's set. Uses familiarityColor (the
+     badge-pair scale, already used for this same field in this card's own
+     accordion) rather than FamiliarityDots' familiarityDotColor - that
+     one's solid fills are tuned for a bare dot with no text on top, and a
+     couple of its shades (yellow-400/green-400 especially) don't hold up
+     under white text; familiarityColor's bg/text pairs are built for
+     exactly this "readable text on a colored badge" case.  -->
+{#snippet compactFamiliarity(score: number | null)}
+	{#if score !== null}
+		<span class="inline-flex items-center justify-center w-5 h-5 rounded-full text-[10px] font-bold {familiarityColor(score)}">{score}</span>
+	{:else}
+		<span class="text-gray-300 dark:text-slate-600 text-xs">–</span>
+	{/if}
+{/snippet}
+
 {#snippet contextList(word: string)}
 	<!-- Where this word occurs in the source text. Not every match type has
 	     stored positions or found any live-search matches (see the backend's
@@ -1741,15 +1784,34 @@
 				{/if}
 			</div>
 
-			<!-- Mobile card list (< sm) - collapsed to word + two accordion
-			     toggles: "+" for read-only info, hamburger for the interactive
-			     controls. Independent per-word toggles (expandedInfo/expandedActions),
+			<!-- Mobile card list (< sm) - a header row (word/count/familiarity,
+			     each sortable via compactSortHeader - see its own comment for
+			     why this exists: sorting used to require scrolling back up to
+			     the "Sort by" dropdown in the filter bar, with no way to do it
+			     from the list itself) above rows collapsed to word + count +
+			     familiarity + two accordion toggles: "+" for read-only info
+			     (bucket/source, deliberately NOT promoted into the row itself -
+			     still one tap away, just not worth the column space these two
+			     take on a phone), hamburger for the interactive controls.
+			     Independent per-word toggles (expandedInfo/expandedActions),
 			     everything below reuses the exact same handlers/derived helpers
 			     and icon snippets the desktop table above uses. -->
 			<div class="min-[700px]:hidden bg-white dark:bg-slate-900 rounded-lg shadow-sm overflow-hidden divide-y divide-gray-100 dark:divide-slate-800">
 				{#if loading}
 					<p class="text-gray-500 dark:text-slate-400 p-4">Loading...</p>
 				{:else if analysis}
+					<!-- Column widths (w-8/w-9/w-14) are shared verbatim with each
+					     row's own cells below, so header labels line up with their
+					     data without needing a real <table>'s column model. -->
+					<div class="flex items-center gap-2 px-4 py-2 bg-gray-50 dark:bg-slate-950 text-xs font-medium text-gray-500 dark:text-slate-400">
+						<div class="flex-1 min-w-0">{@render compactSortHeader('文', 'Word', 'word')}</div>
+						<div class="w-8 shrink-0 flex justify-center">{@render compactSortHeader('#', 'Count', 'count')}</div>
+						<div class="w-9 shrink-0 flex justify-center">{@render compactSortHeader('Fam', 'Familiarity', 'familiarity')}</div>
+						<!-- Spacer matching the +/hamburger button pair's own
+						     footprint (two w-7-ish p-1.5 buttons + gap-0.5), so the
+						     three sortable headers above don't drift under it. -->
+						<div class="w-14 shrink-0" aria-hidden="true"></div>
+					</div>
 					{#each filteredResults() as result}
 						<div
 							class="{result.source === 'longest_match_only' ? 'bg-amber-50/40' : ''} {garbageWords.has(result.word) ? 'bg-red-50/40' : ''}"
@@ -1759,14 +1821,16 @@
 								tabindex="0"
 								onclick={(e) => handleRowClick(e, result.word)}
 								onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleRowClick(e, result.word); } }}
-								class="flex items-center justify-between gap-2 px-4 py-3 cursor-pointer"
+								class="flex items-center gap-2 px-4 py-3 cursor-pointer"
 							>
-								<span class="text-lg font-medium truncate">{result.word}</span>
+								<span class="flex-1 min-w-0 text-lg font-medium truncate">{result.word}</span>
+								<span class="w-8 shrink-0 text-sm text-gray-600 dark:text-slate-400 text-center">{result.count}</span>
+								<div class="w-9 shrink-0 flex justify-center">{@render compactFamiliarity(currentFamiliarity(result))}</div>
 								<div class="flex items-center gap-0.5 shrink-0">
 									<button
 										onclick={() => toggleInfo(result.word)}
 										class="p-1.5 rounded text-gray-400 dark:text-slate-500 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-500/10"
-										title="Show count, source, familiarity"
+										title="Show bucket, source, familiarity"
 										aria-label="Show details"
 									>
 										{@render iconPlusMinus(expandedInfo.has(result.word))}
@@ -1783,8 +1847,12 @@
 							</div>
 
 							{#if expandedInfo.has(result.word)}
+								<!-- Count/familiarity's raw number are already visible in
+								     the row itself now (compactSortHeader's columns) - this
+								     panel keeps only what the row doesn't show: bucket/
+								     source, and familiarity's actual meaning (the row's
+								     compactFamiliarity is a bare number with no label). -->
 								<div class="flex flex-wrap items-center gap-2 border-t border-gray-50 dark:border-slate-800 px-4 pt-2 pb-3 text-sm">
-									<span class="text-gray-600 dark:text-slate-400">Count: {result.count}</span>
 									<span
 										class="inline-block text-center text-xs px-2 py-1 rounded-full {bucketColor(result.source)}"
 										title={result.source === 'longest_match_only' ? 'Found only by the legacy longest-matching pass — not confirmed by the main segmenter. Likely a dictionary gap; review before trusting it.' : ''}
@@ -1806,29 +1874,20 @@
 
 							{#if expandedActions.has(result.word)}
 								<div class="space-y-2 border-t border-gray-50 dark:border-slate-800 px-4 pt-2 pb-3">
-									<div class="flex gap-1">
-										{#each [1, 2, 3, 4, 5] as score}
-											<button
-												onclick={() => setFamiliarity(result.word, score)}
-												disabled={updatingWord === result.word}
-												class="w-7 h-7 rounded text-xs font-medium disabled:opacity-50
-												{currentFamiliarity(result) === score
-													? 'bg-blue-600 dark:bg-blue-500 text-white'
-													: 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700'}"
-											>
-												{score}
-											</button>
-										{/each}
-										{#if currentFamiliarity(result) !== null}
-											<button
-												onclick={() => setFamiliarity(result.word, null)}
-												disabled={updatingWord === result.word}
-												class="w-7 h-7 rounded text-xs font-medium bg-gray-100 text-gray-400 hover:bg-gray-200 dark:bg-slate-800 dark:text-slate-500 dark:hover:bg-slate-700 disabled:opacity-50"
-											>
-												✕
-											</button>
-										{/if}
-									</div>
+									<!-- Same shared dot widget the desktop table's own
+									     Familiarity column uses (FamiliarityDots), rather
+									     than this panel's own bespoke numbered-square grid -
+									     see WordDetailPanel.svelte's identical swap for the
+									     same reasoning. Sized down (w-4 h-4) from
+									     WordDetailPanel's w-5 h-5 - this sits alongside a
+									     row of other compact action icons, not as its own
+									     dedicated section. -->
+									<FamiliarityDots
+										familiarity={currentFamiliarity(result)}
+										disabled={updatingWord === result.word}
+										dotSize="w-4 h-4"
+										onSetFamiliarity={(score) => setFamiliarity(result.word, score)}
+									/>
 									<div class="flex flex-wrap items-center gap-0.5">
 										{@render visibilityAction(result)}
 										{@render userWordAction(result)}

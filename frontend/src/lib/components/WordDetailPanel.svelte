@@ -3,6 +3,7 @@
 	import { familiarityLabel, familiarityColor, rarityLabel, rarityColor } from '$lib/wordDisplay';
 	import { isEntryEditable, type WordDetailContext } from '$lib/wordDetailContext';
 	import { saveWordDraft, loadWordDraft, clearWordDraft } from '$lib/wordDraftPersistence';
+	import FamiliarityDots from './FamiliarityDots.svelte';
 
 	interface HskForm {
 		traditional: string | null;
@@ -693,26 +694,21 @@
 		     editable regardless of context (see KnownWord/StarredWord's
 		     docstrings, models.py). -->
 		<div class="border-b border-gray-100 dark:border-slate-800 mb-4 pb-4">
-			<div class="flex flex-wrap gap-1 mb-2">
-				{#each [1, 2, 3, 4, 5] as score}
-					<button
-						onclick={() => setFamiliarity(score)}
-						disabled={updatingFamiliarity}
-						class="w-8 h-8 rounded text-xs font-medium disabled:opacity-50
-						{detail.familiarity === score ? 'bg-blue-600 dark:bg-blue-500 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700'}"
-					>
-						{score}
-					</button>
-				{/each}
-				{#if detail.familiarity !== null}
-					<button
-						onclick={() => setFamiliarity(null)}
-						disabled={updatingFamiliarity}
-						class="w-8 h-8 rounded text-xs font-medium bg-gray-100 text-gray-400 hover:bg-gray-200 dark:bg-slate-800 dark:text-slate-500 dark:hover:bg-slate-700 disabled:opacity-50"
-					>
-						✕
-					</button>
-				{/if}
+			<div class="mb-2">
+				<!-- Same shared dot widget the results table/Known Words page
+				     already use, rather than this panel's own bespoke
+				     numbered-square grid - see analyze/[id]/+page.svelte's mobile
+				     card list for the same swap, done for the same reason (one
+				     less duplicate familiarity-editing UI to keep visually in
+				     sync). Sized larger (w-5 h-5) than the table's compact w-2
+				     h-2 dots - this is the one dedicated familiarity-editing
+				     surface in the panel, not a dense table column. -->
+				<FamiliarityDots
+					familiarity={detail.familiarity}
+					disabled={updatingFamiliarity}
+					dotSize="w-5 h-5"
+					onSetFamiliarity={setFamiliarity}
+				/>
 			</div>
 			<div class="flex flex-wrap items-center gap-0.5">
 				<button
