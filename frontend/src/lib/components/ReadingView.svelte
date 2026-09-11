@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { browser } from '$app/environment';
 	import * as api from '$lib/api';
 	import { sourceDetailColor, rarityContinuousColor, familiarityColor } from '$lib/wordDisplay';
 	import type { SourceDetailTier } from '$lib/wordDisplay';
@@ -76,7 +77,37 @@
 	let error = $state('');
 
 	type ColorBy = 'none' | 'source' | 'rarity' | 'familiarity';
-	let colorBy: ColorBy = $state('none');
+
+	// Persisted globally (one shared preference across every text/analysis,
+	// not scoped per-page like scrollPersistence.ts/panelWordPersistence.ts
+	// below) - unlike which word's panel was open or where the page was
+	// scrolled to, "I like reading with rarity highlighted" is a genuine
+	// standing preference, not per-visit recovery state, so this is
+	// localStorage (survives closing the tab) rather than sessionStorage,
+	// same reasoning as this app's other *_STORAGE_KEY filter preferences.
+	// Reading view itself is deliberately NOT reopened by panelWordPersistence
+	// or anything else after a reload (readingViewOn, analyze/[id]/+page.svelte,
+	// stays a plain, unpersisted $state) - only the mode a user picks the
+	// next time they do open it is remembered.
+	const COLOR_BY_STORAGE_KEY = 'mandarin_tools_reading_view_color_by';
+	function loadStoredColorBy(): ColorBy {
+		if (!browser) return 'none';
+		try {
+			const raw = localStorage.getItem(COLOR_BY_STORAGE_KEY);
+			return raw === 'source' || raw === 'rarity' || raw === 'familiarity' ? raw : 'none';
+		} catch {
+			return 'none';
+		}
+	}
+	let colorBy: ColorBy = $state(loadStoredColorBy());
+	$effect(() => {
+		if (!browser) return;
+		try {
+			localStorage.setItem(COLOR_BY_STORAGE_KEY, colorBy);
+		} catch {
+			// e.g. storage disabled/full - the preference just won't persist
+		}
+	});
 
 	// 'reading-view' slot - see panelWordPersistence.ts's docstring - this
 	// component and analyze/[id]/+page.svelte's own results-table panel can

@@ -475,6 +475,41 @@ class TestFullSegmentation:
         assert "风车" in full
         assert full["风车"]["positions"] == [(1, 3)]
 
+    def test_word_in_both_global_trie_and_overlay_counted_once(self):
+        # Regression test for a real bug: a word already in the global
+        # dictionary (e.g. a corpus word) that a user ALSO has a UserWord
+        # entry for gets a candidate from both build_dag's global-trie walk
+        # and its overlay-trie walk, for the exact same (start, end) span -
+        # deliberate, needed for override scoring (see build_dag's
+        # docstring/_word_weight's comment). aggregate_full_segmentation
+        # used to treat those two candidates as two separate occurrences,
+        # doubling this word's count and duplicating its position for every
+        # real occurrence in the text - visible on the results page as a
+        # doubled count and, in the word-detail panel's context section
+        # (built from these positions), the exact same sentence twice.
+        freq = {"好多了": 400, "了": 5000}
+        trie = Trie()
+        for w in freq:
+            trie.insert(w)
+        segmenter = Segmenter(trie=trie, freq_dict=freq)
+
+        overlay = UserOverlay()
+        overlay.add_word(
+            "好多了", freq=None, dominance_floor=segmenter.dominance_floor(),
+            suppression_floor=segmenter.suppression_floor(),
+        )
+
+        text = "好多了"
+        dag = segmenter.build_dag(text, overlay=overlay)
+        # Confirms the premise: two candidates reach the same end position,
+        # one from each trie - this is the exact shape that used to cause
+        # double-counting below, not a hypothetical.
+        assert dag[0] == [(2, False), (2, True)]
+
+        full = aggregate_full_segmentation(text, dag)
+        assert full["好多了"]["count"] == 1
+        assert full["好多了"]["positions"] == [(0, 3)]
+
 
 class TestStopwordsInDag:
     """

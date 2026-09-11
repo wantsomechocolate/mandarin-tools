@@ -433,7 +433,19 @@ def aggregate_full_segmentation(
     stopwords = stopwords or set()
     output: dict[str, dict] = {}
     for i, candidates in dag.items():
+        # A word present in both the global trie and a user's overlay trie
+        # (e.g. a dictionary word the user also added a UserWord entry for)
+        # produces two candidates here with the same `end` - one per trie,
+        # by build_dag's own design (see its docstring/_word_weight's
+        # comment - deliberate, needed for override scoring). Both describe
+        # the identical text span, so without this dedup every such
+        # occurrence got counted and positioned twice: once per trie source,
+        # not once per real occurrence in the text.
+        seen_ends: set[int] = set()
         for end, _from_overlay in candidates:
+            if end in seen_ends:
+                continue
+            seen_ends.add(end)
             word = text[i:end + 1]
             if len(word) == 1 and word in stopwords:
                 continue

@@ -14,6 +14,12 @@ interface StoredPanelWord {
 	word: string;
 	path: string;
 	savedAt: number;
+	// Optional - only analyze/[id]/+page.svelte's swipe-to-navigate ever
+	// passes these (see loadOpenWordPanelNeighbors below for why it needs
+	// them); every other caller just omits the third saveOpenWordPanel
+	// argument and these stay undefined, unread.
+	prevWord?: string | null;
+	nextWord?: string | null;
 }
 
 // Remembers which word's detail panel (WordDetailModal/WordDetailPanel) was
@@ -40,7 +46,11 @@ interface StoredPanelWord {
 // page later - restoration only fires when the saved path matches the page
 // currently loading, since a same-URL reload (the actual scenario this
 // exists for) always preserves the path.
-export function saveOpenWordPanel(word: string | null, slot: string = 'default'): void {
+export function saveOpenWordPanel(
+	word: string | null,
+	slot: string = 'default',
+	neighbors?: { prevWord: string | null; nextWord: string | null }
+): void {
 	if (!browser) return;
 	try {
 		const key = `${STORAGE_KEY_PREFIX}:${slot}`;
@@ -49,6 +59,10 @@ export function saveOpenWordPanel(word: string | null, slot: string = 'default')
 			return;
 		}
 		const entry: StoredPanelWord = { word, path: location.pathname, savedAt: Date.now() };
+		if (neighbors) {
+			entry.prevWord = neighbors.prevWord;
+			entry.nextWord = neighbors.nextWord;
+		}
 		sessionStorage.setItem(key, JSON.stringify(entry));
 	} catch {
 		// e.g. storage disabled/full - the panel just won't survive a reload, no need to surface an error
@@ -64,6 +78,33 @@ export function loadOpenWordPanel(slot: string = 'default'): string | null {
 		if (entry.path !== location.pathname) return null;
 		if (Date.now() - entry.savedAt > MAX_AGE_MS) return null;
 		return entry.word;
+	} catch {
+		return null;
+	}
+}
+
+// The swipe-to-navigate neighbor cache's other half (see analyze/[id]/
+// +page.svelte's own lastKnownNeighbors docstring for the full picture of
+// why this needs to survive a reload, not just live in memory): a word's
+// immediate prev/next in the currently-filtered results, refreshed every
+// time that word IS found there. Read back on mount so a reload that lands
+// with the open word ALREADY filtered out (e.g. an edit made from its own
+// panel just before the tab got backgrounded and reloaded) still has
+// somewhere to recover its neighbors from - in-memory-only state has
+// nothing to fall back to in that case, since this fresh page load never
+// itself observed the word while it was still visible.
+export function loadOpenWordPanelNeighbors(
+	slot: string = 'default'
+): { prevWord: string | null; nextWord: string | null } | null {
+	if (!browser) return null;
+	try {
+		const raw = sessionStorage.getItem(`${STORAGE_KEY_PREFIX}:${slot}`);
+		if (!raw) return null;
+		const entry = JSON.parse(raw) as StoredPanelWord;
+		if (entry.path !== location.pathname) return null;
+		if (Date.now() - entry.savedAt > MAX_AGE_MS) return null;
+		if (entry.prevWord === undefined && entry.nextWord === undefined) return null;
+		return { prevWord: entry.prevWord ?? null, nextWord: entry.nextWord ?? null };
 	} catch {
 		return null;
 	}

@@ -129,6 +129,66 @@
 	let loading = $state(true);
 	let error = $state('');
 
+	// Copy-headword button (next to the word itself, in the header below) -
+	// the thing this actually solves is mobile: selecting/copying Chinese
+	// text out of a small heading on a phone (to paste into a browser,
+	// another dictionary app, etc.) is fiddly in a way it isn't on desktop,
+	// where text selection is easy - a Pleco-style one-tap copy sidesteps
+	// that. Not mobile-only, though - same button/icon at every viewport,
+	// so the panel's header stays visually identical across breakpoints
+	// rather than growing a mobile-specific affordance.
+	let copied = $state(false);
+	let copyResetTimeout: ReturnType<typeof setTimeout> | undefined;
+	async function copyWord() {
+		if (!detail) return;
+		try {
+			// navigator.clipboard is only exposed in a "secure context"
+			// (HTTPS, or the literal hostname localhost) - it's `undefined`
+			// entirely on plain http, which in dev means it works from a
+			// laptop hitting localhost:5173 but not from a phone reaching the
+			// same dev server over the LAN as http://<lan-ip>:5173 (see
+			// api.ts's own BASE_URL docstring for that exact LAN-access
+			// pattern). Once this app is deployed for real behind HTTPS (see
+			// CLAUDE.md's deployment section), every origin is secure and
+			// this branch stops mattering - execCommand stays only as the
+			// insecure-http fallback, not the primary path.
+			if (navigator.clipboard?.writeText) {
+				await navigator.clipboard.writeText(detail.word);
+			} else {
+				copyViaExecCommand(detail.word);
+			}
+			copied = true;
+			clearTimeout(copyResetTimeout);
+			copyResetTimeout = setTimeout(() => copied = false, 1500);
+		} catch (e: unknown) {
+			error = e instanceof Error ? e.message : 'Failed to copy';
+		}
+	}
+
+	// document.execCommand('copy') is deprecated, but unlike the async
+	// Clipboard API it was never gated behind secure contexts, so it's the
+	// one thing that still works over plain http - needs a real, focusable,
+	// selected DOM node to copy from (there's no "copy this string"
+	// primitive for the legacy API), hence the throwaway textarea. Off-
+	// screen via fixed positioning rather than display:none/zero-size -
+	// some browsers refuse to select (and therefore copy) an element
+	// that's not actually rendered.
+	function copyViaExecCommand(text: string): void {
+		const textarea = document.createElement('textarea');
+		textarea.value = text;
+		textarea.style.position = 'fixed';
+		textarea.style.left = '-9999px';
+		textarea.style.top = '0';
+		document.body.appendChild(textarea);
+		textarea.focus();
+		textarea.select();
+		try {
+			if (!document.execCommand('copy')) throw new Error('Copy command was not successful');
+		} finally {
+			document.body.removeChild(textarea);
+		}
+	}
+
 	// Auto-generated (pinyin/translation) - see WordEnrichment's docstring
 	// (models.py, backend). Fetched independently of `detail` above (not
 	// awaited together) since it's a secondary concern that shouldn't hold
@@ -512,7 +572,15 @@
 	}
 
 	function startAddingUserWord(scope: 'global' | 'text' | 'analysis') {
-		uwNewDraft = { pronunciation: '', meaning: '', notes: '', affectsDag: 'increase' };
+		// Global defaults to 'neutral', not 'increase' like text/analysis -
+		// a global entry is most often created just to hold a
+		// pronunciation/meaning/note (see WordDetailPanel's own "Pleco-style
+		// multi-source view" framing, CLAUDE.md), and shouldn't silently
+		// start boosting segmentation everywhere just because it exists.
+		// Text/analysis-scoped entries stay defaulting to 'increase' - those
+		// are far more often created specifically BECAUSE a word needs a
+		// segmentation nudge in that one text/analysis.
+		uwNewDraft = { pronunciation: '', meaning: '', notes: '', affectsDag: scope === 'global' ? 'neutral' : 'increase' };
 		if (scope === 'global') uwAddingGlobal = true;
 		else if (scope === 'text') uwAddingText = true;
 		else uwAddingAnalysis = true;
@@ -682,7 +750,33 @@
 		<button onclick={onClose} class="text-sm text-gray-500 dark:text-slate-400 hover:text-gray-700 dark:hover:text-slate-300">Close</button>
 	{:else if detail}
 		<div class="flex justify-between items-start mb-3">
-			<h2 class="text-3xl font-medium">{detail.word}</h2>
+			<div class="flex items-center gap-1">
+				<h2 class="text-3xl font-medium">{detail.word}</h2>
+				<!-- Pleco-style copy-headword button - see its own docstring
+				     above (copyWord) for why this exists at every viewport, not
+				     just mobile. Swaps to a checkmark for 1.5s after a
+				     successful copy, same "brief confirmation, no toast needed"
+				     language the rest of this panel doesn't otherwise use, but
+				     appropriate here since there's nothing else nearby that
+				     would show the copy actually happened. -->
+				<button
+					onclick={copyWord}
+					class="p-1 rounded shrink-0 {copied ? 'text-emerald-600 dark:text-emerald-400' : 'text-gray-400 dark:text-slate-500 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-500/10'}"
+					title={copied ? 'Copied!' : 'Copy word'}
+					aria-label={copied ? 'Copied' : 'Copy word'}
+				>
+					{#if copied}
+						<svg class="w-4 h-4" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+							<path d="M4 10.5l4 4 8-9" />
+						</svg>
+					{:else}
+						<svg class="w-4 h-4" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+							<rect x="7" y="7" width="9" height="9" rx="1.5" />
+							<path d="M13 7V5.5A1.5 1.5 0 0 0 11.5 4h-7A1.5 1.5 0 0 0 3 5.5v7A1.5 1.5 0 0 0 4.5 14H6" />
+						</svg>
+					{/if}
+				</button>
+			</div>
 			<button onclick={onClose} class="text-gray-400 dark:text-slate-500 hover:text-gray-600 dark:hover:text-slate-300">✕</button>
 		</div>
 
@@ -910,7 +1004,8 @@
 		<div class="border-t border-gray-100 dark:border-slate-800 mt-4 pt-3">
 			<p class="text-xs font-medium text-gray-400 dark:text-slate-500 uppercase tracking-wide mb-2">Your entries</p>
 
-			{#snippet uwFields(draftKey: string, draft: { pronunciation: string; meaning: string; notes: string; affectsDag: AffectsDag | null }, showAffectsDag: boolean, idPrefix: string)}
+			{#snippet uwFields(draftKey: string, draft: { pronunciation: string; meaning: string; notes: string; affectsDag: AffectsDag | null }, scope: 'global' | 'text' | 'analysis', idPrefix: string)}
+				{@const showAffectsDag = scope !== 'analysis'}
 				<div class="space-y-2">
 					<div>
 						<label for="{idPrefix}-pron" class="text-xs text-gray-500 dark:text-slate-400">Pronunciation</label>
@@ -951,7 +1046,12 @@
 							</label>
 							<label class="flex items-center gap-1.5">
 								<input type="radio" name="{idPrefix}-affects-dag" checked={draft.affectsDag === null} onchange={() => draft.affectsDag = null} />
-								No preference (inherit from broader scope)
+								<!-- Global has no broader scope to inherit from - NULL
+								     there just means this row never gets called into
+								     build_user_overlay at all (segmenter_loader.py), not
+								     "defers to something else." Text genuinely does defer
+								     to global, so that wording stays accurate there. -->
+								{scope === 'global' ? "No preference (won't affect segmentation)" : 'No preference (inherit from broader scope)'}
 							</label>
 						</div>
 					{/if}
@@ -978,7 +1078,7 @@
 					</div>
 
 					{#if editing}
-						{@render uwFields(`entry-${entry.id}`, uwDrafts[entry.id], entry.scope !== 'analysis', `uw-${entry.id}`)}
+						{@render uwFields(`entry-${entry.id}`, uwDrafts[entry.id], entry.scope, `uw-${entry.id}`)}
 						<div class="flex gap-2 pt-1">
 							<button onclick={() => saveUserWordEntry(entry)} disabled={uwSavingId === entry.id} class="text-xs px-3 py-1.5 bg-blue-600 dark:bg-blue-500 text-white rounded hover:bg-blue-700 dark:hover:bg-blue-600 disabled:opacity-50">
 								{uwSavingId === entry.id ? 'Saving...' : 'Save'}
@@ -991,7 +1091,9 @@
 							{#if entry.meaning}<p class="text-sm text-gray-700 dark:text-slate-300 break-words">{entry.meaning}</p>{/if}
 							{#if entry.notes}<p class="text-xs text-gray-500 dark:text-slate-400 italic break-words">{entry.notes}</p>{/if}
 							{#if !entry.pronunciation && !entry.meaning && !entry.notes}<p class="text-sm text-gray-400 dark:text-slate-500">No details added yet.</p>{/if}
-							{#if entry.scope !== 'analysis' && entry.affects_dag === 'decrease'}
+							{#if entry.scope !== 'analysis' && entry.affects_dag === 'increase'}
+								<span class="inline-block text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-600 dark:bg-green-500/15 dark:text-green-300">Increased segmentation weight</span>
+							{:else if entry.scope !== 'analysis' && entry.affects_dag === 'decrease'}
 								<span class="inline-block text-xs px-2 py-0.5 rounded-full bg-red-100 text-red-600 dark:bg-red-500/15 dark:text-red-300">Decreased segmentation weight</span>
 							{:else if entry.scope !== 'analysis' && entry.affects_dag === 'neutral'}
 								<span class="inline-block text-xs px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 dark:bg-slate-500/15 dark:text-slate-400">Neutral segmentation weight</span>
@@ -1017,7 +1119,7 @@
 							Fill from auto-generated ({enrichment.pinyin}{enrichment.pinyin && enrichment.translation ? ' — ' : ''}{enrichment.translation})
 						</button>
 					{/if}
-					{@render uwFields('new-global', uwNewDraft, true, 'uw-new-global')}
+					{@render uwFields('new-global', uwNewDraft, 'global', 'uw-new-global')}
 					<div class="flex gap-2 pt-1">
 						<button onclick={() => saveNewUserWord('global')} disabled={uwSavingId === -1} class="text-xs px-3 py-1.5 bg-blue-600 dark:bg-blue-500 text-white rounded hover:bg-blue-700 dark:hover:bg-blue-600 disabled:opacity-50">
 							{uwSavingId === -1 ? 'Saving...' : 'Save'}
@@ -1047,7 +1149,7 @@
 				{#if uwAddingText}
 					<div class="mb-2 pb-2 border-b border-gray-50 dark:border-slate-800 mt-1">
 						<span class="text-xs font-medium text-gray-500 dark:text-slate-400">{context.textTitle ?? 'This text'}</span>
-						{@render uwFields('new-text', uwNewDraft, true, 'uw-new-text')}
+						{@render uwFields('new-text', uwNewDraft, 'text', 'uw-new-text')}
 						<div class="flex gap-2 pt-1">
 							<button onclick={() => saveNewUserWord('text')} disabled={uwSavingId === -1} class="text-xs px-3 py-1.5 bg-blue-600 dark:bg-blue-500 text-white rounded hover:bg-blue-700 dark:hover:bg-blue-600 disabled:opacity-50">
 								{uwSavingId === -1 ? 'Saving...' : 'Save'}
@@ -1078,7 +1180,7 @@
 				{#if uwAddingAnalysis}
 					<div class="mb-2 pb-2 border-b border-gray-50 dark:border-slate-800 mt-1">
 						<span class="text-xs font-medium text-gray-500 dark:text-slate-400">This analysis</span>
-						{@render uwFields('new-analysis', uwNewDraft, false, 'uw-new-analysis')}
+						{@render uwFields('new-analysis', uwNewDraft, 'analysis', 'uw-new-analysis')}
 						<div class="flex gap-2 pt-1">
 							<button onclick={() => saveNewUserWord('analysis')} disabled={uwSavingId === -1} class="text-xs px-3 py-1.5 bg-blue-600 dark:bg-blue-500 text-white rounded hover:bg-blue-700 dark:hover:bg-blue-600 disabled:opacity-50">
 								{uwSavingId === -1 ? 'Saving...' : 'Save'}

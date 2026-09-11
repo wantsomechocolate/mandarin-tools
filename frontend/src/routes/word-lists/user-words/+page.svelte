@@ -8,6 +8,7 @@
 	import FamiliarityDots from '$lib/components/FamiliarityDots.svelte';
 	import type { WordDetailContext } from '$lib/wordDetailContext';
 	import { saveOpenWordPanel, loadOpenWordPanel } from '$lib/panelWordPersistence';
+	import { trackScrollPosition, restoreScrollPosition } from '$lib/scrollPersistence';
 
 	// Persisted filter preferences - see known-words/+page.svelte's own
 	// FILTER_STORAGE_KEY comment for the full pattern and why search is
@@ -70,6 +71,18 @@
 	let knownWords: Record<string, number | null> = $state({});
 	let loading = $state(true);
 	let error = $state('');
+
+	// Scroll position across a page reload - see scrollPersistence.ts's
+	// docstring. Restoring waits for `loading` to flip false, since
+	// scrolling to a saved position makes no sense before the list it
+	// depends on has arrived.
+	$effect(() => trackScrollPosition(location.pathname));
+	let scrollRestored = false;
+	$effect(() => {
+		if (loading || scrollRestored) return;
+		scrollRestored = true;
+		restoreScrollPosition(location.pathname);
+	});
 	let search = $state(storedFilters.search ?? '');
 	let scopeFilter: 'all' | Scope = $state(storedFilters.scopeFilter ?? 'all');
 	let updatingWord: string | null = $state(null);

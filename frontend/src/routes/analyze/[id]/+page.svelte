@@ -12,7 +12,8 @@
 	import FamiliarityDots from '$lib/components/FamiliarityDots.svelte';
 	import AccountMenu from '$lib/components/AccountMenu.svelte';
 	import { isEntryEditable, type WordDetailContext } from '$lib/wordDetailContext';
-	import { saveOpenWordPanel, loadOpenWordPanel } from '$lib/panelWordPersistence';
+	import { saveOpenWordPanel, loadOpenWordPanel, loadOpenWordPanelNeighbors } from '$lib/panelWordPersistence';
+	import { trackScrollPosition, restoreScrollPosition } from '$lib/scrollPersistence';
 
 	let { params }: PageProps = $props();
 
@@ -181,6 +182,21 @@
 	let analysis: Analysis | null = $state(null);
 	let loading = $state(true);
 	let error = $state('');
+
+	// Scroll position across a page reload - see scrollPersistence.ts's
+	// docstring for why this doesn't just fall out of SvelteKit's own
+	// scroll restoration (mobile backgrounding the tab can discard/reload
+	// the page, which isn't one of SvelteKit's own navigation events).
+	// Tracking starts immediately; restoring waits for `loading` to flip
+	// false below, since scrolling to a saved position makes no sense
+	// before the results this analysis's height depends on have arrived.
+	$effect(() => trackScrollPosition(location.pathname));
+	let scrollRestored = false;
+	$effect(() => {
+		if (loading || scrollRestored) return;
+		scrollRestored = true;
+		restoreScrollPosition(location.pathname);
+	});
 	let updatingWord = $state('');
 	let garbageWords = $state(new Set<string>());
 	let togglingGarbage = $state('');
@@ -224,8 +240,22 @@
 	// its docstring for why: recovering which word's panel was open across
 	// a mobile browser's involuntary page reload.
 	let selectedWordForPanel: string | null = $state(loadOpenWordPanel());
+	// The swipe-to-navigate neighbor cache (see lastKnownNeighbors' own
+	// docstring near swipeToWord below for the full picture) - seeded here
+	// from sessionStorage so it has something to recover from even on a
+	// fresh reload that lands with the open word already filtered out, not
+	// just persisted for a *later* reload to read back.
+	let lastKnownNeighbors: { prev: string | null; next: string | null } = $state(
+		(() => {
+			const stored = loadOpenWordPanelNeighbors();
+			return stored ? { prev: stored.prevWord, next: stored.nextWord } : { prev: null, next: null };
+		})()
+	);
 	$effect(() => {
-		saveOpenWordPanel(selectedWordForPanel);
+		saveOpenWordPanel(selectedWordForPanel, 'default', {
+			prevWord: lastKnownNeighbors.prev,
+			nextWord: lastKnownNeighbors.next,
+		});
 	});
 	// Context (word-in-source-text) is keyed by word rather than tied to the
 	// panel, since it now lives at the row/card level and multiple rows can
@@ -467,6 +497,69 @@
 		// router.py).
 		return sortColumn ? filtered.sort(compareResults) : filtered;
 	});
+
+	// Tracks the open panel word's immediate prev/next in filteredResults(),
+	// BY WORD IDENTITY rather than list position - lastKnownNeighbors itself
+	// is declared (and seeded from sessionStorage) up near
+	// selectedWordForPanel; this effect is what actually keeps it current,
+	// which needs filteredResults() and so has to live down here. Only
+	// overwritten when the word IS found, so it keeps the last good
+	// neighbors instead of clearing to null the moment the word disappears.
+	// Two different ways that can happen, both needing this same fallback:
+	// (1) an edit made *from that same panel* filters the word out from
+	// under itself (e.g. raising its familiarity score past "Hide
+	// familiarity >=" while the panel's still open on it) - swipeToWord's
+	// own findIndex below would otherwise come back -1 and dead-end every
+	// swipe even though the word's actual neighbors haven't moved; (2)
+	// backgrounding this tab can force a full page reload on return (see
+	// panelWordPersistence.ts) - if an edit like that happened right
+	// before/during the reload, the word can come back already absent from
+	// the very first filteredResults() this fresh page load ever computes,
+	// with no in-memory history to fall back to - only the sessionStorage-
+	// seeded value survives that, which is why lastKnownNeighbors is seeded
+	// from storage rather than starting at {prev: null, next: null}.
+	$effect(() => {
+		if (!selectedWordForPanel) {
+			lastKnownNeighbors = { prev: null, next: null };
+			return;
+		}
+		const list = filteredResults();
+		const idx = list.findIndex((r) => r.word === selectedWordForPanel);
+		if (idx === -1) return;
+		lastKnownNeighbors = {
+			prev: idx > 0 ? list[idx - 1].word : null,
+			next: idx < list.length - 1 ? list[idx + 1].word : null,
+		};
+	});
+
+	// Mobile swipe-to-navigate (WordDetailModal's onSwipeNext/onSwipePrevious)
+	// - walks this exact filteredResults() array, not analysis.results, so
+	// "next" skips over whatever the current filters/search are hiding -
+	// swiping from a visible word should land on the next *visible* word,
+	// not the next one in the underlying unfiltered order. No wraparound at
+	// either end - swiping past the last (or before the first) word is a
+	// deliberate dead end rather than looping back around.
+	function swipeToWord(direction: 'next' | 'prev') {
+		if (!selectedWordForPanel) return;
+		const list = filteredResults();
+		const idx = list.findIndex((r) => r.word === selectedWordForPanel);
+		let target: string | null;
+		if (idx !== -1) {
+			const nextIdx = direction === 'next' ? idx + 1 : idx - 1;
+			target = nextIdx >= 0 && nextIdx < list.length ? list[nextIdx].word : null;
+		} else {
+			// The open word isn't in the current list at all right now (see
+			// lastKnownNeighbors' docstring above) - fall back to its last
+			// known neighbor by name. Confirmed still actually visible before
+			// jumping there, so a neighbor that's *also* since been filtered
+			// out (or removed) doesn't strand the panel on a word absent from
+			// both the table and the current filter state.
+			const candidate = direction === 'next' ? lastKnownNeighbors.next : lastKnownNeighbors.prev;
+			target = candidate && list.some((r) => r.word === candidate) ? candidate : null;
+		}
+		if (!target) return;
+		selectedWordForPanel = target;
+	}
 
 	// Persist filter preferences (not search text - see FILTER_STORAGE_KEY
 	// comment) on every change, global per-browser rather than per-analysis.
@@ -1964,6 +2057,8 @@
 				onVisibilityEntriesChanged={(entries) => handleVisibilityEntriesChanged(selectedWordForPanel!, entries)}
 				onFamiliarityChanged={(familiarity) => handleFamiliarityChanged(selectedWordForPanel!, familiarity)}
 				onGarbageMarked={() => handleGarbageMarked(selectedWordForPanel!)}
+				onSwipeNext={() => swipeToWord('next')}
+				onSwipePrevious={() => swipeToWord('prev')}
 			/>
 		</div>
 		{/if}
