@@ -4,6 +4,14 @@
 	import * as api from '$lib/api';
 	import { goto } from '$app/navigation';
 	import AccountMenu from '$lib/components/AccountMenu.svelte';
+	import { getThemePreference, setThemePreference, type ThemePreference } from '$lib/theme.svelte';
+	import {
+		getSectionDefaults,
+		setSectionDefault,
+		SECTION_ORDER,
+		SECTION_LABELS,
+		type PanelSectionId,
+	} from '$lib/sectionVisibilityPersistence';
 
 	// The Account page - username/email/member-since, change password,
 	// delete account. Deliberately NOT the vocabulary-management section
@@ -38,6 +46,21 @@
 			loading = false;
 		}
 	});
+
+	// Preferences - theme (moved here from AccountMenu's dropdown, which
+	// still carries its own copy too - both just read/write the same
+	// module-level state in theme.svelte.ts, so there's no separate source
+	// of truth to keep in sync, just two controls on the same value) and
+	// the global default collapsed/expanded state for each of
+	// WordDetailPanel.svelte's 8 sections (see sectionVisibilityPersistence.ts's
+	// docstring for how a specific word's own overrides take priority over
+	// these once the user's actually touched a section for that word).
+	let sectionDefaults = $state(getSectionDefaults());
+	function toggleSectionDefault(section: PanelSectionId) {
+		const next = !sectionDefaults[section];
+		sectionDefaults = { ...sectionDefaults, [section]: next };
+		setSectionDefault(section, next);
+	}
 
 	// Change password
 	let currentPassword = $state('');
@@ -151,6 +174,64 @@
 						<dd class="text-gray-800 dark:text-slate-200 font-medium">{new Date(user.created_at).toLocaleDateString()}</dd>
 					</div>
 				</dl>
+			</div>
+
+			<!-- Preferences - theme, and the word-detail panel's per-section
+			     show/hide defaults. Both are plain localStorage preferences
+			     (see theme.svelte.ts / sectionVisibilityPersistence.ts), not
+			     account data from the server - this card is just the one
+			     discoverable place to see/change them all, not a different
+			     storage mechanism than what was already there. -->
+			<div class="bg-white dark:bg-slate-900 rounded-lg shadow-sm p-6 mb-6">
+				<h2 class="text-sm font-semibold text-gray-700 dark:text-slate-300 mb-4">Preferences</h2>
+
+				<!-- Theme - System/Light/Dark, not a two-way toggle, same
+				     reasoning as the identical control in AccountMenu's dropdown
+				     (see its own docstring) - this is a second control on that
+				     same underlying preference, not a separate copy of it, so
+				     changing it here or there always agrees. -->
+				<div class="mb-5">
+					<label for="theme-select-prefs" class="block text-xs text-gray-500 dark:text-slate-400 mb-1">Theme</label>
+					<select
+						id="theme-select-prefs"
+						value={getThemePreference()}
+						onchange={(e) => setThemePreference(e.currentTarget.value as ThemePreference)}
+						class="w-full max-w-xs text-sm border border-gray-300 rounded px-2 py-1.5 bg-white text-gray-700 dark:bg-slate-800 dark:border-slate-600 dark:text-slate-200"
+					>
+						<option value="system">System</option>
+						<option value="light">Light</option>
+						<option value="dark">Dark</option>
+					</select>
+				</div>
+
+				<!-- Word detail panel sections - the default a section opens in
+				     (shown/collapsed) the first time a given word's panel shows
+				     it. A word you've actually toggled a section on/off for
+				     remembers that instead, forever, regardless of what these
+				     defaults later change to - see sectionVisibilityPersistence.ts's
+				     own docstring for that resolution. -->
+				<div>
+					<span class="block text-xs text-gray-500 dark:text-slate-400 mb-1.5">
+						Word detail panel sections - shown by default
+					</span>
+					<p class="text-xs text-gray-400 dark:text-slate-500 mb-2">
+						Only affects a word's panel the first time you view it - a section you've
+						manually shown or hidden for a specific word stays that way from then on.
+					</p>
+					<div class="space-y-1.5">
+						{#each SECTION_ORDER as section (section)}
+							<label class="flex items-center gap-2 text-sm text-gray-700 dark:text-slate-300">
+								<input
+									type="checkbox"
+									checked={!sectionDefaults[section]}
+									onchange={() => toggleSectionDefault(section)}
+									class="rounded border-gray-300"
+								/>
+								{SECTION_LABELS[section]}
+							</label>
+						{/each}
+					</div>
+				</div>
 			</div>
 
 			<!-- Change password -->
