@@ -12,6 +12,7 @@
 		SECTION_LABELS,
 		type PanelSectionId,
 	} from '$lib/sectionVisibilityPersistence';
+	import { getContextChars, setContextChars, MIN_CONTEXT_CHARS, MAX_CONTEXT_CHARS } from '$lib/contextPreferences';
 
 	// The Account page - username/email/member-since, change password,
 	// delete account. Deliberately NOT the vocabulary-management section
@@ -60,6 +61,20 @@
 		const next = !sectionDefaults[section];
 		sectionDefaults = { ...sectionDefaults, [section]: next };
 		setSectionDefault(section, next);
+	}
+
+	// How much surrounding text a word's Context (results-row/card accordion,
+	// and WordDetailPanel's own Context section) shows on each side of a
+	// match - see contextPreferences.ts's own docstring. Already-fetched/
+	// cached context elsewhere in the app won't retroactively pick up a
+	// change made here (same as every other preference on this page) - a
+	// fresh fetch is what applies it, which a reload or reopening a word's
+	// panel/row already naturally triggers.
+	let contextChars = $state(getContextChars());
+	function updateContextChars(value: number) {
+		if (!Number.isFinite(value)) return;
+		setContextChars(value);
+		contextChars = getContextChars(); // re-read the clamped value, not necessarily what was typed
 	}
 
 	// Change password
@@ -230,6 +245,29 @@
 								{SECTION_LABELS[section]}
 							</label>
 						{/each}
+					</div>
+				</div>
+
+				<!-- Context length - how many characters of surrounding text a word's
+				     Context shows on each side of a match, wherever it's shown
+				     (results-row/card accordion, and the panel's own Context
+				     section). Same "applies to fresh fetches only" caveat as every
+				     other preference here - see contextChars' own docstring above. -->
+				<div class="mt-5 pt-4 border-t border-gray-100 dark:border-slate-800">
+					<label for="context-chars" class="block text-xs text-gray-500 dark:text-slate-400 mb-1.5">
+						Context length - characters shown on each side of a match
+					</label>
+					<div class="flex items-center gap-3 max-w-xs">
+						<input
+							id="context-chars"
+							type="range"
+							min={MIN_CONTEXT_CHARS}
+							max={MAX_CONTEXT_CHARS}
+							value={contextChars}
+							oninput={(e) => updateContextChars(Number(e.currentTarget.value))}
+							class="flex-1"
+						/>
+						<span class="text-sm text-gray-700 dark:text-slate-300 w-8 text-right tabular-nums">{contextChars}</span>
 					</div>
 				</div>
 			</div>

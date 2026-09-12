@@ -6,6 +6,7 @@
 	import WordDetailModal from './WordDetailModal.svelte';
 	import type { WordDetailContext } from '$lib/wordDetailContext';
 	import { saveOpenWordPanel, loadOpenWordPanel } from '$lib/panelWordPersistence';
+	import { trackReadingViewScroll, restoreReadingViewScroll } from '$lib/readingViewPersistence';
 	import { isDarkMode } from '$lib/theme.svelte';
 
 	// Read-only foundation for the reading view - renders the source text
@@ -141,6 +142,25 @@
 	$effect(() => {
 		analysisId; // re-fetch if the parent points this at a different analysis
 		load();
+	});
+
+	// Scroll position, alongside analyze/[id]/+page.svelte's own
+	// readingViewOn (readingViewPersistence.ts covers both) - "leave the
+	// app and come back to right where I was reading" needs both remembered
+	// together, or reopening reading view automatically just lands you back
+	// at the top. Tracking starts immediately; restoring waits for
+	// `loading` to flip false, since scrolling to a saved position makes no
+	// sense before the spans this analysis's height depends on have
+	// arrived. scrollRestoredForId (not a plain boolean) so switching this
+	// same mounted instance to a different analysisId - see the load()
+	// effect above - restores that analysis's own saved position too,
+	// rather than being skipped as "already restored" from the last one.
+	$effect(() => trackReadingViewScroll(analysisId));
+	let scrollRestoredForId: number | null = null;
+	$effect(() => {
+		if (loading || scrollRestoredForId === analysisId) return;
+		scrollRestoredForId = analysisId;
+		restoreReadingViewScroll(analysisId);
 	});
 
 	// The color scale functions (wordDisplay.ts) return a combined

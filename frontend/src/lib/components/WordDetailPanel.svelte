@@ -4,6 +4,7 @@
 	import { isEntryEditable, type WordDetailContext } from '$lib/wordDetailContext';
 	import { saveWordDraft, loadWordDraft, clearWordDraft } from '$lib/wordDraftPersistence';
 	import { isSectionCollapsed, setSectionCollapsedForWord, SECTION_ORDER, type PanelSectionId } from '$lib/sectionVisibilityPersistence';
+	import { getContextChars } from '$lib/contextPreferences';
 	import FamiliarityDots from './FamiliarityDots.svelte';
 
 	interface HskForm {
@@ -23,6 +24,19 @@
 		id: number;
 		word: string;
 		sentence: string;
+	}
+
+	// Matches GET /analyze/{id}/context/{word}'s WordOccurrence shape
+	// (schemas.py) - same fields analyze/[id]/+page.svelte's own row/card
+	// accordion already declares this as (see its own WordOccurrence
+	// interface), duplicated here rather than shared since the two files
+	// don't otherwise import types from each other.
+	interface WordOccurrence {
+		start: number;
+		end: number;
+		before: string;
+		match: string;
+		after: string;
 	}
 
 	// Re-exported from api.ts (see its docstring there) so every type
@@ -227,6 +241,49 @@
 		setSectionCollapsedForWord(word, section, next);
 	}
 
+	// Context ("where this word occurs in the source text") - only
+	// meaningful with an analysisId to look positions up against (see GET
+	// /analyze/{id}/context/{word}, router.py), so this only ever loads/
+	// renders for {type: 'analysis'} context - the results-row/card
+	// accordion (analyze/[id]/+page.svelte) is this same idea in a
+	// different spot, independently fetched/cached rather than sharing a
+	// cache with this panel - a deliberate choice (see this feature's own
+	// planning conversation): the two surfaces are rarely open for the same
+	// word at once, and context payloads are small enough that the
+	// occasional duplicate fetch isn't worth the cross-component coupling
+	// a shared cache would need. Lazy - fetched on first expand, not on
+	// every panel open, exactly because "context" defaults to collapsed
+	// (see sectionVisibilityPersistence.ts's FACTORY_DEFAULTS) specifically
+	// to avoid that per-open cost for words nobody checks context for.
+	let contextOccurrences: WordOccurrence[] | null = $state(null);
+	let contextLoading = $state(false);
+	let contextError = $state('');
+	async function ensureContextLoaded() {
+		if (context.type !== 'analysis' || contextOccurrences !== null || contextLoading) return;
+		const forWord = word;
+		contextLoading = true;
+		contextError = '';
+		try {
+			const result = await api.getWordContext(context.analysisId, forWord, getContextChars()) as { occurrences: WordOccurrence[] };
+			if (word !== forWord) return; // word changed mid-flight - a stale response for a word no longer shown
+			contextOccurrences = result.occurrences;
+		} catch (e: unknown) {
+			if (word !== forWord) return;
+			contextError = e instanceof Error ? e.message : 'Failed to load context';
+			contextOccurrences = [];
+		} finally {
+			if (word === forWord) contextLoading = false;
+		}
+	}
+	// Fires the lazy load the moment Context is (or already starts)
+	// expanded - covers both a manual toggle-open and a word whose global/
+	// per-word default is "shown", not just the toggle click itself.
+	$effect(() => {
+		word; // re-evaluate per word - see the reset in the load-on-word-change effect below
+		if (context.type !== 'analysis' || sectionCollapsed.context) return;
+		ensureContextLoaded();
+	});
+
 	// Quick-action bar (Familiarity/Star/Garbage/global-UserWord) - always
 	// global, always fully editable regardless of context (see KnownWord/
 	// StarredWord's docstrings, models.py) - no hierarchy logic here.
@@ -405,6 +462,12 @@
 		sectionCollapsed = Object.fromEntries(
 			SECTION_ORDER.map((s) => [s, isSectionCollapsed(word, s)])
 		) as Record<PanelSectionId, boolean>;
+		// Reset Context's own fetch state for the new word - see
+		// ensureContextLoaded's docstring above. The lazy-load effect
+		// (also keyed on `word`) picks this back up right after, firing a
+		// fresh fetch if Context is (or starts) expanded for this word.
+		contextOccurrences = null;
+		contextError = '';
 	});
 
 	// Persists the in-progress UserWord/Note/sample-sentence drafts for this
@@ -619,15 +682,15 @@
 	}
 
 	function startAddingUserWord(scope: 'global' | 'text' | 'analysis') {
-		// Global defaults to 'neutral', not 'increase' like text/analysis -
-		// a global entry is most often created just to hold a
-		// pronunciation/meaning/note (see WordDetailPanel's own "Pleco-style
-		// multi-source view" framing, CLAUDE.md), and shouldn't silently
-		// start boosting segmentation everywhere just because it exists.
-		// Text/analysis-scoped entries stay defaulting to 'increase' - those
-		// are far more often created specifically BECAUSE a word needs a
-		// segmentation nudge in that one text/analysis.
-		uwNewDraft = { pronunciation: '', meaning: '', notes: '', affectsDag: scope === 'global' ? 'neutral' : 'increase' };
+		// Global and text default to 'neutral', not 'increase' like
+		// analysis - a global or text-scoped entry is most often created
+		// just to hold a pronunciation/meaning/note (see WordDetailPanel's
+		// own "Pleco-style multi-source view" framing, CLAUDE.md), and
+		// shouldn't silently start boosting segmentation just because it
+		// exists. Analysis-scoped entries stay defaulting to 'increase' -
+		// those are far more often created specifically BECAUSE a word
+		// needs a segmentation nudge in that one analysis.
+		uwNewDraft = { pronunciation: '', meaning: '', notes: '', affectsDag: scope === 'analysis' ? 'increase' : 'neutral' };
 		if (scope === 'global') uwAddingGlobal = true;
 		else if (scope === 'text') uwAddingText = true;
 		else uwAddingAnalysis = true;
@@ -1272,6 +1335,35 @@
 			{/if}
 			{/if}
 		</div>
+
+		<!-- Context ("where does this word occur in this text") - only
+		     meaningful with an analysis to look positions up against (see
+		     ensureContextLoaded's docstring above), so the whole section -
+		     divider included - is absent entirely outside {type: 'analysis'}
+		     context, not just empty. -->
+		{#if context.type === 'analysis'}
+			<div class="border-t border-gray-100 dark:border-slate-800 mt-4 pt-3">
+				{@render sectionHeader('context', 'Context')}
+
+				{#if !sectionCollapsed.context}
+					{#if contextError}
+						<p class="text-sm text-red-600 dark:text-red-400">{contextError}</p>
+					{:else if contextLoading}
+						<p class="text-sm text-gray-400 dark:text-slate-500">Loading context...</p>
+					{:else if (contextOccurrences?.length ?? 0) > 0}
+						<div class="space-y-2 max-h-64 overflow-y-auto pr-1">
+							{#each contextOccurrences ?? [] as occ}
+								<p class="text-sm leading-relaxed">
+									<span class="text-gray-500 dark:text-slate-400">{occ.before}</span><mark class="bg-yellow-200 rounded px-0.5">{occ.match}</mark><span class="text-gray-500 dark:text-slate-400">{occ.after}</span>
+								</p>
+							{/each}
+						</div>
+					{:else}
+						<p class="text-sm text-gray-400 dark:text-slate-500">Context not available for this word.</p>
+					{/if}
+				{/if}
+			</div>
+		{/if}
 
 		<!-- Sample sentences - independent of Your entries above (see
 		     SampleSentence's docstring, models.py) - global per user+word,

@@ -75,7 +75,29 @@ def analyze_text(
     UserWord scoped to this text (but not others) is included - see that
     function's docstring for why only input-text scope, never analysis
     scope, is relevant when building an overlay.
+
+    Lowercased before any of the below - Chinese characters have no case
+    concept, so str.lower() is a no-op on them and only ever touches
+    incidental Latin-script runs (an English word/phrase sitting in
+    otherwise-Chinese text). Without this, "Love" and "love" are two
+    unrelated strings to every step below: the tokenizer's repeated-
+    sequence scan (tokenizer.py) counts exact substrings, so it never
+    recognizes the two as the same word, and the DAG's per-character
+    "unknown" fallback (nothing in a Chinese dictionary matches Latin
+    letters at all) tags "L" and "l" as separate single-character words
+    too - together producing exactly the "ove" flagged as a repeated
+    sequence while L/l show up as unrelated singletons that motivated this
+    fix. str.lower() preserves length/position character-for-character for
+    standard text, so positions computed here stay valid offsets into the
+    ORIGINAL (non-lowercased) InputText.body - this only changes what
+    analysis treats as the same word for segmentation/counting purposes,
+    never the stored source text or anything sliced from it (GET
+    /analyze/{id}/context/{word}, /spans - both read positions against the
+    original body, so the reading view and context snippets still show
+    "Love" exactly as typed even though the results table now lists it
+    merged into lowercase "love").
     """
+    text_body = text_body.lower()
     stopwords = stopwords if stopwords is not None else DEFAULT_STOPWORDS
     segmenter = get_segmenter(db)
     overlay = (

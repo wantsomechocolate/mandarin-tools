@@ -123,6 +123,33 @@ class CompareSegmentationResponse(BaseModel):
     only_in_full_segmentation: list[str]
 
 
+class WeakWord(BaseModel):
+    word: str
+    count: int
+    effective_weight: float
+
+
+class DifficultyBreakdown(BaseModel):
+    """
+    See app.modules.known_words.difficulty for the full model writeup.
+    Resolved fresh from current KnownWord state on every read, same as
+    WordResult.familiarity/is_garbage/evidence_tier - never persisted.
+    """
+    # 0-1 fraction (token-weighted known-coverage), not pre-formatted -
+    # the frontend picks its own display scale (%, /10, ...) from this one
+    # source of truth rather than carrying multiple redundant fields.
+    score: float
+    band: Literal["very_easy", "easy", "manageable", "difficult", "very_difficult"]
+    counted_tokens: int
+    known_tokens: int
+    unknown_tokens: int
+    # Count of distinct words whose score got a boost specifically because
+    # their component characters are known, even though the word itself
+    # isn't - see difficulty.compute_difficulty's docstring.
+    partial_credit_words: int
+    weakest_words: list[WeakWord]
+
+
 class AnalysisResponse(BaseModel):
     analysis_id: int
     input_text_id: int
@@ -130,6 +157,9 @@ class AnalysisResponse(BaseModel):
     total_words: int
     unique_words: int
     results: list[WordResult]
+    # None only when there are zero main-segmentation results at all (e.g.
+    # an empty text) - see difficulty.compute_difficulty.
+    difficulty: DifficultyBreakdown | None = None
 
 
 class AnalysisSpan(BaseModel):

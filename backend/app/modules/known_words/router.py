@@ -10,6 +10,8 @@ from app.models.user import User
 from app.modules.known_words import service
 from app.modules.known_words.segmenter_loader import get_segmenter, build_user_overlay
 from app.modules.known_words.dag_segmentor import aggregate_segments, aggregate_full_segmentation
+from app.modules.known_words import difficulty
+from app.modules.known_words.difficulty import MAIN_SEGMENTATION_SOURCES
 
 from app.modules.known_words.models import (
     InputText,
@@ -70,6 +72,8 @@ from app.modules.known_words.schemas import (
     CompareSegmentationRequest,
     CompareSegmentationResponse,
     SegmentedWord,
+    WeakWord,
+    DifficultyBreakdown,
 )
 
 
@@ -81,9 +85,10 @@ router = APIRouter(prefix="/known-words", tags=["known-words"])
 # the DAG's own disjoint best-guess walk, as opposed to the supplemental
 # "extra_match"/"repeated_sequence" (and legacy "token"/"longest_match_only")
 # passes layered on top of it. Used by get_analysis_spans to build its
-# left-to-right walk from best-guess rows only - see that function's
-# docstring for why mixing in the supplemental rows' positions breaks it.
-MAIN_SEGMENTATION_SOURCES = {"dag", "overlay", "unknown", "trie"}
+# left-to-right walk from best-guess rows only (see that function's
+# docstring for why mixing in the supplemental rows' positions breaks it)
+# and by difficulty.compute_difficulty to avoid double-counting tokens.
+# Canonical definition lives in difficulty.py, imported above.
 
 
 # --- Scoping helpers, shared by the user-words CRUD endpoints below (see
@@ -337,6 +342,31 @@ def compare_segmentation(
     )
 
 
+def _difficulty_response(
+    word_results: list[WordResult], known_words: dict[str, int]
+) -> DifficultyBreakdown | None:
+    """
+    Runs difficulty.compute_difficulty and adapts its plain result
+    container into the DifficultyBreakdown response schema - shared by
+    both analyze() and get_analysis() below, which each already have
+    word_results/known_words in hand from resolving WordResult itself, so
+    no extra query is needed here.
+    """
+    breakdown = difficulty.compute_difficulty(word_results, known_words)
+    if breakdown is None:
+        return None
+
+    return DifficultyBreakdown(
+        score=breakdown.score,
+        band=breakdown.band,
+        counted_tokens=breakdown.counted_tokens,
+        known_tokens=breakdown.known_tokens,
+        unknown_tokens=breakdown.unknown_tokens,
+        partial_credit_words=breakdown.partial_credit_words,
+        weakest_words=[WeakWord(**w) for w in breakdown.weakest_words],
+    )
+
+
 @router.post("/analyze", response_model=AnalysisResponse)
 def analyze(
     request: AnalyzeTextRequest,
@@ -476,6 +506,7 @@ def analyze(
         total_words=sum(d["count"] for d in filtered.values()),
         unique_words=len(filtered),
         results=word_results,
+        difficulty=_difficulty_response(word_results, known_words),
     )
 
 
@@ -537,7 +568,55 @@ def get_analysis(
         total_words=sum(r.count for r in results),
         unique_words=len(results),
         results=word_results,
+        difficulty=_difficulty_response(word_results, known_words),
     )
+
+
+@router.get("/analyze/{analysis_id}/difficulty", response_model=DifficultyBreakdown | None)
+def get_analysis_difficulty(
+    analysis_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Recompute-only endpoint backing the results page's "Recalculate" button
+    (see the difficulty breakdown card, analyze/[id]/+page.svelte) - lets a
+    user pick up familiarity changes made after the page's initial load
+    (e.g. from the word-detail panel) without a full GET /analyze/{id}
+    refetch or re-running segmentation via POST /analyze.
+
+    Deliberately skips everything get_analysis resolves for the rest of
+    WordResult (visibility, user-word detail, dictionary tiers) -
+    difficulty.compute_difficulty only ever reads word/count/source/
+    familiarity/is_garbage (see its docstring), so none of that resolution
+    work is needed here. Just three queries: the AnalysisResult rows
+    themselves, the user's known-word map, and their garbage words - same
+    as get_analysis's own difficulty computation.
+    """
+    analysis = (
+        db.query(Analysis)
+        .join(InputText, Analysis.input_text_id == InputText.id)
+        .filter(Analysis.id == analysis_id, InputText.user_id == current_user.id)
+        .first()
+    )
+    if not analysis:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Analysis not found")
+
+    results = db.query(AnalysisResult).filter_by(analysis_id=analysis_id).all()
+    known_words = service.get_known_words_for_user(current_user.id, db)
+    garbage_words = service.get_user_garbage_words(current_user.id, db)
+
+    word_results = [
+        WordResult(
+            word=r.word,
+            count=r.count,
+            source=r.source,
+            familiarity=known_words.get(r.word),
+            is_garbage=r.word in garbage_words,
+        )
+        for r in results
+    ]
+    return _difficulty_response(word_results, known_words)
 
 
 @router.get("/analyze/{analysis_id}/spans", response_model=AnalysisSpansResponse)

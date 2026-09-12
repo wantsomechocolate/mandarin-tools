@@ -343,3 +343,61 @@ export function rarityContinuousColor(freqPerMillion: number | null | undefined,
     const b = Math.round(b1 + (b2 - b1) * localT);
     return `rgb(${r}, ${g}, ${b})`;
 }
+
+// Difficulty band label/color - the per-analysis "how hard would this text
+// be for me" score's five bands (see DifficultyBreakdown, analyze/[id]/
+// +page.svelte, and DIFFICULTY_SCORING.md at the repo root for the full
+// model). Reuses familiarityColor's exact five hues in reverse (emerald =
+// best, red = worst) rather than inventing a second color vocabulary -
+// "green means good, red means struggling" should mean the same thing
+// everywhere in this app.
+export function difficultyLabel(band: string | null | undefined): string {
+    if (!band) return 'Unknown';
+    const labels: Record<string, string> = {
+        very_easy: 'Very easy',
+        easy: 'Easy',
+        manageable: 'Manageable',
+        difficult: 'Difficult',
+        very_difficult: 'Very difficult',
+    };
+    return labels[band] ?? 'Unknown';
+}
+
+export function difficultyColor(band: string | null | undefined): string {
+    if (!band) return 'bg-gray-100 text-gray-600 dark:bg-slate-500/15 dark:text-slate-400';
+    const colors: Record<string, string> = {
+        very_easy: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300',
+        easy: 'bg-green-100 text-green-700 dark:bg-green-500/15 dark:text-green-300',
+        manageable: 'bg-yellow-100 text-yellow-700 dark:bg-yellow-500/15 dark:text-yellow-200',
+        difficult: 'bg-orange-100 text-orange-700 dark:bg-orange-500/15 dark:text-orange-300',
+        very_difficult: 'bg-red-100 text-red-700 dark:bg-red-500/15 dark:text-red-300',
+    };
+    return colors[band] ?? 'bg-gray-100 text-gray-600 dark:bg-slate-500/15 dark:text-slate-400';
+}
+
+// Formats the raw 0-1 difficulty score for display - the backend returns
+// only the fraction (see DifficultyBreakdown.score) so any display scale
+// lives in exactly one place rather than drifting across call sites.
+export function difficultyPercent(score: number): number {
+    return Math.round(score * 100);
+}
+
+// 1-10 display scale, display-only - never sent back to the backend or
+// stored anywhere, purely a friendlier alternate reading of the same raw
+// score. Linearly stretches the 91%-100% coverage range (where basically
+// all of this app's real variation lives - familiarity data below that is
+// already "very difficult" territory with little point subdividing
+// further) across the full 1-10 range: 91% or below floors at 1, 100%
+// (or anything that rounds to it) hits 10, and everything between is
+// continuous rather than hard-bucketed 2-per-band - so two texts that
+// both round to "8/10" can still be told apart by hovering for the exact
+// percent (see the badge's title attribute), while two texts on opposite
+// sides of a whole-point boundary read as visibly different at a glance.
+const OUT_OF_TEN_FLOOR_PERCENT = 91;
+
+export function difficultyOutOfTen(score: number): number {
+    const percent = score * 100;
+    const clamped = Math.min(100, Math.max(OUT_OF_TEN_FLOOR_PERCENT, percent));
+    const value = 1 + ((clamped - OUT_OF_TEN_FLOOR_PERCENT) / (100 - OUT_OF_TEN_FLOOR_PERCENT)) * 9;
+    return Math.round(value);
+}

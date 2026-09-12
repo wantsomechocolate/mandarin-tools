@@ -4,7 +4,7 @@
 	import { isLoggedIn } from '$lib/auth';
 	import * as api from '$lib/api';
 	import type { Scope } from '$lib/api';
-	import { familiarityLabel, familiarityColor, evidenceTierLabel, evidenceTierColor, bucketLabel, bucketColor } from '$lib/wordDisplay';
+	import { familiarityLabel, familiarityColor, evidenceTierLabel, evidenceTierColor, bucketLabel, bucketColor, difficultyLabel, difficultyColor, difficultyPercent, difficultyOutOfTen } from '$lib/wordDisplay';
 	import { goto } from '$app/navigation';
 	import type { PageProps } from './$types';
 	import WordDetailModal from '$lib/components/WordDetailModal.svelte';
@@ -14,6 +14,8 @@
 	import { isEntryEditable, type WordDetailContext } from '$lib/wordDetailContext';
 	import { saveOpenWordPanel, loadOpenWordPanel, loadOpenWordPanelNeighbors } from '$lib/panelWordPersistence';
 	import { trackScrollPosition, restoreScrollPosition } from '$lib/scrollPersistence';
+	import { loadReadingViewOn, saveReadingViewOn } from '$lib/readingViewPersistence';
+	import { getContextChars } from '$lib/contextPreferences';
 
 	let { params }: PageProps = $props();
 
@@ -162,6 +164,26 @@
 		word_visibility: WordVisibilityEntry[];
 	}
 
+	interface WeakWord {
+		word: string;
+		count: number;
+		effective_weight: number;
+	}
+
+	// See DifficultyBreakdown (schemas.py) and DIFFICULTY_SCORING.md at the
+	// repo root for the full model. `score` is a raw 0-1 fraction - see
+	// wordDisplay.ts's difficultyPercent for the one place display
+	// formatting happens.
+	interface DifficultyBreakdown {
+		score: number;
+		band: 'very_easy' | 'easy' | 'manageable' | 'difficult' | 'very_difficult';
+		counted_tokens: number;
+		known_tokens: number;
+		unknown_tokens: number;
+		partial_credit_words: number;
+		weakest_words: WeakWord[];
+	}
+
 	interface Analysis {
 		analysis_id: number;
 		input_text_id: number;
@@ -169,6 +191,9 @@
 		total_words: number;
 		unique_words: number;
 		results: WordResult[];
+		// null only when the analysis has zero main-segmentation results
+		// (e.g. an empty text) - see difficulty.compute_difficulty (backend).
+		difficulty: DifficultyBreakdown | null;
 	}
 
 	interface WordOccurrence {
@@ -283,10 +308,31 @@
 	// Read-only reading view (ReadingView.svelte) - a completely separate
 	// mode from the filter bar/results table/mobile card list below, not
 	// shown alongside them (both would otherwise want their own
-	// WordDetailPanel instance for the same word at once). Defaults off -
-	// fetching GET /analyze/{id}/spans is opt-in cost, and the reading view
-	// itself shouldn't clutter the page for a user who never asks for it.
+	// WordDetailPanel instance for the same word at once). Defaults off for
+	// an analysis this was never turned on for - fetching GET /analyze/{id}/
+	// spans is opt-in cost, and the reading view itself shouldn't clutter
+	// the page for a user who never asks for it - but once turned on for a
+	// given analysis, it stays remembered (see readingViewPersistence.ts)
+	// and reopens on its own next time, scroll position and all
+	// (ReadingView.svelte handles restoring that half itself).
+	// Starts false and is set for real by the reseed effect below rather
+	// than seeded here from `id` directly - `id` is a derived value that
+	// can change (this page component is reused across analyses with the
+	// same route), so reading it at $state init only ever captures whatever
+	// analysis happened to be current on first mount.
 	let readingViewOn = $state(false);
+	$effect(() => {
+		readingViewOn = loadReadingViewOn(id);
+	});
+	$effect(() => {
+		saveReadingViewOn(id, readingViewOn);
+	});
+
+	// Toggled by the difficulty badge in the stats bar below - collapsed by
+	// default so the breakdown doesn't compete with the toolbar/table for
+	// attention until the user actually asks "why is my score X."
+	let difficultyDetailsOpen = $state(false);
+	let recalculatingDifficulty = $state(false);
 
 	function containsChinese(word: string): boolean {
 		return /[\u4e00-\u9fff]/.test(word);
@@ -1029,6 +1075,24 @@
 		}
 	}
 
+	// Backs the "Recalculate" button in the difficulty breakdown card -
+	// re-derives just the score from current familiarity data (see
+	// api.getAnalysisDifficulty) without re-fetching the whole results
+	// table or re-running segmentation. Only patches analysis.difficulty;
+	// everything else on the page is untouched.
+	async function recalculateDifficulty() {
+		if (!analysis) return;
+		recalculatingDifficulty = true;
+		try {
+			const difficulty = await api.getAnalysisDifficulty(analysis.analysis_id) as DifficultyBreakdown | null;
+			analysis.difficulty = difficulty;
+		} catch (e: unknown) {
+			error = e instanceof Error ? e.message : 'Failed to recalculate difficulty score';
+		} finally {
+			recalculatingDifficulty = false;
+		}
+	}
+
 	// WordDetailPanel.svelte now owns its own fetching - this just tells it
 	// which word to show and scrolls the triggering row into view (desktop
 	// only in practice - the matching mobile card is hidden (display:none)
@@ -1084,7 +1148,7 @@
 		if (contextByWord[word] || loadingContextFor.has(word)) return;
 		loadingContextFor = new Set([...loadingContextFor, word]);
 		try {
-			const context = await api.getWordContext(id, word) as { occurrences: WordOccurrence[] };
+			const context = await api.getWordContext(id, word, getContextChars()) as { occurrences: WordOccurrence[] };
 			contextByWord = { ...contextByWord, [word]: context.occurrences };
 		} catch (e: unknown) {
 			contextByWord = { ...contextByWord, [word]: [] };
@@ -1274,6 +1338,13 @@
 		{:else}
 			<path d="M4 6h12M4 10h12M4 14h12" />
 		{/if}
+	</svg>
+{/snippet}
+
+{#snippet iconRefresh(spinning: boolean)}
+	<svg class="w-4 h-4 {spinning ? 'animate-spin' : ''}" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+		<path d="M16 10a6 6 0 1 1-1.76-4.24" />
+		<path d="M16 3.5v3.75h-3.75" />
 	</svg>
 {/snippet}
 
@@ -1597,6 +1668,19 @@
 				<span>{mainSegUniqueWords} unique words</span>
 				<span>{mainSegTotalWords} total</span>
 			</div>
+			{#if analysis.difficulty}
+				{@const d = analysis.difficulty}
+				<button
+					type="button"
+					onclick={() => difficultyDetailsOpen = !difficultyDetailsOpen}
+					aria-pressed={difficultyDetailsOpen}
+					aria-label="Difficulty: {difficultyOutOfTen(d.score)} out of 10, {difficultyLabel(d.band)}. Click for a breakdown."
+					title="{difficultyPercent(d.score)}% known-coverage"
+					class="text-sm font-medium px-3 py-1.5 rounded-full shrink-0 transition-opacity hover:opacity-80 {difficultyColor(d.band)}"
+				>
+					{difficultyOutOfTen(d.score)}/10 · {difficultyLabel(d.band)}
+				</button>
+			{/if}
 			<button
 				type="button"
 				onclick={() => readingViewOn = !readingViewOn}
@@ -1607,6 +1691,50 @@
 				Reading view
 			</button>
 		</div>
+		{#if difficultyDetailsOpen && analysis.difficulty}
+			{@const d = analysis.difficulty}
+			<div class="bg-white dark:bg-slate-900 border-t border-gray-100 dark:border-slate-800 px-6 py-4">
+				<div class="max-w-5xl lg:max-w-6xl 2xl:max-w-7xl mx-auto">
+					<div class="flex items-center justify-end mb-2">
+						<button
+							type="button"
+							onclick={recalculateDifficulty}
+							disabled={recalculatingDifficulty}
+							class="flex items-center gap-1.5 text-xs text-gray-500 dark:text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 disabled:opacity-60 disabled:cursor-default"
+							title="Re-score using your current familiarity data, without re-running segmentation"
+						>
+							{@render iconRefresh(recalculatingDifficulty)}
+							{recalculatingDifficulty ? 'Recalculating…' : 'Recalculate'}
+						</button>
+					</div>
+					<div class="flex items-center gap-1 h-3 rounded-full overflow-hidden bg-gray-100 dark:bg-slate-800 mb-2" title="{d.known_tokens} known / {d.unknown_tokens} unknown, out of {d.counted_tokens} counted tokens">
+						<div class="h-full bg-emerald-400 dark:bg-emerald-500" style="width: {d.counted_tokens ? (d.known_tokens / d.counted_tokens) * 100 : 0}%"></div>
+						<div class="h-full bg-red-300 dark:bg-red-500/60 flex-1"></div>
+					</div>
+					<p class="text-xs text-gray-500 dark:text-slate-400 mb-3">
+						{d.known_tokens} known / {d.unknown_tokens} unknown tokens (of {d.counted_tokens} counted)
+						{#if d.partial_credit_words > 0}
+							· {d.partial_credit_words} word{d.partial_credit_words === 1 ? '' : 's'} got credit for characters you already know
+						{/if}
+					</p>
+					{#if d.weakest_words.length > 0}
+						<p class="text-xs font-medium text-gray-500 dark:text-slate-400 mb-1.5">Weighing your score down most:</p>
+						<div class="flex flex-wrap gap-1.5">
+							{#each d.weakest_words as w (w.word)}
+								<button
+									type="button"
+									onclick={() => openWordDetail(w.word)}
+									class="text-xs px-2 py-1 rounded-full bg-gray-100 dark:bg-slate-800 text-gray-700 dark:text-slate-300 hover:bg-gray-200 dark:hover:bg-slate-700"
+									title="{w.count} occurrence{w.count === 1 ? '' : 's'}"
+								>
+									{w.word} <span class="text-gray-400 dark:text-slate-500">×{w.count}</span>
+								</button>
+							{/each}
+						</div>
+					{/if}
+				</div>
+			</div>
+		{/if}
 	{/if}
 
 	<main class="max-w-5xl lg:max-w-6xl 2xl:max-w-7xl mx-auto px-6 py-8">

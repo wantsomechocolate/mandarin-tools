@@ -153,8 +153,16 @@ export async function getAnalysisSpans(id: number) {
     return request('GET', `/known-words/analyze/${id}/spans`);
 }
 
-export async function getWordContext(analysisId: number, word: string) {
-    return request('GET', `/known-words/analyze/${analysisId}/context/${encodeURIComponent(word)}`);
+// Recompute-only endpoint backing the results page's "Recalculate" button
+// in the difficulty breakdown card - lets familiarity changes made after
+// the page's initial load be picked up without a full getAnalysis refetch.
+export async function getAnalysisDifficulty(id: number) {
+    return request('GET', `/known-words/analyze/${id}/difficulty`);
+}
+
+export async function getWordContext(analysisId: number, word: string, contextChars?: number) {
+    const qs = contextChars !== undefined ? `?context_chars=${contextChars}` : '';
+    return request('GET', `/known-words/analyze/${analysisId}/context/${encodeURIComponent(word)}${qs}`);
 }
 
 export async function listInputTexts() {
