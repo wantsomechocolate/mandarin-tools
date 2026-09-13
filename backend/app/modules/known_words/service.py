@@ -279,27 +279,78 @@ def get_known_words_for_user(user_id: int, db: Session) -> dict[str, int]:
 
 
 
-def search_words(query: str, user_id: int, db: Session, limit: int = 50) -> tuple[list[dict], bool]:
+def _escape_like_literal(text_: str) -> str:
+    """
+    Escapes the 3 characters that mean something special to Postgres's LIKE
+    (backslash first, so the backslashes this inserts for % and _ don't
+    themselves get re-escaped) - used by _build_like_pattern so a stray
+    literal %/_ typed or pasted into the search box is matched literally,
+    never mistaken for a SQL wildcard.
+    """
+    return text_.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _build_like_pattern(query: str) -> tuple[str, bool]:
+    """
+    Translates the search box's own tiny wildcard syntax into a Postgres
+    LIKE pattern - '*' means "any sequence of characters" (mirrors SQL's
+    own '%'), placed anywhere the caller wants it. See GET /word-search's
+    docstring (router.py) for the real measured cost of each shape: a
+    literal prefix before the first '*' (or no '*' at all) stays index-fast
+    regardless of what follows, since Postgres's LIKE optimizer can turn
+    that literal prefix into an indexed range scan on its own; only a
+    query that OPENS with '*' (no literal prefix at all) forces a full
+    scan - measured at ~250-550ms against the real ~1.66M-row
+    dictionary_words table, vs. sub-millisecond for every prefixed shape.
+
+    No '*' in the query: today's plain "starts with" behavior, unchanged -
+    the query is escaped (see _escape_like_literal) and a trailing '%' is
+    appended automatically, same as before this function existed.
+
+    '*' present anywhere: "explicit mode" - escaped the same way, then
+    every '*' becomes an unescaped '%'. No trailing wildcard is added once
+    the user has taken control of the pattern - the same shell-glob
+    convention used everywhere else this kind of syntax shows up, so "打*"
+    behaves exactly like plain "打" (nothing to gain from adding a second,
+    redundant wildcard), while matching "starts with 打, contains 电话
+    later, then anything else" needs an explicit second '*': "打*电话*".
+
+    Returns (pattern, is_wildcard) - is_wildcard tells the caller whether
+    to keep the "exact match first" ORDER BY tie-break, which only makes
+    sense for a plain literal query (a wildcard pattern has no single
+    "the query equals this word" case to prefer).
+    """
+    is_wildcard = "*" in query
+    escaped = _escape_like_literal(query)
+    if is_wildcard:
+        return escaped.replace("*", "%"), True
+    return f"{escaped}%", False
+
+
+def search_words(query: str, user_id: int, db: Session, limit: int = 100) -> tuple[list[dict], bool]:
     """
     Candidate-word resolution for GET /word-search. dictionary_words is
     already a FULL OUTER JOIN of word_frequencies ∪ hsk_entries ∪
     cedict_entries (see build_dictionary.py), with HSK levels/CC-CEDICT
     backing/corpus frequency all denormalized onto that one row (see its
-    docstring, models.py) - so a single prefix scan against it covers HSK,
+    docstring, models.py) - so a single LIKE scan against it covers HSK,
     CC-CEDICT, and corpus matches at once. A user's own UserWord rows are
     scanned separately: a custom entry (e.g. a segmentation-artifact
     override with no real dictionary backing) still needs to be findable
-    here even though it has no dictionary_words row at all.
+    here even though it has no dictionary_words row at all. See
+    _build_like_pattern for the '*'-wildcard syntax both scans share.
 
-    Ranking: exact match first, then freq_per_million descending (nulls
-    last - a user-only word has no frequency to rank by), then plain
-    codepoint order - same non-phonetic tie-break precedent as the results
-    page's own Word column sort (not localeCompare/pinyin - see CLAUDE.md's
+    Ranking: exact match first (skipped entirely for a wildcard pattern -
+    see _build_like_pattern), then freq_per_million descending (nulls last
+    - a user-only word has no frequency to rank by), then plain codepoint
+    order - same non-phonetic tie-break precedent as the results page's
+    own Word column sort (not localeCompare/pinyin - see CLAUDE.md's
     sorting note). The dictionary side's own top-`limit` (computed in SQL,
     already in this exact order) can only ever be added to by a user-only
     word, never displaced by one, since a user-only word has no frequency
-    to outrank anything with - the one exception is an exact match, which
-    always sorts first regardless of which side found it.
+    to outrank anything with - the one exception is an exact match on a
+    non-wildcard query, which always sorts first regardless of which side
+    found it.
 
     Returns (rows, truncated), capped at `limit`. Each row carries
     dictionary_words' own columns (word, frequency, hsk_v2_2012,
@@ -311,29 +362,51 @@ def search_words(query: str, user_id: int, db: Session, limit: int = 50) -> tupl
     labor get_word_dictionary_tiers already uses (bulk-resolve the
     dictionary-backed half here, leave the rest to whoever's assembling the
     response).
+
+    `truncated` is derived from over-fetching by one (`limit + 1`) rather
+    than a separate COUNT(*) query - for a leading-'*' pattern (the one
+    shape with no usable index), a full-table COUNT costs about as much as
+    the scan itself (measured ~420ms against the real table), which would
+    roughly double total latency for exactly the query shape already
+    paying the most. Fetching one extra row and checking whether it came
+    back answers "is there at least one more beyond `limit`" for the same
+    price as fetching `limit` in the first place. The dictionary side is
+    capped at `limit + 1` (real over-fetch); the user_words side never was
+    capped at all (already a full, exact scan - see below), so `len(merged)
+    > limit` after combining both is exact whenever the dictionary side
+    wasn't the one hitting the cap, and correctly still True whenever it
+    was, regardless of how many more actually exist beyond the extra row.
     """
     if not _CJK_RE.search(query):
         return [], False
 
-    prefix = f"{query}%"
+    pattern, is_wildcard = _build_like_pattern(query)
+    order_by = (
+        "freq_per_million DESC NULLS LAST, word" if is_wildcard
+        else "(word <> :query), freq_per_million DESC NULLS LAST, word"
+    )
 
-    dict_rows = db.execute(text("""
+    # Over-fetch by one (see docstring above) instead of a separate
+    # COUNT(*) - `fetch_cap` rows come back only when there are truly at
+    # least that many matches.
+    fetch_cap = limit + 1
+    dict_rows = db.execute(text(f"""
         SELECT word, frequency, hsk_v2_2012, hsk_v3_2021, hsk_v3_2026,
                freq_per_million, rarity_tier, is_cedict
         FROM dictionary_words
-        WHERE word LIKE :prefix
-        ORDER BY (word <> :query), freq_per_million DESC NULLS LAST, word
-        LIMIT :limit
-    """), {"prefix": prefix, "query": query, "limit": limit}).mappings().all()
+        WHERE word LIKE :pattern ESCAPE '\\'
+        ORDER BY {order_by}
+        LIMIT :fetch_cap
+    """), {"pattern": pattern, "query": query, "fetch_cap": fetch_cap}).mappings().all()
     dict_by_word = {r["word"]: dict(r) for r in dict_rows}
 
-    dict_total = db.execute(text("""
-        SELECT COUNT(*) FROM dictionary_words WHERE word LIKE :prefix
-    """), {"prefix": prefix}).scalar()
-
+    # Never capped - scoped to one user, so this is always a small, exact
+    # scan regardless of pattern shape (no perf concern to over-fetch
+    # around here).
     user_word_rows = db.execute(text("""
-        SELECT DISTINCT word FROM user_words WHERE user_id = :user_id AND word LIKE :prefix
-    """), {"user_id": user_id, "prefix": prefix}).fetchall()
+        SELECT DISTINCT word FROM user_words
+        WHERE user_id = :user_id AND word LIKE :pattern ESCAPE '\\'
+    """), {"user_id": user_id, "pattern": pattern}).fetchall()
     user_matched_words = {w for (w,) in user_word_rows}
     user_only_words = user_matched_words - set(dict_by_word)
 
@@ -347,12 +420,13 @@ def search_words(query: str, user_id: int, db: Session, limit: int = 50) -> tupl
 
     def sort_key(word: str) -> tuple:
         freq = merged[word]["freq_per_million"]
-        return (word != query, -(freq if freq is not None else -1), word)
+        exact_first = word != query if not is_wildcard else False
+        return (exact_first, -(freq if freq is not None else -1), word)
 
     ordered_words = sorted(merged, key=sort_key)[:limit]
     rows = [{**merged[w], "is_user_word": w in user_matched_words} for w in ordered_words]
 
-    truncated = (dict_total + len(user_only_words)) > limit
+    truncated = len(merged) > limit
     return rows, truncated
 
 

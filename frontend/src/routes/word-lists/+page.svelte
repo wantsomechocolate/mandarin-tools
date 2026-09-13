@@ -17,9 +17,15 @@
 	});
 	let error = $state('');
 
-	// Same order as the tab bar (+layout.svelte's own `tabs` array) - kept
-	// in sync by hand since this is a separate array, not a shared import,
-	// matching this page's existing "own copy of card metadata" shape.
+	// Search isn't in this array, even though it's the tab bar's first tab
+	// (+layout.svelte) - every card here links to a *count* (how many rows
+	// exist in some list), and search isn't a list with a count of its own,
+	// so it's rendered as its own hardcoded card, first, in the markup
+	// below instead of being forced into this count-shaped data structure.
+	//
+	// Same order as the tab bar otherwise - kept in sync by hand since this
+	// is a separate array, not a shared import, matching this page's
+	// existing "own copy of card metadata" shape.
 	const cards = [
 		{ key: 'starredWords', href: '/word-lists/starred-words', label: 'Starred Words', description: 'Words you’ve bookmarked for later.' },
 		{ key: 'knownWords', href: '/word-lists/known-words', label: 'Known Words', description: 'Familiarity scores for vocabulary you’re studying.' },
@@ -52,6 +58,15 @@
 {/if}
 
 <div class="grid sm:grid-cols-2 gap-4">
+	<!-- No count badge - see the comment above `cards` for why this one's
+	     hardcoded rather than part of that array. -->
+	<a
+		href="/word-lists/search"
+		class="bg-white dark:bg-slate-900 rounded-lg shadow-sm p-5 hover:shadow-md transition-shadow"
+	>
+		<h2 class="text-lg font-semibold text-gray-800 dark:text-slate-200 mb-1">Word Search</h2>
+		<p class="text-sm text-gray-500 dark:text-slate-400">Search all data sources</p>
+	</a>
 	{#each cards as card}
 		<a
 			href={card.href}

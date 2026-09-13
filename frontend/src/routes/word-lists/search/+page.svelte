@@ -11,16 +11,38 @@
 	} from '$lib/wordDisplay';
 	import WordDetailModal from '$lib/components/WordDetailModal.svelte';
 	import type { WordDetailContext } from '$lib/wordDetailContext';
-	import { saveOpenWordPanel, loadOpenWordPanel } from '$lib/panelWordPersistence';
+	import {
+		saveOpenWordPanel, loadOpenWordPanel,
+		loadOpenWordPanelNeighbors, loadOpenWordPanelSessionWords,
+	} from '$lib/panelWordPersistence';
 
 	// Global list page, same as Known/User/Starred Words - a word found here
 	// is viewed with no text/analysis in scope, so WordDetailPanel's UserWord/
 	// Visibility sections show every entry read-only except the global one
 	// (see isEntryEditable, wordDetailContext.ts).
 	const panelContext: WordDetailContext = { type: 'global' };
+	// Initialized from panelWordPersistence.ts, same as every other page that
+	// opens this modal - recovers which word's panel was open across a
+	// mobile browser's involuntary page reload (see its docstring).
 	let selectedWordForPanel: string | null = $state(loadOpenWordPanel());
+	// Swipe-to-navigate neighbor cache and frozen session order - same
+	// mechanism as analyze/[id]/+page.svelte's own (see swipeToWord below
+	// and that page's matching declarations for the full picture of why
+	// both need to be seeded from sessionStorage rather than starting empty).
+	let lastKnownNeighbors: { prev: string | null; next: string | null } = $state(
+		(() => {
+			const stored = loadOpenWordPanelNeighbors();
+			return stored ? { prev: stored.prevWord, next: stored.nextWord } : { prev: null, next: null };
+		})()
+	);
+	let swipeSessionWords: string[] | null = $state(loadOpenWordPanelSessionWords());
 	$effect(() => {
-		saveOpenWordPanel(selectedWordForPanel);
+		saveOpenWordPanel(
+			selectedWordForPanel,
+			'default',
+			{ prevWord: lastKnownNeighbors.prev, nextWord: lastKnownNeighbors.next },
+			swipeSessionWords
+		);
 	});
 
 	// Same CJK range as the results page's own containsChinese
@@ -108,7 +130,66 @@
 		}
 	});
 
-	function handleRowClick(event: MouseEvent, word: string) {
+	// Tracks the open panel word's immediate prev/next in the current
+	// `results`, by word identity - same reasoning as analyze/[id]'s own
+	// identical effect: only overwritten when the word IS found, so it
+	// keeps the last good neighbors instead of clearing to null the moment
+	// a fresh search (or a reload) no longer contains it.
+	$effect(() => {
+		if (!selectedWordForPanel) {
+			lastKnownNeighbors = { prev: null, next: null };
+			return;
+		}
+		const idx = results.findIndex((r) => r.word === selectedWordForPanel);
+		if (idx === -1) return;
+		lastKnownNeighbors = {
+			prev: idx > 0 ? results[idx - 1].word : null,
+			next: idx < results.length - 1 ? results[idx + 1].word : null,
+		};
+	});
+
+	// Freezes the swipe order for as long as a panel stays open - captured
+	// once, the instant a panel opens from fully closed, and held fixed
+	// until it closes, same as analyze/[id]'s own identical effect. Without
+	// this, typing a new search query while a panel is open would reshuffle
+	// the list out from under an in-progress swipe.
+	$effect(() => {
+		if (selectedWordForPanel && swipeSessionWords === null) {
+			swipeSessionWords = results.map((r) => r.word);
+		} else if (!selectedWordForPanel) {
+			swipeSessionWords = null;
+		}
+	});
+
+	// No wraparound at either end - swiping past the last (or before the
+	// first) word is a deliberate dead end, same as analyze/[id].
+	function swipeToWord(direction: 'next' | 'prev') {
+		if (!selectedWordForPanel) return;
+		const frozen = swipeSessionWords;
+		const idx = frozen ? frozen.indexOf(selectedWordForPanel) : -1;
+		let target: string | null;
+		if (frozen && idx !== -1) {
+			const nextIdx = direction === 'next' ? idx + 1 : idx - 1;
+			target = nextIdx >= 0 && nextIdx < frozen.length ? frozen[nextIdx] : null;
+		} else {
+			const liveIdx = results.findIndex((r) => r.word === selectedWordForPanel);
+			if (liveIdx !== -1) {
+				const nextIdx = direction === 'next' ? liveIdx + 1 : liveIdx - 1;
+				target = nextIdx >= 0 && nextIdx < results.length ? results[nextIdx].word : null;
+			} else {
+				const candidate = direction === 'next' ? lastKnownNeighbors.next : lastKnownNeighbors.prev;
+				target = candidate && results.some((r) => r.word === candidate) ? candidate : null;
+			}
+		}
+		if (!target) return;
+		selectedWordForPanel = target;
+	}
+
+	// Same click-passthrough pattern as every other row/card in this app -
+	// the row itself is a plain div (role="button"), not a <button>, so that
+	// a nested interactive element (none today, but kept for consistency)
+	// could still handle its own click without also opening the panel.
+	function handleRowClick(event: MouseEvent | KeyboardEvent, word: string) {
 		const target = event.target as HTMLElement;
 		if (target.closest('button, a, input, select, textarea')) return;
 		selectedWordForPanel = word;
@@ -124,15 +205,25 @@
 {/if}
 
 <div class="bg-white dark:bg-slate-900 rounded-lg shadow-sm p-4 mb-4">
-	<p class="text-sm font-medium text-gray-600 dark:text-slate-400 mb-2">Search every source at once</p>
+	<p class="text-sm font-medium text-gray-600 dark:text-slate-400 mb-2">Search all sources</p>
 	<input
 		type="search"
 		bind:value={query}
-		placeholder="Type a Chinese word..."
+		placeholder="Start typing..."
 		class="border border-gray-300 rounded px-3 py-2 text-lg w-full max-w-sm"
 	/>
 	{#if trimmedQuery && !readyToSearch}
 		<p class="text-xs text-amber-600 mt-2">Type at least one Chinese character to search.</p>
+	{:else}
+		<!-- Wildcard queries anchored anywhere but the very start (e.g. 学*生)
+		     stay just as fast as a plain search - Postgres can still use the
+		     word index for the literal text before the first '*'. Only a
+		     query that OPENS with '*' (e.g. *的) has no literal prefix to
+		     index against, so it falls back to a full scan - noticeably
+		     slower (see service.search_words' docstring, backend), but still
+		     bounded by the same result cap, not a real problem for an
+		     occasional, deliberate search like this. -->
+		<p class="text-xs text-gray-400 dark:text-slate-500 mt-2">Tip: use * as a wildcard, e.g. 学*生 or *的.</p>
 	{/if}
 </div>
 
@@ -142,7 +233,7 @@
 	<div class="flex-1 min-w-0 bg-white dark:bg-slate-900 rounded-lg shadow-sm overflow-hidden">
 		{#if !trimmedQuery}
 			<p class="text-gray-500 dark:text-slate-400 p-4">
-				Start typing to search HSK, CC-CEDICT, corpus frequency, and your own dictionary entries at once.
+				Sources currently include Corpus Frequency, HSK, CC-CEDICT, and your own dictionary entries.
 			</p>
 		{:else if !readyToSearch}
 			<!-- The amber hint above already explains why - nothing more to say here. -->
@@ -159,10 +250,12 @@
 			<ul class="divide-y divide-gray-100 dark:divide-slate-800">
 				{#each results as r (r.word)}
 					<li>
-						<button
-							type="button"
-							class="w-full text-left px-4 py-3 hover:bg-gray-50 dark:hover:bg-slate-800 cursor-pointer"
+						<div
+							role="button"
+							tabindex="0"
 							onclick={(e) => handleRowClick(e, r.word)}
+							onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleRowClick(e, r.word); } }}
+							class="px-4 py-3 hover:bg-gray-50 dark:hover:bg-slate-800 cursor-pointer"
 						>
 							<div class="flex items-baseline gap-2 flex-wrap">
 								<span class="text-lg font-medium">{r.word}</span>
@@ -193,7 +286,7 @@
 									<span class="text-xs px-2 py-0.5 rounded-full {familiarityColor(r.familiarity)}">{familiarityLabel(r.familiarity)}</span>
 								{/if}
 							</div>
-						</button>
+						</div>
 					</li>
 				{/each}
 			</ul>
@@ -204,5 +297,7 @@
 		word={selectedWordForPanel}
 		context={panelContext}
 		onClose={() => selectedWordForPanel = null}
+		onSwipeNext={() => swipeToWord('next')}
+		onSwipePrevious={() => swipeToWord('prev')}
 	/>
 </div>
