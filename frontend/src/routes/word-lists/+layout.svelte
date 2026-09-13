@@ -6,13 +6,17 @@
 
 	// One tab per manageable list - each a top-level entity with no
 	// existing "see everything" view before this (see each sub-page's own
-	// docstring for what it shows and why). Starred first (the words you
-	// most actively chose to flag), then Known/User (day-to-day vocabulary
-	// management), then Notes (words you've annotated, regardless of
-	// starred/known/user-word status - see WordNote's docstring, models.py),
-	// then Stopwords/Garbage last (maintenance/cleanup lists, touched less
-	// often).
+	// docstring for what it shows and why). Search first - it's the entry
+	// point into everything else here (find a word from any source, then
+	// the same WordDetailPanel every other tab opens takes it from there),
+	// not itself a managed list the way the rest of these tabs are. Then
+	// Starred (the words you most actively chose to flag), then Known/User
+	// (day-to-day vocabulary management), then Notes (words you've
+	// annotated, regardless of starred/known/user-word status - see
+	// WordNote's docstring, models.py), then Stopwords/Garbage last
+	// (maintenance/cleanup lists, touched less often).
 	const tabs = [
+		{ href: '/word-lists/search', label: 'Search' },
 		{ href: '/word-lists/starred-words', label: 'Starred Words' },
 		{ href: '/word-lists/known-words', label: 'Known Words' },
 		{ href: '/word-lists/user-words', label: 'User Words' },

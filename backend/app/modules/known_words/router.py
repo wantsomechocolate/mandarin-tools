@@ -69,6 +69,8 @@ from app.modules.known_words.schemas import (
     WordDetail,
     UserWordEntryDetail,
     VisibilityEntryDetail,
+    WordSearchResult,
+    WordSearchResponse,
     CompareSegmentationRequest,
     CompareSegmentationResponse,
     SegmentedWord,
@@ -1759,6 +1761,124 @@ def delete_word_note(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Word note not found")
     db.delete(note)
     db.commit()
+
+
+@router.get("/word-search", response_model=WordSearchResponse)
+def search_words(
+    q: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Cross-source word search: one endpoint over HSK, CC-CEDICT, corpus
+    frequency (dictionary_words), and the user's own UserWord entries at
+    once - see service.search_words for the candidate-word/ranking logic.
+    This function's own job is the enrichment step: for just the capped
+    set of words that function returns, bulk-fetch everything needed for
+    one WordSearchResult row per word (HSK form, CC-CEDICT sense, the
+    user's own UserWord entries, familiarity/starred/garbage status) - the
+    same "bulk-resolve once, look up per word from a dict" shape every
+    other multi-word endpoint in this router already uses, not a query per
+    candidate.
+
+    Deliberately returns a lightweight preview per word, not a WordDetail -
+    clicking a result opens WordDetailPanel, which does its own full GET
+    /words/{word} fetch (sample sentences, notes, every scoped entry) on
+    open regardless of what this row already had (see WordSearchResult's
+    docstring, schemas.py).
+    """
+    rows, truncated = service.search_words(q, current_user.id, db)
+    if not rows:
+        return WordSearchResponse(query=q, results=[], truncated=truncated)
+
+    candidate_words = [r["word"] for r in rows]
+
+    hsk_entries = db.query(HskEntry).filter(HskEntry.simplified.in_(candidate_words)).all()
+    hsk_entry_by_word = {e.simplified: e for e in hsk_entries}
+    hsk_forms = (
+        db.query(HskForm).filter(HskForm.entry_id.in_([e.id for e in hsk_entries])).all()
+        if hsk_entries else []
+    )
+    forms_by_entry_id: dict[int, list[HskForm]] = {}
+    for f in hsk_forms:
+        forms_by_entry_id.setdefault(f.entry_id, []).append(f)
+
+    cedict_by_word: dict[str, list[CedictEntry]] = {}
+    for c in db.query(CedictEntry).filter(CedictEntry.simplified.in_(candidate_words)).all():
+        cedict_by_word.setdefault(c.simplified, []).append(c)
+
+    user_words_by_word: dict[str, list[UserWord]] = {}
+    for uw in db.query(UserWord).filter(
+        UserWord.user_id == current_user.id, UserWord.word.in_(candidate_words),
+    ).all():
+        user_words_by_word.setdefault(uw.word, []).append(uw)
+
+    familiarity_by_word = {
+        k.word: k.familiarity
+        for k in db.query(KnownWord).filter(
+            KnownWord.user_id == current_user.id, KnownWord.word.in_(candidate_words),
+        ).all()
+    }
+    starred_words = {
+        s.word for s in db.query(StarredWord).filter(
+            StarredWord.user_id == current_user.id, StarredWord.word.in_(candidate_words),
+        ).all()
+    }
+    garbage_words = service.get_user_garbage_words(current_user.id, db)
+
+    results = []
+    for row in rows:
+        word = row["word"]
+        hsk_entry = hsk_entry_by_word.get(word)
+        forms = forms_by_entry_id.get(hsk_entry.id, []) if hsk_entry else []
+        cedict_entries = cedict_by_word.get(word, [])
+        uw_rows = user_words_by_word.get(word, [])
+        # Prefer the global entry for the pronunciation/meaning fallback
+        # (no scope columns set) - this is a display fallback, not a
+        # segmentation resolution, so any row beats none.
+        fallback_uw = next(
+            (u for u in uw_rows if u.scope_analysis_id is None and u.scope_input_text_id is None),
+            uw_rows[0] if uw_rows else None,
+        )
+
+        pinyin = (
+            (forms[0].pinyin if forms else None)
+            or (cedict_entries[0].pinyin if cedict_entries else None)
+            or (fallback_uw.pronunciation if fallback_uw else None)
+        )
+        preview_meaning = (
+            (forms[0].meanings[0] if forms and forms[0].meanings else None)
+            or (cedict_entries[0].definitions[0] if cedict_entries and cedict_entries[0].definitions else None)
+            or (fallback_uw.meaning if fallback_uw else None)
+        )
+
+        sources: list[str] = []
+        if row["hsk_v2_2012"] is not None or row["hsk_v3_2021"] is not None or row["hsk_v3_2026"] is not None:
+            sources.append("hsk")
+        if row["is_cedict"]:
+            sources.append("cedict")
+        if row["frequency"] is not None and row["frequency"] > 0:
+            sources.append("corpus")
+        if row["is_user_word"]:
+            sources.append("user")
+
+        results.append(WordSearchResult(
+            word=word,
+            pinyin=pinyin,
+            preview_meaning=preview_meaning,
+            hsk_v2_2012=row["hsk_v2_2012"],
+            hsk_v3_2021=row["hsk_v3_2021"],
+            hsk_v3_2026=row["hsk_v3_2026"],
+            freq_per_million=row["freq_per_million"],
+            rarity_tier=row["rarity_tier"],
+            sources=sources,
+            is_user_word=row["is_user_word"],
+            familiarity=familiarity_by_word.get(word),
+            is_starred=word in starred_words,
+            is_garbage=word in garbage_words,
+        ))
+
+    return WordSearchResponse(query=q, results=results, truncated=truncated)
 
 
 @router.get("/words/{word}", response_model=WordDetail)

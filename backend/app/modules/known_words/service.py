@@ -1,3 +1,5 @@
+import re
+
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 
@@ -5,6 +7,14 @@ from app.modules.known_words.trie_loader import get_trie
 from app.modules.known_words.tokenizer import tokenize
 from app.modules.known_words.segmenter_loader import get_segmenter, build_user_overlay
 from app.modules.known_words.dag_segmentor import aggregate_segments, aggregate_full_segmentation
+
+# Same CJK-ideograph range as difficulty.py's own _CJK_RE (kept as its own
+# copy rather than a cross-module import - that one's module-private, and
+# this is the same "at least one real Chinese character" gate the frontend
+# search box already enforces client-side (containsChinese, analyze/[id]/
+# +page.svelte) - this is the server-side half, not something new invented
+# for search.
+_CJK_RE = re.compile(r"[一-鿿]")
 
 
 # One unified stopword list, not two per-algorithm ones - both the DAG
@@ -267,6 +277,83 @@ def get_known_words_for_user(user_id: int, db: Session) -> dict[str, int]:
     return {word: familiarity for word, familiarity in rows}
 
 
+
+
+def search_words(query: str, user_id: int, db: Session, limit: int = 50) -> tuple[list[dict], bool]:
+    """
+    Candidate-word resolution for GET /word-search. dictionary_words is
+    already a FULL OUTER JOIN of word_frequencies ∪ hsk_entries ∪
+    cedict_entries (see build_dictionary.py), with HSK levels/CC-CEDICT
+    backing/corpus frequency all denormalized onto that one row (see its
+    docstring, models.py) - so a single prefix scan against it covers HSK,
+    CC-CEDICT, and corpus matches at once. A user's own UserWord rows are
+    scanned separately: a custom entry (e.g. a segmentation-artifact
+    override with no real dictionary backing) still needs to be findable
+    here even though it has no dictionary_words row at all.
+
+    Ranking: exact match first, then freq_per_million descending (nulls
+    last - a user-only word has no frequency to rank by), then plain
+    codepoint order - same non-phonetic tie-break precedent as the results
+    page's own Word column sort (not localeCompare/pinyin - see CLAUDE.md's
+    sorting note). The dictionary side's own top-`limit` (computed in SQL,
+    already in this exact order) can only ever be added to by a user-only
+    word, never displaced by one, since a user-only word has no frequency
+    to outrank anything with - the one exception is an exact match, which
+    always sorts first regardless of which side found it.
+
+    Returns (rows, truncated), capped at `limit`. Each row carries
+    dictionary_words' own columns (word, frequency, hsk_v2_2012,
+    hsk_v3_2021, hsk_v3_2026, freq_per_million, rarity_tier, is_cedict -
+    None/False throughout for a user-only word) plus is_user_word.
+    Per-word HSK-form/CC-CEDICT/UserWord/KnownWord/StarredWord/garbage
+    enrichment is left entirely to the caller (router.py), which only ever
+    needs to do it for this already-capped set - the same division of
+    labor get_word_dictionary_tiers already uses (bulk-resolve the
+    dictionary-backed half here, leave the rest to whoever's assembling the
+    response).
+    """
+    if not _CJK_RE.search(query):
+        return [], False
+
+    prefix = f"{query}%"
+
+    dict_rows = db.execute(text("""
+        SELECT word, frequency, hsk_v2_2012, hsk_v3_2021, hsk_v3_2026,
+               freq_per_million, rarity_tier, is_cedict
+        FROM dictionary_words
+        WHERE word LIKE :prefix
+        ORDER BY (word <> :query), freq_per_million DESC NULLS LAST, word
+        LIMIT :limit
+    """), {"prefix": prefix, "query": query, "limit": limit}).mappings().all()
+    dict_by_word = {r["word"]: dict(r) for r in dict_rows}
+
+    dict_total = db.execute(text("""
+        SELECT COUNT(*) FROM dictionary_words WHERE word LIKE :prefix
+    """), {"prefix": prefix}).scalar()
+
+    user_word_rows = db.execute(text("""
+        SELECT DISTINCT word FROM user_words WHERE user_id = :user_id AND word LIKE :prefix
+    """), {"user_id": user_id, "prefix": prefix}).fetchall()
+    user_matched_words = {w for (w,) in user_word_rows}
+    user_only_words = user_matched_words - set(dict_by_word)
+
+    merged = dict(dict_by_word)
+    for word in user_only_words:
+        merged[word] = {
+            "word": word, "frequency": None, "hsk_v2_2012": None,
+            "hsk_v3_2021": None, "hsk_v3_2026": None,
+            "freq_per_million": None, "rarity_tier": None, "is_cedict": False,
+        }
+
+    def sort_key(word: str) -> tuple:
+        freq = merged[word]["freq_per_million"]
+        return (word != query, -(freq if freq is not None else -1), word)
+
+    ordered_words = sorted(merged, key=sort_key)[:limit]
+    rows = [{**merged[w], "is_user_word": w in user_matched_words} for w in ordered_words]
+
+    truncated = (dict_total + len(user_only_words)) > limit
+    return rows, truncated
 
 
 def get_word_enrichment(db: Session, word: str) -> dict | None:

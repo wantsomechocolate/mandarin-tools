@@ -384,6 +384,16 @@ export async function getWordDetail(word: string, analysisId?: number, inputText
     return request('GET', `/known-words/words/${encodeURIComponent(word)}${viewingContextQuery(analysisId, inputTextId)}`);
 }
 
+// Cross-source search (HSK/CC-CEDICT/corpus frequency/your own UserWord
+// entries at once) - see GET /word-search's docstring, router.py, for the
+// candidate/ranking logic. Returns a WordSearchResponse (query/results/
+// truncated) - the search page declares its own local WordSearchResult
+// type from this, same as every other page declares its own local WordDetail
+// type from getWordDetail's response rather than a shared one living here.
+export async function searchWords(query: string) {
+    return request('GET', `/known-words/word-search?q=${encodeURIComponent(query)}`);
+}
+
 // Machine-generated pinyin/translation, shared across every user - see
 // WordEnrichment's docstring (models.py, backend) for the full design.
 // Google Translate (phase 2, per-user API keys) isn't wired up yet -

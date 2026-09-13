@@ -615,6 +615,52 @@ class WordDetail(BaseModel):
     visibility_entries: list[VisibilityEntryDetail] = []
 
 
+class WordSearchResult(BaseModel):
+    """
+    One row in a word-search hit list - a lightweight preview, deliberately
+    NOT a second copy of WordDetail: clicking a result opens WordDetailPanel,
+    which does its own full GET /words/{word} fetch (sample sentences, notes,
+    every scoped UserWord/WordVisibility entry, etc. - see that endpoint's
+    docstring) regardless of what this row already carried. This shape only
+    needs to be enough for the hit list itself - badges plus a one-line
+    preview - to help the user pick which word to open.
+    """
+    word: str
+    # Preferred HSK form pinyin, else first CC-CEDICT pinyin, else the
+    # user's own pronunciation (see get_word_search's docstring, router.py,
+    # for the exact fallback order) - null only when none of the three
+    # exist, e.g. a bare corpus-frequency word with no curated backing and
+    # no user entry yet.
+    pinyin: str | None = None
+    preview_meaning: str | None = None
+    hsk_v2_2012: int | None = None
+    hsk_v3_2021: int | None = None
+    hsk_v3_2026: int | None = None
+    freq_per_million: float | None = None
+    rarity_tier: str | None = None
+    # Which source(s) actually back this word - dictionary_words already
+    # denormalizes HSK/CC-CEDICT/corpus backing onto one row (see its
+    # docstring, models.py, and build_dictionary.py), so "hsk"/"cedict"/
+    # "corpus" all come off that single lookup; "user" is separate, since a
+    # user's own word (e.g. a segmentation-artifact UserWord entry) doesn't
+    # need any dictionary_words backing to be findable here.
+    sources: list[Literal["hsk", "cedict", "corpus", "user"]] = []
+    is_user_word: bool = False
+    familiarity: int | None = None
+    is_starred: bool = False
+    is_garbage: bool = False
+
+
+class WordSearchResponse(BaseModel):
+    query: str
+    results: list[WordSearchResult]
+    # True when more candidates existed than `results` returned (capped at
+    # service.search_words' limit) - lets the frontend hint "keep typing to
+    # narrow this down" instead of silently presenting a partial list as
+    # if it were the complete match set.
+    truncated: bool = False
+
+
 # Machine-generated pinyin/translation - see WordEnrichment's docstring
 # (models.py) for the full storage/staleness design. `translation` is the
 # already-resolved value (google_translation ?? ctranslate2_translation ??
