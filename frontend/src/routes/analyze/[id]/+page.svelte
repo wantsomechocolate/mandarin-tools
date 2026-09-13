@@ -12,7 +12,7 @@
 	import FamiliarityDots from '$lib/components/FamiliarityDots.svelte';
 	import AccountMenu from '$lib/components/AccountMenu.svelte';
 	import { isEntryEditable, type WordDetailContext } from '$lib/wordDetailContext';
-	import { saveOpenWordPanel, loadOpenWordPanel, loadOpenWordPanelNeighbors } from '$lib/panelWordPersistence';
+	import { saveOpenWordPanel, loadOpenWordPanel, loadOpenWordPanelNeighbors, loadOpenWordPanelSessionWords } from '$lib/panelWordPersistence';
 	import { trackScrollPosition, restoreScrollPosition } from '$lib/scrollPersistence';
 	import { loadReadingViewOn, saveReadingViewOn } from '$lib/readingViewPersistence';
 	import { getContextChars } from '$lib/contextPreferences';
@@ -276,11 +276,19 @@
 			return stored ? { prev: stored.prevWord, next: stored.nextWord } : { prev: null, next: null };
 		})()
 	);
+	// The frozen swipe-session word order (see the capture/clear $effect
+	// near swipeToWord below for the full picture) - seeded here the same
+	// way lastKnownNeighbors is just above, so a reload that happens WHILE
+	// a card is open (not just mid-edit) resumes the same frozen order
+	// instead of quietly starting a fresh one.
+	let swipeSessionWords: string[] | null = $state(loadOpenWordPanelSessionWords());
 	$effect(() => {
-		saveOpenWordPanel(selectedWordForPanel, 'default', {
-			prevWord: lastKnownNeighbors.prev,
-			nextWord: lastKnownNeighbors.next,
-		});
+		saveOpenWordPanel(
+			selectedWordForPanel,
+			'default',
+			{ prevWord: lastKnownNeighbors.prev, nextWord: lastKnownNeighbors.next },
+			swipeSessionWords
+		);
 	});
 	// Context (word-in-source-text) is keyed by word rather than tied to the
 	// panel, since it now lives at the row/card level and multiple rows can
@@ -578,30 +586,70 @@
 		};
 	});
 
+	// Freezes the swipe order for as long as a panel stays open - captured
+	// once, the instant a panel opens from fully closed, and held fixed
+	// (order AND membership) until it closes, regardless of how you get
+	// from word to word while it's open (swiping, or clicking a different
+	// row directly). Without this, sorting the table by familiarity and
+	// then scoring the word whose panel is open reshuffles filteredResults()
+	// out from under the very swipe you're mid-way through: the word you
+	// just scored moves elsewhere in the newly-sorted list, so "next" ends
+	// up measured from its new position instead of where you actually were
+	// - jumping to some unrelated word rather than the next one you meant
+	// to review. A word you've since marked known (or anything else that'd
+	// normally filter it out) deliberately stays reachable for the rest of
+	// this same session too - the whole computed list is frozen, not just
+	// its order, until you close the panel and start a fresh one.
+	//
+	// Seeded from sessionStorage (swipeSessionWords' own declaration above)
+	// and re-persisted here on every change, so a reload that happens WHILE
+	// a card is open (backgrounding the tab mid-session, not just
+	// mid-edit) resumes the exact same frozen order rather than silently
+	// starting a new one from whatever the table looks like post-reload -
+	// same "disposable resume-where-I-was-interrupted" reasoning as
+	// panelWordPersistence.ts's own word/neighbor persistence, just
+	// covering the whole session's list instead of one word's neighbors.
+	$effect(() => {
+		if (selectedWordForPanel && swipeSessionWords === null) {
+			swipeSessionWords = filteredResults().map((r) => r.word);
+		} else if (!selectedWordForPanel) {
+			swipeSessionWords = null;
+		}
+	});
+
 	// Mobile swipe-to-navigate (WordDetailModal's onSwipeNext/onSwipePrevious)
-	// - walks this exact filteredResults() array, not analysis.results, so
-	// "next" skips over whatever the current filters/search are hiding -
-	// swiping from a visible word should land on the next *visible* word,
-	// not the next one in the underlying unfiltered order. No wraparound at
-	// either end - swiping past the last (or before the first) word is a
-	// deliberate dead end rather than looping back around.
+	// - walks the frozen swipeSessionWords list above whenever one exists
+	// (which it always should while a panel's open - see that effect), not
+	// live filteredResults() directly, so mid-session edits can't reshuffle
+	// or prune the order out from under an in-progress swipe. Falls back to
+	// the live list + lastKnownNeighbors only if the current word isn't in
+	// the frozen list at all - in practice just the reload-mid-session edge
+	// case (see lastKnownNeighbors' own docstring above), since the frozen
+	// list is a superset of everything visible at session-start and never
+	// shrinks on its own afterward. No wraparound at either end -
+	// swiping past the last (or before the first) word is a deliberate
+	// dead end rather than looping back around.
 	function swipeToWord(direction: 'next' | 'prev') {
 		if (!selectedWordForPanel) return;
-		const list = filteredResults();
-		const idx = list.findIndex((r) => r.word === selectedWordForPanel);
+		const frozen = swipeSessionWords;
+		const idx = frozen ? frozen.indexOf(selectedWordForPanel) : -1;
 		let target: string | null;
-		if (idx !== -1) {
+		if (frozen && idx !== -1) {
 			const nextIdx = direction === 'next' ? idx + 1 : idx - 1;
-			target = nextIdx >= 0 && nextIdx < list.length ? list[nextIdx].word : null;
+			target = nextIdx >= 0 && nextIdx < frozen.length ? frozen[nextIdx] : null;
 		} else {
-			// The open word isn't in the current list at all right now (see
-			// lastKnownNeighbors' docstring above) - fall back to its last
-			// known neighbor by name. Confirmed still actually visible before
-			// jumping there, so a neighbor that's *also* since been filtered
-			// out (or removed) doesn't strand the panel on a word absent from
-			// both the table and the current filter state.
-			const candidate = direction === 'next' ? lastKnownNeighbors.next : lastKnownNeighbors.prev;
-			target = candidate && list.some((r) => r.word === candidate) ? candidate : null;
+			// Not in the frozen session list at all (or no session list yet) -
+			// fall back to the live table + last-known-neighbor recovery, same
+			// as before this feature existed.
+			const list = filteredResults();
+			const liveIdx = list.findIndex((r) => r.word === selectedWordForPanel);
+			if (liveIdx !== -1) {
+				const nextIdx = direction === 'next' ? liveIdx + 1 : liveIdx - 1;
+				target = nextIdx >= 0 && nextIdx < list.length ? list[nextIdx].word : null;
+			} else {
+				const candidate = direction === 'next' ? lastKnownNeighbors.next : lastKnownNeighbors.prev;
+				target = candidate && list.some((r) => r.word === candidate) ? candidate : null;
+			}
 		}
 		if (!target) return;
 		selectedWordForPanel = target;
@@ -680,6 +728,21 @@
 		}
 	}
 
+	// Patches WordResult.is_garbage on the matching row in analysis.results
+	// itself - same "resolved fresh, patched locally after every mutation"
+	// pattern as patchResolvedVisibility/patchResolvedUserWord above.
+	// Without this, garbageWords (a separate Set, used for the row/card's
+	// own highlight/icon - see garbageWords.has(...) at the row markup
+	// below) updated immediately, but analysis.results[i].is_garbage - what
+	// bucketCount and isVisible's BUCKETS.find('garbage').test actually
+	// read - stayed stale until a full reload: the Garbage chip's count and
+	// the "hide garbage" filter's own hiding both silently lagged a page
+	// behind every mark/unmark.
+	function patchGarbage(word: string, isGarbage: boolean) {
+		if (!analysis) return;
+		analysis = { ...analysis, results: analysis.results.map((r) => r.word === word ? { ...r, is_garbage: isGarbage } : r) };
+	}
+
 	// Garbage words stay in the persisted analysis results like everything
 	// else (see WordResult.is_garbage) - marking a word garbage just adds it
 	// to the user's garbage-word list, which the "hide garbage" filter
@@ -690,10 +753,12 @@
 		try {
 			await api.createGarbageWord(word);
 			garbageWords = new Set([...garbageWords, word]);
+			patchGarbage(word, true);
 		} catch (e: unknown) {
 			const message = e instanceof Error ? e.message : '';
 			if (message.toLowerCase().includes('already exists')) {
 				garbageWords = new Set([...garbageWords, word]);
+				patchGarbage(word, true);
 			} else {
 				error = message || 'Failed to mark as garbage';
 			}
@@ -713,6 +778,7 @@
 			const next = new Set(garbageWords);
 			next.delete(word);
 			garbageWords = next;
+			patchGarbage(word, false);
 		} catch (e: unknown) {
 			error = e instanceof Error ? e.message : 'Failed to unmark as garbage';
 		} finally {
@@ -733,6 +799,7 @@
 
 	function handleGarbageMarked(word: string) {
 		garbageWords = new Set([...garbageWords, word]);
+		patchGarbage(word, true);
 	}
 
 	// Desktop-only (see Phase 1 plan notes): clicking a row opens its info

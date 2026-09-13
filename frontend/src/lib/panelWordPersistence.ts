@@ -20,6 +20,9 @@ interface StoredPanelWord {
 	// argument and these stay undefined, unread.
 	prevWord?: string | null;
 	nextWord?: string | null;
+	// The frozen swipe-session word order (see loadOpenWordPanelSessionWords
+	// below) - also only ever set by analyze/[id]/+page.svelte.
+	sessionWords?: string[];
 }
 
 // Remembers which word's detail panel (WordDetailModal/WordDetailPanel) was
@@ -49,7 +52,8 @@ interface StoredPanelWord {
 export function saveOpenWordPanel(
 	word: string | null,
 	slot: string = 'default',
-	neighbors?: { prevWord: string | null; nextWord: string | null }
+	neighbors?: { prevWord: string | null; nextWord: string | null },
+	sessionWords?: string[] | null
 ): void {
 	if (!browser) return;
 	try {
@@ -63,6 +67,7 @@ export function saveOpenWordPanel(
 			entry.prevWord = neighbors.prevWord;
 			entry.nextWord = neighbors.nextWord;
 		}
+		if (sessionWords) entry.sessionWords = sessionWords;
 		sessionStorage.setItem(key, JSON.stringify(entry));
 	} catch {
 		// e.g. storage disabled/full - the panel just won't survive a reload, no need to surface an error
@@ -105,6 +110,29 @@ export function loadOpenWordPanelNeighbors(
 		if (Date.now() - entry.savedAt > MAX_AGE_MS) return null;
 		if (entry.prevWord === undefined && entry.nextWord === undefined) return null;
 		return { prevWord: entry.prevWord ?? null, nextWord: entry.nextWord ?? null };
+	} catch {
+		return null;
+	}
+}
+
+// The frozen swipe-session word order (analyze/[id]/+page.svelte's
+// swipeSessionWords) - reads back the exact filtered/sorted list that was
+// in effect when a panel was first opened, so a reload that happens WHILE
+// a card is open (backgrounding the tab mid-session, not just mid-edit)
+// resumes the same frozen order instead of silently starting a fresh one
+// from whatever the table looks like post-reload. Deliberately the same
+// sessionStorage entry/lifetime as the word itself and its neighbors, not
+// a separate one - the three either all apply (a session was genuinely
+// interrupted) or none do (nothing was open), never a mix.
+export function loadOpenWordPanelSessionWords(slot: string = 'default'): string[] | null {
+	if (!browser) return null;
+	try {
+		const raw = sessionStorage.getItem(`${STORAGE_KEY_PREFIX}:${slot}`);
+		if (!raw) return null;
+		const entry = JSON.parse(raw) as StoredPanelWord;
+		if (entry.path !== location.pathname) return null;
+		if (Date.now() - entry.savedAt > MAX_AGE_MS) return null;
+		return entry.sessionWords ?? null;
 	} catch {
 		return null;
 	}
