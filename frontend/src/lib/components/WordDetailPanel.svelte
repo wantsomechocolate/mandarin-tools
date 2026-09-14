@@ -82,6 +82,12 @@
 		hsk_v2_2012: number | null;
 		hsk_v3_2021: number | null;
 		hsk_v3_2026: number | null;
+		// Entry-level HSK fields - existed on the backend's HskEntry all
+		// along but weren't surfaced here until the Excel-export work
+		// surfaced the gap (see WordDetail's docstring, schemas.py).
+		hsk_radical: string | null;
+		hsk_frequency: number | null;
+		hsk_pos: string[];
 		forms: HskForm[];
 		cedict: CedictSense[];
 		sample_sentences: SampleSentence[];
@@ -1020,6 +1026,27 @@
 								{/if}
 							</div>
 						{/each}
+					</div>
+				{/if}
+
+				<!-- Entry-level fields (radical/HSK frequency rank/POS) - plain
+				     reference-fact text, not the level badges' "chip" language,
+				     and shown after the forms (same order the Excel export uses -
+				     see exportData.ts's hskLines) since these describe the whole
+				     entry, not any one form. Omitted entirely (not a blank line)
+				     when none of the three are present, same convention as the
+				     rest of this panel. -->
+				{#if detail.hsk_radical || detail.hsk_frequency || detail.hsk_pos.length > 0}
+					<div class="border-t border-gray-100 dark:border-slate-800 mt-3 pt-3 space-y-0.5">
+						{#if detail.hsk_radical}
+							<p class="text-xs text-gray-500 dark:text-slate-400">Radical: {detail.hsk_radical}</p>
+						{/if}
+						{#if detail.hsk_frequency}
+							<p class="text-xs text-gray-500 dark:text-slate-400">HSK Frequency Rank: {detail.hsk_frequency}</p>
+						{/if}
+						{#if detail.hsk_pos.length > 0}
+							<p class="text-xs text-gray-500 dark:text-slate-400">POS: {detail.hsk_pos.join(', ')}</p>
+						{/if}
 					</div>
 				{/if}
 			{:else}

@@ -28,7 +28,8 @@ from app.modules.known_words.models import (
     DictionaryWord,
     HskEntry,
     HskForm,
-    CedictEntry
+    CedictEntry,
+    WordEnrichment,
 )
 
 from app.modules.known_words.schemas import (
@@ -76,6 +77,9 @@ from app.modules.known_words.schemas import (
     SegmentedWord,
     WeakWord,
     DifficultyBreakdown,
+    ExportHskForm,
+    ExportCedictSense,
+    ExportContext,
     ExportUserEntry,
     ExportWordData,
     ExportDataResponse,
@@ -779,24 +783,58 @@ def get_analysis_spans(
     )
 
 
+def _normalize_context_text(text: str) -> str:
+    """
+    Collapses every run of whitespace (newlines, tabs, multiple spaces -
+    whatever the source text's own formatting happens to contain) down to
+    a single space - see get_export_data's Context column/section, which
+    needs each occurrence's context to be exactly one printable line so
+    the join between occurrences (a real newline in xlsx, U+EAB1 in Pleco)
+    is the only line break a reader ever sees there.
+
+    Deliberately does NOT trim the ends here - `before`/`after` get
+    reassembled directly adjacent to `match` (ExportContext, schemas.py),
+    and a real single space that genuinely sits right next to the match in
+    the source text must survive that reassembly. Trimming only the
+    *outer* edges (the arbitrary context_chars slice boundary, not the
+    match-adjacent one) is the caller's job - see its two call sites below.
+    """
+    return re.sub(r"\s+", " ", text)
+
+
 @router.get("/analyze/{analysis_id}/export-data", response_model=ExportDataResponse)
 def get_export_data(
     analysis_id: int,
+    context_chars: int = 15,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """
-    Bulk per-word data backing the Pleco-export feature (ExportDialog.svelte,
-    buildPlecoExport in pleco.ts) - deliberately its own endpoint, not folded
-    into GET /analyze/{id}: this does real extra work (HSK/CC-CEDICT joins, a
-    UserWord scope walk) the common results path shouldn't pay for, same
-    reasoning as get_analysis_spans above. Always returns every word in the
-    analysis - which of them actually end up in the exported file (respecting
-    the current filter or not) is a display-time decision the frontend makes
+    Bulk per-word data backing the export feature (ExportDialog.svelte,
+    pleco.ts/xlsxExport.ts) - deliberately its own endpoint, not folded into
+    GET /analyze/{id}: this does real extra work (HSK/CC-CEDICT/enrichment/
+    sample-sentence/note joins, a full UserWord scan, per-occurrence context
+    slicing) the common results path shouldn't pay for, same reasoning as
+    get_analysis_spans above. Always returns every word in the analysis -
+    which of them actually end up in the exported file (respecting the
+    current filter or not) is a display-time decision the frontend makes
     from data it already has (analysis.results), not a parameter here.
 
-    Per-word HSK-form/CC-CEDICT bulk lookup mirrors get_word_search's own
-    pattern below (same `.in_(candidate_words)` shape, not a query per word).
+    `user_entries` is deliberately UNBOUNDED - every UserWord row this word
+    has anywhere, across every text/analysis the user has ever customized it
+    in (same philosophy as WordDetail.user_word_entries), not just entries
+    relevant to this one analysis's context the way WordResult.userword_scopes
+    is. `evidence_tier` follows suit and checks this same unbounded set for
+    its "user" tier (any UserWord entry anywhere counts), which is a
+    deliberate divergence from WordResult.evidence_tier's narrower,
+    context-scoped check - since the User column right next to it is also
+    unbounded, a Segmentation Source that ignored a real entry from another
+    text would read as an inconsistency in the same row, not a distinction
+    a reader would find meaningful.
+
+    `context_chars` mirrors GET /analyze/{id}/context/{word}'s own parameter
+    and default - the frontend passes the account's existing Context-length
+    preference through rather than inventing an export-specific one.
     """
     analysis = (
         db.query(Analysis)
@@ -807,7 +845,8 @@ def get_export_data(
     if not analysis:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Analysis not found")
 
-    words = [r.word for r in db.query(AnalysisResult).filter_by(analysis_id=analysis_id).all()]
+    results = db.query(AnalysisResult).filter_by(analysis_id=analysis_id).all()
+    words = [r.word for r in results]
     if not words:
         return ExportDataResponse(
             analysis_id=analysis.id,
@@ -815,6 +854,8 @@ def get_export_data(
             text_title=analysis.input_text.title,
             words=[],
         )
+
+    body = analysis.input_text.body
 
     hsk_entries = db.query(HskEntry).filter(HskEntry.simplified.in_(words)).all()
     hsk_entry_by_word = {e.simplified: e for e in hsk_entries}
@@ -830,84 +871,177 @@ def get_export_data(
     for c in db.query(CedictEntry).filter(CedictEntry.simplified.in_(words)).all():
         cedict_by_word.setdefault(c.simplified, []).append(c)
 
-    freq_by_word: dict[str, tuple[float | None, str | None]] = {
-        w: (freq, tier) for w, freq, tier in db.query(
-            DictionaryWord.word, DictionaryWord.freq_per_million, DictionaryWord.rarity_tier,
-        ).filter(DictionaryWord.word.in_(words)).all()
-    }
+    # Corpus data plus the same HSK-wins-over-CEDICT dictionary_source split
+    # get_analysis_spans already computes (same DictionaryWord columns).
+    freq_by_word: dict[str, tuple[int | None, float | None, str | None]] = {}
+    dictionary_source_by_word: dict[str, str] = {}
+    for w, frequency, freq_pm, tier, hsk_v2, hsk_v2021, hsk_v2026, is_cedict in db.query(
+        DictionaryWord.word, DictionaryWord.frequency, DictionaryWord.freq_per_million, DictionaryWord.rarity_tier,
+        DictionaryWord.hsk_v2_2012, DictionaryWord.hsk_v3_2021, DictionaryWord.hsk_v3_2026, DictionaryWord.is_cedict,
+    ).filter(DictionaryWord.word.in_(words)).all():
+        freq_by_word[w] = (frequency, freq_pm, tier)
+        if hsk_v2 is not None or hsk_v2021 is not None or hsk_v2026 is not None:
+            dictionary_source_by_word[w] = "hsk"
+        elif is_cedict:
+            dictionary_source_by_word[w] = "cedict"
 
-    # UserWord rows relevant to this analysis's context (global, this text,
-    # this exact analysis) - same _scope_filter_conditions
-    # _resolve_user_word_detail uses above, but keeping the actual rows
-    # (this needs .pronunciation/.meaning, not just .affects_dag) and
-    # reusing _resolve_scope_context_info for the label data (text_id/
-    # text_title/analysis_id/analysis_created_at) each entry needs to
-    # render "Global"/"From {text}"/"From {text} (Analysis ...)" via the
-    # frontend's existing entryLabel helper.
+    dictionary_tiers = service.get_word_dictionary_tiers(set(words), db)
+
+    # UserWord - UNBOUNDED (no _scope_filter_conditions this time - see the
+    # docstring above). Grouped and sorted global -> text -> analysis
+    # (ascending _scope_priority - the opposite of _sort_most_specific_first,
+    # which sorts analysis-first for a different consumer and isn't reusable
+    # here as-is).
     uw_rows = db.query(UserWord).filter(
-        UserWord.user_id == current_user.id,
-        or_(*_scope_filter_conditions(UserWord, analysis.id, analysis.input_text_id)),
+        UserWord.user_id == current_user.id, UserWord.word.in_(words),
     ).all()
     uw_context = _resolve_scope_context_info(uw_rows, db)
-    uw_by_word: dict[str, dict[str, UserWord]] = {}
+    uw_by_word: dict[str, list[UserWord]] = {}
     for row in uw_rows:
-        uw_by_word.setdefault(row.word, {})[uw_context[row.id]["scope"]] = row
+        uw_by_word.setdefault(row.word, []).append(row)
+    for word_rows in uw_by_word.values():
+        word_rows.sort(key=_scope_priority)
 
-    scope_order = {"global": 0, "text": 1, "analysis": 2}
+    enrichment_by_word = {
+        e.word: e for e in db.query(WordEnrichment).filter(WordEnrichment.word.in_(words)).all()
+    }
+
+    sentences_by_word: dict[str, list[str]] = {}
+    for s in (
+        db.query(SampleSentence)
+        .filter(SampleSentence.user_id == current_user.id, SampleSentence.word.in_(words))
+        .order_by(SampleSentence.created_at)
+        .all()
+    ):
+        sentences_by_word.setdefault(s.word, []).append(s.sentence)
+
+    note_by_word = {
+        n.word: n.note for n in db.query(WordNote).filter(
+            WordNote.user_id == current_user.id, WordNote.word.in_(words),
+        ).all()
+    }
+
+    known_words = service.get_known_words_for_user(current_user.id, db)
+
+    # Context: prefer each row's own stored positions (already fetched
+    # above, no extra query); a word with none (extra_match/repeated_sequence
+    # -only, or a pre-positions-column analysis) falls back to the same live
+    # regex scan get_word_context uses rather than coming back empty.
+    positions_by_word: dict[str, list[tuple[int, int]]] = {
+        r.word: [(p[0], p[1]) for p in r.positions] for r in results if r.positions
+    }
 
     export_words: list[ExportWordData] = []
     for word in words:
         hsk_entry = hsk_entry_by_word.get(word)
         forms = forms_by_entry_id.get(hsk_entry.id, []) if hsk_entry else []
         cedict_entries = cedict_by_word.get(word, [])
-        by_scope = uw_by_word.get(word, {})
+        uw_rows_for_word = uw_by_word.get(word, [])
 
-        hsk_meanings: list[str] = []
-        for form in forms:
-            for m in (form.meanings or []):
-                if m not in hsk_meanings:
-                    hsk_meanings.append(m)
-
-        cedict_definitions = ["; ".join(c.definitions) for c in cedict_entries if c.definitions]
-
+        export_hsk_forms = [
+            ExportHskForm(traditional=f.traditional, pinyin=f.pinyin, meanings=f.meanings or [], classifiers=f.classifiers or [])
+            for f in forms
+        ]
+        export_cedict_senses = [
+            ExportCedictSense(traditional=c.traditional, pinyin=c.pinyin, definitions=c.definitions or [])
+            for c in cedict_entries
+        ]
         user_entries = [
             ExportUserEntry(
-                scope=scope,
+                scope=uw_context[row.id]["scope"],
                 text_id=uw_context[row.id]["text_id"],
                 text_title=uw_context[row.id]["text_title"],
                 analysis_id=uw_context[row.id]["analysis_id"],
-                analysis_created_at=uw_context[row.id]["analysis_created_at"],
                 pronunciation=row.pronunciation,
                 meaning=row.meaning,
+                notes=row.notes,
             )
-            for scope, row in sorted(by_scope.items(), key=lambda kv: scope_order[kv[0]])
+            for row in uw_rows_for_word
         ]
 
-        # Same HSK -> CC-CEDICT -> user-pronunciation fallback order
-        # get_word_search already uses, except the user-pronunciation leg
-        # walks analysis -> text -> global (mirroring
-        # userword_resolved_affects_dag's own walk) instead of "prefer
-        # global" - export wants the most specific applicable entry, not a
-        # global-first display fallback.
-        pinyin = (
-            (forms[0].pinyin if forms else None)
-            or (cedict_entries[0].pinyin if cedict_entries else None)
-            or next(
-                (by_scope[s].pronunciation for s in ("analysis", "text", "global") if by_scope.get(s) and by_scope[s].pronunciation),
-                None,
-            )
+        evidence_tier = "user" if uw_rows_for_word else dictionary_tiers.get(word, "unknown")
+        dictionary_source = dictionary_source_by_word.get(word) if evidence_tier == "dictionary" else None
+
+        # Pinyin fallback: HSK -> CC-CEDICT -> the UserWord entry most
+        # relevant to *this* export (this exact analysis's own row, else
+        # this text's, else the global one, else any other entry at all) ->
+        # auto-generated. "Most relevant first" rather than "first in the
+        # global->text->analysis list" so an unrelated other text's
+        # pronunciation doesn't silently outrank this export's own entry.
+        this_analysis_row = next((r for r in uw_rows_for_word if uw_context[r.id]["analysis_id"] == analysis.id), None)
+        this_text_row = next((r for r in uw_rows_for_word if uw_context[r.id]["scope"] == "text" and uw_context[r.id]["text_id"] == analysis.input_text_id), None)
+        global_row = next((r for r in uw_rows_for_word if uw_context[r.id]["scope"] == "global"), None)
+        any_row_with_pronunciation = next((r for r in uw_rows_for_word if r.pronunciation), None)
+        user_pronunciation = next(
+            (r.pronunciation for r in (this_analysis_row, this_text_row, global_row, any_row_with_pronunciation) if r and r.pronunciation),
+            None,
         )
 
-        freq_per_million, rarity_tier = freq_by_word.get(word, (None, None))
+        enrichment = enrichment_by_word.get(word)
+        enrichment_pinyin = enrichment.pinyin if enrichment else None
+        enrichment_translation = (
+            (enrichment.google_translation or enrichment.ctranslate2_translation) if enrichment else None
+        )
+
+        pinyin = (
+            (export_hsk_forms[0].pinyin if export_hsk_forms else None)
+            or (export_cedict_senses[0].pinyin if export_cedict_senses else None)
+            or user_pronunciation
+            or enrichment_pinyin
+        )
+
+        frequency, freq_per_million, rarity_tier = freq_by_word.get(word, (None, None, None))
+
+        positions = positions_by_word.get(word)
+        if positions is None:
+            positions = [(m.start(), m.end()) for m in re.finditer(re.escape(word), body)]
+        # The source text can itself contain newlines/tabs/runs of spaces
+        # (a pasted passage's own line breaks, etc.) - a raw slice of it
+        # would carry those straight into the export's Context column/
+        # section, where they'd either look like extra blank contexts (in
+        # xlsx, indistinguishable from the newline a formatter joins
+        # separate occurrences with) or corrupt Pleco's tab-separated
+        # line. Collapse every run of whitespace to a single space and
+        # trim the ends, so each piece is always exactly one printable
+        # fragment. Kept as 3 separate pieces (not one pre-joined string)
+        # so the .xlsx export can bold `match` as a real rich-text run -
+        # see ExportContext's docstring, schemas.py.
+        contexts = [
+            ExportContext(
+                # .lstrip()/.rstrip() only on the *outer* edges (the
+                # arbitrary context_chars slice boundary) - the edges
+                # touching `match` are left exactly as normalized, so a
+                # real space sitting directly against the match survives.
+                before=_normalize_context_text(body[max(0, start - context_chars):start]).lstrip(),
+                match=_normalize_context_text(body[start:end]),
+                after=_normalize_context_text(body[end:end + context_chars]).rstrip(),
+            )
+            for start, end in positions
+        ]
 
         export_words.append(ExportWordData(
             word=word,
             pinyin=pinyin,
+            evidence_tier=evidence_tier,
+            dictionary_source=dictionary_source,
+            frequency=frequency,
             freq_per_million=freq_per_million,
             rarity_tier=rarity_tier,
-            hsk_meanings=hsk_meanings,
-            cedict_definitions=cedict_definitions,
+            hsk_forms=export_hsk_forms,
+            hsk_radical=hsk_entry.radical if hsk_entry else None,
+            hsk_v2_2012=hsk_entry.hsk_v2_2012 if hsk_entry else None,
+            hsk_v3_2021=hsk_entry.hsk_v3_2021 if hsk_entry else None,
+            hsk_v3_2026=hsk_entry.hsk_v3_2026 if hsk_entry else None,
+            hsk_frequency=hsk_entry.hsk_frequency if hsk_entry else None,
+            hsk_pos=(hsk_entry.pos or []) if hsk_entry else [],
+            cedict_senses=export_cedict_senses,
             user_entries=user_entries,
+            enrichment_pinyin=enrichment_pinyin,
+            enrichment_translation=enrichment_translation,
+            familiarity=known_words.get(word),
+            sample_sentences=sentences_by_word.get(word, []),
+            contexts=contexts,
+            note=note_by_word.get(word),
         ))
 
     return ExportDataResponse(
@@ -2118,6 +2252,9 @@ def get_word_detail(
         hsk_v2_2012=hsk_entry.hsk_v2_2012 if hsk_entry else None,
         hsk_v3_2021=hsk_entry.hsk_v3_2021 if hsk_entry else None,
         hsk_v3_2026=hsk_entry.hsk_v3_2026 if hsk_entry else None,
+        hsk_radical=hsk_entry.radical if hsk_entry else None,
+        hsk_frequency=hsk_entry.hsk_frequency if hsk_entry else None,
+        hsk_pos=(hsk_entry.pos or []) if hsk_entry else [],
         forms=[
             HskFormDetail(
                 traditional=f.traditional,

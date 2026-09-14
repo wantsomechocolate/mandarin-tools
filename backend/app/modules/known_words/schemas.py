@@ -227,48 +227,109 @@ class AnalysisSpansResponse(BaseModel):
     spans: list[AnalysisSpan]
 
 
+class ExportHskForm(BaseModel):
+    """One HSK form, for the export's HSK column - same fields as
+    HskFormDetail (below), a separate class only because it lives in a
+    separate response tree (ExportWordData, not WordDetail)."""
+    traditional: str | None = None
+    pinyin: str | None = None
+    meanings: list[str] = []
+    classifiers: list[str] = []
+
+
+class ExportCedictSense(BaseModel):
+    """One CC-CEDICT sense, for the export's CC-CEDICT column - see
+    CedictSense (below) for the WordDetail equivalent."""
+    traditional: str | None = None
+    pinyin: str | None = None
+    definitions: list[str] = []
+
+
+class ExportContext(BaseModel):
+    """
+    One occurrence's surrounding context, split into its three pieces
+    (rather than one pre-joined string) specifically so a formatter can
+    render `match` distinctly from `before`/`after` - the .xlsx export
+    bolds it (a real rich-text run, not a marker character a plain string
+    could carry); Pleco's plain-text field just concatenates all three,
+    same as before. Each piece is independently whitespace-normalized -
+    see _normalize_context_text's docstring, router.py.
+    """
+    before: str
+    match: str
+    after: str
+
+
 class ExportUserEntry(BaseModel):
     """
-    One UserWord entry relevant to a specific analysis's export - same
-    context-scoped set as WordResult.userword_scopes (global, plus this
-    text's/this analysis's own row if applicable), NOT WordDetail's
-    unbounded "every scope this word has ever been customized in" list.
-    Carries the actual pronunciation/meaning text (unlike UserWordResponse's
+    One UserWord entry - UNBOUNDED, every entry this word has anywhere,
+    across every text/analysis the user has ever customized it in (same
+    philosophy as WordDetail.user_word_entries/UserWordEntryDetail, NOT
+    WordResult.userword_scopes' "just this viewing context" set). Carries
+    the actual pronunciation/meaning/notes text (unlike UserWordResponse's
     use elsewhere, which only needs affects_dag for the results-table
-    quick-action) plus the same text_id/text_title/analysis_id/
-    analysis_created_at label data `_resolve_scope_context_info` already
-    produces, so the frontend can prefix a definition line with "Global" /
-    the text's title / "Analysis of ..." via the exact same `entryLabel`
-    helper the word-detail panel uses - no new label format to invent.
+    quick-action) plus the scope/text_id/text_title/analysis_id label data
+    `_resolve_scope_context_info` already produces - the frontend builds
+    its own export-specific label from these ("Global" / "Text: {title}" /
+    "Analysis: {title}-{analysis_id}" - see exportUserEntryLabel, exportData.ts
+    - deliberately NOT the word-detail panel's entryLabel, which has its
+    own, different established wording for its own UI callers).
     """
     scope: ScopeChoice
     text_id: int | None = None
     text_title: str | None = None
     analysis_id: int | None = None
-    analysis_created_at: datetime | None = None
     pronunciation: str | None = None
     meaning: str | None = None
+    notes: str | None = None
 
 
 class ExportWordData(BaseModel):
     """One word's worth of export-time data - see get_export_data's
-    docstring (service.py) for how each field is resolved."""
+    docstring (router.py) for how each field is resolved."""
     word: str
     # Resolved fallback: first HSK form pinyin, else first CC-CEDICT
-    # pinyin, else the first non-null pronunciation walking
-    # analysis -> text -> global over this word's UserWord rows (same walk
-    # order userword_resolved_affects_dag uses) - same precedence
-    # WordSearchResult.pinyin already uses elsewhere in this module.
+    # pinyin, else the closest applicable UserWord pronunciation (walking
+    # analysis -> text -> global over the unbounded user_entries below),
+    # else WordEnrichment.pinyin - same precedence WordSearchResult.pinyin
+    # uses elsewhere in this module, plus the new auto-generated fallback.
     pinyin: str | None = None
+    # "Segmentation Source" column - same 4-way hierarchy as WordResult.
+    # evidence_tier (user > dictionary > corpus > unknown), with
+    # dictionary_source below splitting which curated source backs a
+    # "dictionary" word - same split get_analysis_spans already computes
+    # for the reading view's "Color by: Source" mode.
+    evidence_tier: Literal["user", "dictionary", "corpus", "unknown"]
+    dictionary_source: Literal["hsk", "cedict"] | None = None
+    frequency: int | None = None
     freq_per_million: float | None = None
     rarity_tier: str | None = None
-    # Every HSK form's meanings, flattened and deduplicated - not just the
-    # first form's, unlike the search preview's single-string fallback.
-    hsk_meanings: list[str] = []
-    # One string per CC-CEDICT sense (a word can have several, e.g. 差's 3
-    # pronunciations) - each sense's own definitions already joined.
-    cedict_definitions: list[str] = []
+    hsk_forms: list[ExportHskForm] = []
+    # HSK entry-level fields (radical/frequency-rank/POS) - these existed
+    # on HskEntry all along but weren't surfaced anywhere in the app until
+    # now (see WordDetail's matching new fields, added in this same pass).
+    hsk_radical: str | None = None
+    hsk_v2_2012: int | None = None
+    hsk_v3_2021: int | None = None
+    hsk_v3_2026: int | None = None
+    hsk_frequency: int | None = None
+    hsk_pos: list[str] = []
+    cedict_senses: list[ExportCedictSense] = []
     user_entries: list[ExportUserEntry] = []
+    # Machine-generated (WordEnrichment) - resolved translation only
+    # (google_translation ?? ctranslate2_translation ?? None), same
+    # resolution _resolve_word_enrichment uses; staleness isn't meaningful
+    # in an export so it isn't carried here.
+    enrichment_pinyin: str | None = None
+    enrichment_translation: str | None = None
+    familiarity: int | None = None
+    sample_sentences: list[str] = []
+    # One entry per occurrence in this analysis's source text - see
+    # get_export_data for the stored-positions-first, live-regex-scan-
+    # fallback resolution (same fallback get_word_context uses for a word
+    # with no positions).
+    contexts: list[ExportContext] = []
+    note: str | None = None
 
 
 class ExportDataResponse(BaseModel):
@@ -625,6 +686,13 @@ class WordDetail(BaseModel):
     hsk_v2_2012: int | None = None
     hsk_v3_2021: int | None = None
     hsk_v3_2026: int | None = None
+    # Entry-level HSK fields - these existed on HskEntry all along
+    # (build_dictionary.py) but weren't surfaced anywhere in the app until
+    # the Excel-export work surfaced the gap. Omitted (null/empty) the same
+    # "no HSK entry" way hsk_v2_2012 etc. already are.
+    hsk_radical: str | None = None
+    hsk_frequency: int | None = None
+    hsk_pos: list[str] = []
     forms: list[HskFormDetail] = []
     # CC-CEDICT senses for this word, if any — its own source-specific
     # section, same reasoning as user_word/fragment below.

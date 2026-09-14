@@ -8,21 +8,37 @@ not-yet-built behavior.
 
 ## Export
 
-- **Additional export formats.** The Pleco flashcard export
-  (`frontend/src/lib/pleco.ts`, `GET /known-words/analyze/{id}/export-data`)
-  was built as the first of what should be several export targets (e.g. a
-  plain CSV/Anki-compatible export). The backend endpoint already returns
-  format-agnostic per-word data for exactly this reason — a new target is
-  a new frontend formatter module, not a new endpoint.
+- ~~**Additional export formats.**~~ Done (2026-09-14): `.xlsx` shipped
+  alongside Pleco, one sheet per non-empty bucket (Main/Extra/Sequences),
+  one column per enabled data source rather than Pleco's single joined
+  field — see `frontend/src/lib/xlsxExport.ts`. Confirmed the original
+  prediction below: it's purely a new frontend formatter
+  (`buildXlsxBlob`) plus a format toggle in `ExportDialog.svelte`, no
+  backend changes at all — `GET /known-words/analyze/{id}/export-data`
+  and the shared per-word types/helpers (pulled out into
+  `frontend/src/lib/exportData.ts` once pleco.ts had a second consumer)
+  were already format-agnostic. Still open: a plain CSV or
+  Anki-compatible export, if wanted later — same pattern, another new
+  formatter module.
 - **Per-export override of the account-level settings.** Today the Export
   dialog (`ExportDialog.svelte`) only offers "respect the current filter or
   not" — every other setting (pinyin, definition sources, user-word scopes)
   is account-level only, edited on the Account page. A one-off override
   without leaving the dialog was deliberately deferred, not ruled out.
-- **Include `UserWord.notes` in the export**, not just `.meaning` — the
-  export's "Your definitions" source currently only reads `meaning`, since
-  `notes` reads more like a private working note than a definition. Worth
-  revisiting if that assumption turns out wrong in practice.
+- ~~**Include `UserWord.notes` in the export**~~ Done (2026-09-14): the
+  export's "User" source is now unbounded and template-matched (every
+  UserWord entry, across every text/analysis) and includes `notes`
+  alongside pronunciation/meaning for both formats.
+- **Split the export options by format (Pleco vs. everything else).**
+  The 2026-09-14 rework made both formats share one settings/content model
+  literally by design — every source (HSK/CC-CEDICT/User/Auto-Generated/
+  Sample Sentences/Context/etc.) now renders the *same* underlying content
+  in Pleco's single joined definition field as it does in .xlsx's own
+  columns, per the user's explicit call to accept that for now rather than
+  invent a reduced Pleco-specific set ahead of seeing it in practice. Revisit
+  once a real Pleco card built this way has actually been opened in Pleco -
+  if it reads as too much, this is the point where Pleco's own preference
+  set (or definition-field content) would diverge from .xlsx's.
 
 ## Preferences
 
@@ -78,3 +94,12 @@ not-yet-built behavior.
 - See [BUGS.md](BUGS.md)'s schema-drift entry — a small dedicated
   migration to add the missing `analysis_results.analysis_id` index and
   tighten `word_visibility.created_at`/`.updated_at` to `NOT NULL`.
+- **xlsx library choice** (`frontend/src/lib/xlsxExport.ts`): moved from
+  `write-excel-file` to `exceljs` (2026-09-14) once the Context column
+  needed a real rich-text run to bold the matched word - `write-excel-file`
+  has no rich-text API at all. `exceljs` carries one moderate advisory
+  itself, transitively through `uuid`'s v3/v5/v6-explicit-buffer bug - a
+  narrow misuse pattern this module's write-only, no-untrusted-input,
+  browser-only usage doesn't exercise, so it was accepted rather than
+  chased. Worth a fresh look if that advisory's status changes, or if a
+  lighter write-only library ever adds real rich-text support.

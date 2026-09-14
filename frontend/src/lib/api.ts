@@ -167,12 +167,15 @@ export async function getAnalysisSpans(id: number) {
     return request('GET', `/known-words/analyze/${id}/spans`);
 }
 
-// Bulk per-word pinyin/definition data for the Pleco-export feature
-// (ExportDialog.svelte, pleco.ts) - another separate, opt-in-cost endpoint
-// from getAnalysis, same reasoning as getAnalysisSpans above. See
-// ExportDataResponse's docstring (schemas.py) for the shape.
-export async function getExportData(analysisId: number) {
-    return request('GET', `/known-words/analyze/${analysisId}/export-data`);
+// Bulk per-word export data (ExportDialog.svelte, pleco.ts/xlsxExport.ts) -
+// another separate, opt-in-cost endpoint from getAnalysis, same reasoning
+// as getAnalysisSpans above. See ExportDataResponse's docstring (schemas.py)
+// for the shape. `contextChars` mirrors getWordContext's own param/default -
+// callers pass the account's existing Context-length preference through
+// rather than a separate export-specific setting.
+export async function getExportData(analysisId: number, contextChars?: number) {
+    const qs = contextChars !== undefined ? `?context_chars=${contextChars}` : '';
+    return request('GET', `/known-words/analyze/${analysisId}/export-data${qs}`);
 }
 
 // Recompute-only endpoint backing the results page's "Recalculate" button
