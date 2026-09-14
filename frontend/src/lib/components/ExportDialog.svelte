@@ -33,6 +33,14 @@
 	// what I get" is the least-surprising default; unchecking it exports
 	// every word in the analysis regardless of the filter bar's state.
 	let respectFilter = $state(true);
+	// Set once a download has actually fired (see handleExport) - a mobile
+	// browser's own download UI is easy to miss entirely (no visible
+	// progress, no obvious "saved" toast the way a desktop browser's
+	// download tray gives you), so this dialog now surfaces its own
+	// explicit confirmation instead of just closing the instant the
+	// browser is asked to save the file. Holds the filename so the
+	// confirmation can name the exact file that landed in Downloads.
+	let downloadedFilename: string | null = $state(null);
 
 	$effect(() => {
 		loading = true;
@@ -83,8 +91,16 @@
 		if (!prefs || !exportData) return;
 		const categoryTitle = textTitle ?? 'Untitled text';
 		const content = buildPlecoExport(categoryTitle, wordsToExport, exportData, prefs);
-		downloadText(`${sanitizeFilename(textTitle)}.txt`, content);
-		onClose();
+		const filename = `${sanitizeFilename(textTitle)}.txt`;
+		try {
+			downloadText(filename, content);
+			// Stay open and show a confirmation rather than closing
+			// immediately - see downloadedFilename's own docstring above for
+			// why (a mobile browser gives no feedback of its own).
+			downloadedFilename = filename;
+		} catch (e: unknown) {
+			error = e instanceof Error ? e.message : 'Failed to start the download';
+		}
 	}
 </script>
 
@@ -96,7 +112,26 @@
 	>
 		<h2 class="text-sm font-semibold text-gray-700 dark:text-slate-300 mb-4">Export to Pleco</h2>
 
-		{#if loading}
+		{#if downloadedFilename}
+			<!-- Explicit success confirmation, held open until the user
+			     dismisses it - see downloadedFilename's own docstring for why
+			     this dialog doesn't just close the instant the download
+			     fires. -->
+			<div class="flex items-start gap-2 bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/30 text-emerald-700 dark:text-emerald-400 px-3 py-2.5 rounded text-sm mb-4">
+				<svg class="w-4 h-4 mt-0.5 shrink-0" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+					<path d="M4 10.5l3.5 3.5L16 6" />
+				</svg>
+				<span>Downloaded <span class="font-medium">{downloadedFilename}</span>.</span>
+			</div>
+			<div class="flex justify-end">
+				<button
+					onclick={onClose}
+					class="text-sm px-4 py-1.5 bg-blue-600 dark:bg-blue-500 text-white rounded hover:bg-blue-700 dark:hover:bg-blue-600"
+				>
+					Done
+				</button>
+			</div>
+		{:else if loading}
 			<p class="text-sm text-gray-500 dark:text-slate-400">Loading…</p>
 		{:else if error}
 			<div class="bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/30 text-red-700 dark:text-red-400 px-3 py-2 rounded text-sm mb-3">
