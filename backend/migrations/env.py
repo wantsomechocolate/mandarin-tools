@@ -9,6 +9,7 @@ from app.core.config import settings
 from app.core.database import Base
 from app.models import user  # noqa: F401
 from app.modules.known_words import models as known_words_models  # noqa: F401
+from app.modules.preferences import models as preferences_models  # noqa: F401
 
 from sqlalchemy import create_engine
 

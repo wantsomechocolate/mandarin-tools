@@ -1,7 +1,7 @@
 <script lang="ts">
 	import * as api from '$lib/api';
 	import { familiarityLabel, familiarityColor, rarityLabel, rarityColor } from '$lib/wordDisplay';
-	import { isEntryEditable, type WordDetailContext } from '$lib/wordDetailContext';
+	import { isEntryEditable, entryLabel, type WordDetailContext } from '$lib/wordDetailContext';
 	import { saveWordDraft, loadWordDraft, clearWordDraft } from '$lib/wordDraftPersistence';
 	import { isSectionCollapsed, setSectionCollapsedForWord, SECTION_ORDER, type PanelSectionId } from '$lib/sectionVisibilityPersistence';
 	import { getContextChars } from '$lib/contextPreferences';
@@ -514,12 +514,6 @@
 		context.type === 'analysis' ? (analysisVisibility.find((e: VisibilityEntry) => e.analysis_id === context.analysisId) ?? null) : null
 	);
 
-	function entryLabel(entry: { scope: string; text_title: string | null; analysis_created_at: string | null }): string {
-		if (entry.scope === 'global') return 'Global';
-		if (entry.scope === 'text') return entry.text_title ?? 'Untitled text';
-		const date = entry.analysis_created_at ? new Date(entry.analysis_created_at).toLocaleDateString() : '';
-		return `Analysis of "${entry.text_title ?? 'Untitled text'}"${date ? ` (${date})` : ''}`;
-	}
 
 	function jumpLink(entry: { scope: string; text_id: number | null; analysis_id: number | null }): string | null {
 		if (entry.scope === 'analysis' && entry.analysis_id != null) return `/analyze/${entry.analysis_id}`;

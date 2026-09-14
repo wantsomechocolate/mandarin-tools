@@ -45,3 +45,18 @@ export function isEntryEditable(entry: ScopedEntry, context: WordDetailContext):
 	// entry.scope === 'analysis'
 	return context.type === 'analysis' && entry.analysis_id === context.analysisId;
 }
+
+// Moved here from WordDetailPanel.svelte once a second consumer (the Pleco
+// export formatter, pleco.ts) needed the exact same "Global" / text title /
+// "Analysis of ..." wording a scoped entry's label already uses in the
+// panel's own "Your entries"/Visibility sections - same "extract once a
+// second consumer appears" precedent this codebase already follows
+// elsewhere (see wordDisplay.ts's docstring history). Structurally typed
+// (not UserWordEntryDetail/VisibilityEntryDetail specifically) so any
+// scoped-entry shape with these three fields can use it.
+export function entryLabel(entry: { scope: string; text_title: string | null; analysis_created_at: string | null }): string {
+	if (entry.scope === 'global') return 'Global';
+	if (entry.scope === 'text') return entry.text_title ?? 'Untitled text';
+	const date = entry.analysis_created_at ? new Date(entry.analysis_created_at).toLocaleDateString() : '';
+	return `Analysis of "${entry.text_title ?? 'Untitled text'}"${date ? ` (${date})` : ''}`;
+}

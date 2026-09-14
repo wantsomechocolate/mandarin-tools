@@ -13,6 +13,7 @@
 		type PanelSectionId,
 	} from '$lib/sectionVisibilityPersistence';
 	import { getContextChars, setContextChars, MIN_CONTEXT_CHARS, MAX_CONTEXT_CHARS } from '$lib/contextPreferences';
+	import { loadExportPreferences, saveExportPreferences, type ExportPreferences } from '$lib/exportPreferences';
 
 	// The Account page - username/email/member-since, change password,
 	// delete account. Deliberately NOT the vocabulary-management section
@@ -46,7 +47,43 @@
 		} finally {
 			loading = false;
 		}
+		try {
+			exportPrefs = await loadExportPreferences();
+		} catch {
+			// Non-fatal - the Export card just stays in its loading state;
+			// every other card on this page already loaded independently.
+		}
 	});
+
+	// Export (Pleco) - backend-persisted (see exportPreferences.ts's own
+	// docstring for why this, unlike every other preference on this page,
+	// isn't localStorage). Every toggle saves immediately on change, same
+	// "no separate Save button" pattern the Preferences card below already
+	// uses for theme/section defaults.
+	let exportPrefs: ExportPreferences | null = $state(null);
+
+	function updateExportPrefs(next: ExportPreferences) {
+		exportPrefs = next;
+		saveExportPreferences(next);
+	}
+
+	function toggleIncludePinyin() {
+		if (!exportPrefs) return;
+		updateExportPrefs({ ...exportPrefs, includePinyin: !exportPrefs.includePinyin });
+	}
+
+	function toggleIncludeDefinitions() {
+		if (!exportPrefs) return;
+		updateExportPrefs({ ...exportPrefs, includeDefinitions: !exportPrefs.includeDefinitions });
+	}
+
+	function toggleDefinitionSource(source: keyof ExportPreferences['definitionSources']) {
+		if (!exportPrefs) return;
+		updateExportPrefs({
+			...exportPrefs,
+			definitionSources: { ...exportPrefs.definitionSources, [source]: !exportPrefs.definitionSources[source] },
+		});
+	}
 
 	// Preferences - theme (moved here from AccountMenu's dropdown, which
 	// still carries its own copy too - both just read/write the same
@@ -270,6 +307,67 @@
 						<span class="text-sm text-gray-700 dark:text-slate-300 w-8 text-right tabular-nums">{contextChars}</span>
 					</div>
 				</div>
+			</div>
+
+			<!-- Export (Pleco) - the account-level settings ExportDialog.svelte
+			     (analyze/[id]/+page.svelte) reads at export time. Only
+			     "respect the current filter or not" stays an export-time
+			     decision in that dialog - everything else lives here so an
+			     export is a two-click "download" rather than a form to fill
+			     out every time. Backend-persisted (see exportPreferences.ts),
+			     unlike the Preferences card below - every toggle here saves
+			     immediately, same as that card's own immediate-apply pattern. -->
+			<div class="bg-white dark:bg-slate-900 rounded-lg shadow-sm p-6 mb-6">
+				<h2 class="text-sm font-semibold text-gray-700 dark:text-slate-300 mb-4">Export (Pleco)</h2>
+				{#if !exportPrefs}
+					<p class="text-xs text-gray-400 dark:text-slate-500">Loading…</p>
+				{:else}
+					<div class="space-y-3">
+						<label class="flex items-center gap-2 text-sm text-gray-700 dark:text-slate-300">
+							<input type="checkbox" checked={exportPrefs.includePinyin} onchange={toggleIncludePinyin} class="rounded border-gray-300" />
+							Include pinyin
+						</label>
+						<div>
+							<label class="flex items-center gap-2 text-sm text-gray-700 dark:text-slate-300">
+								<input type="checkbox" checked={exportPrefs.includeDefinitions} onchange={toggleIncludeDefinitions} class="rounded border-gray-300" />
+								Include definitions
+							</label>
+							{#if exportPrefs.includeDefinitions}
+								<div class="mt-2 ml-6 space-y-1.5">
+									<label class="flex items-center gap-2 text-sm text-gray-600 dark:text-slate-400">
+										<input type="checkbox" checked={exportPrefs.definitionSources.corpusFrequency} onchange={() => toggleDefinitionSource('corpusFrequency')} class="rounded border-gray-300" />
+										Corpus frequency
+									</label>
+									<label class="flex items-center gap-2 text-sm text-gray-600 dark:text-slate-400">
+										<input type="checkbox" checked={exportPrefs.definitionSources.hsk} onchange={() => toggleDefinitionSource('hsk')} class="rounded border-gray-300" />
+										HSK
+									</label>
+									<label class="flex items-center gap-2 text-sm text-gray-600 dark:text-slate-400">
+										<input type="checkbox" checked={exportPrefs.definitionSources.cedict} onchange={() => toggleDefinitionSource('cedict')} class="rounded border-gray-300" />
+										CC-CEDICT
+									</label>
+									<div class="pt-1.5">
+										<span class="block text-xs text-gray-500 dark:text-slate-400 mb-1">Your definitions</span>
+										<div class="space-y-1.5">
+											<label class="flex items-center gap-2 text-sm text-gray-600 dark:text-slate-400">
+												<input type="checkbox" checked={exportPrefs.definitionSources.userGlobal} onchange={() => toggleDefinitionSource('userGlobal')} class="rounded border-gray-300" />
+												Global entries
+											</label>
+											<label class="flex items-center gap-2 text-sm text-gray-600 dark:text-slate-400">
+												<input type="checkbox" checked={exportPrefs.definitionSources.userText} onchange={() => toggleDefinitionSource('userText')} class="rounded border-gray-300" />
+												Text-specific entries
+											</label>
+											<label class="flex items-center gap-2 text-sm text-gray-600 dark:text-slate-400">
+												<input type="checkbox" checked={exportPrefs.definitionSources.userAnalysis} onchange={() => toggleDefinitionSource('userAnalysis')} class="rounded border-gray-300" />
+												Analysis-specific entries
+											</label>
+										</div>
+									</div>
+								</div>
+							{/if}
+						</div>
+					</div>
+				{/if}
 			</div>
 
 			<!-- Change password -->

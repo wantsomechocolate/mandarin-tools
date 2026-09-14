@@ -131,6 +131,20 @@ export async function deleteAccount(password: string) {
     return request('DELETE', '/auth/me', { password });
 }
 
+// Generic backend-persisted user preferences (app.modules.preferences) -
+// one opaque JSON value per key, this module has no opinion on what any
+// given key means. First real user is the Pleco-export feature's settings
+// (key "export" - see exportPreferences.ts); other preferences in this app
+// (theme, word-detail-panel section defaults, context length) are still
+// localStorage-only for now, not yet migrated onto this mechanism.
+export async function getPreference<T = unknown>(key: string): Promise<{ key: string; value: T | null }> {
+    return request('GET', `/preferences/${encodeURIComponent(key)}`);
+}
+
+export async function setPreference<T = unknown>(key: string, value: T) {
+    return request('PUT', `/preferences/${encodeURIComponent(key)}`, { value });
+}
+
 // Analysis
 export async function analyzeText(title: string | null, body: string) {
     return request('POST', '/known-words/analyze', { title, body });
@@ -151,6 +165,14 @@ export async function getAnalysis(id: number) {
 // to pay for. See AnalysisSpan's docstring (schemas.py) for the shape.
 export async function getAnalysisSpans(id: number) {
     return request('GET', `/known-words/analyze/${id}/spans`);
+}
+
+// Bulk per-word pinyin/definition data for the Pleco-export feature
+// (ExportDialog.svelte, pleco.ts) - another separate, opt-in-cost endpoint
+// from getAnalysis, same reasoning as getAnalysisSpans above. See
+// ExportDataResponse's docstring (schemas.py) for the shape.
+export async function getExportData(analysisId: number) {
+    return request('GET', `/known-words/analyze/${analysisId}/export-data`);
 }
 
 // Recompute-only endpoint backing the results page's "Recalculate" button

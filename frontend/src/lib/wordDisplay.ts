@@ -87,6 +87,22 @@ export function bucketLabel(source: string | null | undefined): string {
     return labels[source] ?? source;
 }
 
+// Short-form counterpart to bucketLabel, for contexts that want the same
+// 3-way partition as a compact category key rather than a display label -
+// first consumer is the Pleco export's Main/Extra/Sequences subcategories
+// (pleco.ts), a second, non-UI use of the exact same grouping the BUCKETS
+// filter-bar chips already test for (analyze/[id]/+page.svelte) - both now
+// go through this one function rather than each keeping its own copy of
+// the source-value lists.
+export type SourceCategory = 'main' | 'extra' | 'sequence';
+
+export function sourceCategory(source: string | null | undefined): SourceCategory {
+    const label = bucketLabel(source);
+    if (label === 'Extra match') return 'extra';
+    if (label === 'Repeated sequence') return 'sequence';
+    return 'main';
+}
+
 export function bucketColor(source: string | null | undefined): string {
     if (!source) return 'bg-blue-100 text-blue-700 dark:bg-blue-500/15 dark:text-blue-300';
     const colors: Record<string, string> = {

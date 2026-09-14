@@ -751,6 +751,10 @@ fetch/patch round trip anymore.
 
 ## Open items / natural next steps
 
+*(Consolidated into [ROADMAP.md](ROADMAP.md) as of 2026-09-13, alongside
+newer items — check there for the current list; this section is left as of
+the prior session that wrote it.)*
+
 - No UI action yet to promote a `longest_match_only` supplemental word
   directly into `UserWord` from the results table (currently: view it, then
   use the existing "+ Add word" button separately).

@@ -5,6 +5,7 @@ from fastapi.openapi.utils import get_openapi
 from app.core.config import settings
 from app.modules.auth.router import router as auth_router
 from app.modules.known_words.router import router as known_words_router
+from app.modules.preferences.router import router as preferences_router
 
 
 app = FastAPI(title=settings.app_name, debug=settings.debug)
@@ -26,6 +27,7 @@ app.add_middleware(
 
 app.include_router(auth_router)
 app.include_router(known_words_router)
+app.include_router(preferences_router)
 
 
 @app.get("/health")

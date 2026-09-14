@@ -4,7 +4,8 @@
 	import { isLoggedIn } from '$lib/auth';
 	import * as api from '$lib/api';
 	import type { Scope } from '$lib/api';
-	import { familiarityLabel, familiarityColor, evidenceTierLabel, evidenceTierColor, bucketLabel, bucketColor, difficultyLabel, difficultyColor, difficultyPercent, difficultyOutOfTen } from '$lib/wordDisplay';
+	import { familiarityLabel, familiarityColor, evidenceTierLabel, evidenceTierColor, bucketLabel, bucketColor, sourceCategory, difficultyLabel, difficultyColor, difficultyPercent, difficultyOutOfTen } from '$lib/wordDisplay';
+	import ExportDialog from '$lib/components/ExportDialog.svelte';
 	import { goto } from '$app/navigation';
 	import type { PageProps } from './$types';
 	import WordDetailModal from '$lib/components/WordDetailModal.svelte';
@@ -342,6 +343,13 @@
 	let difficultyDetailsOpen = $state(false);
 	let recalculatingDifficulty = $state(false);
 
+	// Pleco export dialog (ExportDialog.svelte) - opened from the "Export"
+	// button in the stats bar below. Everything configurable about the
+	// export lives on the Account page (ExportPreferences); this page only
+	// supplies the one export-time decision (respect the current filter or
+	// not) plus the two word lists that decision picks between.
+	let exportDialogOpen = $state(false);
+
 	function containsChinese(word: string): boolean {
 		return /[\u4e00-\u9fff]/.test(word);
 	}
@@ -367,12 +375,15 @@
 
 	const BUCKETS: Bucket[] = [
 		// --- Bucket axis: which pass produced this row. Every word falls into
-		// exactly one of these three - see bucketLabel/bucketColor
-		// (wordDisplay.ts) for the legacy-value folding (trie/longest_match_only/
-		// token from before the segmentation-engine rework).
-		{ id: 'mainSegmentation', label: 'Main segmentation', swatchColor: 'bg-blue-500', group: 'bucket', test: (r) => r.source === 'dag' || r.source === 'overlay' || r.source === 'unknown' || r.source === 'trie', defaultHide: false },
-		{ id: 'extraMatch', label: 'Extra matches', swatchColor: 'bg-amber-500', group: 'bucket', test: (r) => r.source === 'extra_match' || r.source === 'longest_match_only', defaultHide: false },
-		{ id: 'repeatedSequence', label: 'Repeated sequences', swatchColor: 'bg-purple-500', group: 'bucket', test: (r) => r.source === 'repeated_sequence' || r.source === 'token', defaultHide: false },
+		// exactly one of these three - see sourceCategory/bucketLabel/
+		// bucketColor (wordDisplay.ts) for the canonical source->bucket
+		// mapping (and its legacy-value folding: trie/longest_match_only/
+		// token from before the segmentation-engine rework) - also reused
+		// as-is by the Pleco export's Main/Extra/Sequences subcategories
+		// (pleco.ts), so this partition can't drift between the two.
+		{ id: 'mainSegmentation', label: 'Main segmentation', swatchColor: 'bg-blue-500', group: 'bucket', test: (r) => sourceCategory(r.source) === 'main', defaultHide: false },
+		{ id: 'extraMatch', label: 'Extra matches', swatchColor: 'bg-amber-500', group: 'bucket', test: (r) => sourceCategory(r.source) === 'extra', defaultHide: false },
+		{ id: 'repeatedSequence', label: 'Repeated sequences', swatchColor: 'bg-purple-500', group: 'bucket', test: (r) => sourceCategory(r.source) === 'sequence', defaultHide: false },
 		// --- Source axis (evidence_tier): why to trust the word - User >
 		// Dictionary > Corpus > None. Garbage lives in the Other row below -
 		// it's its own is_garbage boolean, not an evidence_tier value, and the
@@ -1757,6 +1768,13 @@
 			>
 				Reading view
 			</button>
+			<button
+				type="button"
+				onclick={() => exportDialogOpen = true}
+				class="text-sm px-3 py-1.5 rounded-full border shrink-0 transition-colors bg-white dark:bg-slate-900 border-gray-200 dark:border-slate-800 text-gray-600 dark:text-slate-400 hover:bg-gray-100 dark:hover:bg-slate-800"
+			>
+				Export
+			</button>
 		</div>
 		{#if difficultyDetailsOpen && analysis.difficulty}
 			{@const d = analysis.difficulty}
@@ -2258,4 +2276,14 @@
 		</div>
 		{/if}
 	</main>
+
+	{#if exportDialogOpen && analysis}
+		<ExportDialog
+			analysisId={analysis.analysis_id}
+			textTitle={analysis.title}
+			allWords={analysis.results}
+			filteredWords={filteredResults()}
+			onClose={() => exportDialogOpen = false}
+		/>
+	{/if}
 </div>

@@ -76,6 +76,9 @@ from app.modules.known_words.schemas import (
     SegmentedWord,
     WeakWord,
     DifficultyBreakdown,
+    ExportUserEntry,
+    ExportWordData,
+    ExportDataResponse,
 )
 
 
@@ -773,6 +776,145 @@ def get_analysis_spans(
         analysis_id=analysis.id,
         input_text_id=analysis.input_text_id,
         spans=spans,
+    )
+
+
+@router.get("/analyze/{analysis_id}/export-data", response_model=ExportDataResponse)
+def get_export_data(
+    analysis_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Bulk per-word data backing the Pleco-export feature (ExportDialog.svelte,
+    buildPlecoExport in pleco.ts) - deliberately its own endpoint, not folded
+    into GET /analyze/{id}: this does real extra work (HSK/CC-CEDICT joins, a
+    UserWord scope walk) the common results path shouldn't pay for, same
+    reasoning as get_analysis_spans above. Always returns every word in the
+    analysis - which of them actually end up in the exported file (respecting
+    the current filter or not) is a display-time decision the frontend makes
+    from data it already has (analysis.results), not a parameter here.
+
+    Per-word HSK-form/CC-CEDICT bulk lookup mirrors get_word_search's own
+    pattern below (same `.in_(candidate_words)` shape, not a query per word).
+    """
+    analysis = (
+        db.query(Analysis)
+        .join(InputText, Analysis.input_text_id == InputText.id)
+        .filter(Analysis.id == analysis_id, InputText.user_id == current_user.id)
+        .first()
+    )
+    if not analysis:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Analysis not found")
+
+    words = [r.word for r in db.query(AnalysisResult).filter_by(analysis_id=analysis_id).all()]
+    if not words:
+        return ExportDataResponse(
+            analysis_id=analysis.id,
+            input_text_id=analysis.input_text_id,
+            text_title=analysis.input_text.title,
+            words=[],
+        )
+
+    hsk_entries = db.query(HskEntry).filter(HskEntry.simplified.in_(words)).all()
+    hsk_entry_by_word = {e.simplified: e for e in hsk_entries}
+    hsk_forms = (
+        db.query(HskForm).filter(HskForm.entry_id.in_([e.id for e in hsk_entries])).all()
+        if hsk_entries else []
+    )
+    forms_by_entry_id: dict[int, list[HskForm]] = {}
+    for f in hsk_forms:
+        forms_by_entry_id.setdefault(f.entry_id, []).append(f)
+
+    cedict_by_word: dict[str, list[CedictEntry]] = {}
+    for c in db.query(CedictEntry).filter(CedictEntry.simplified.in_(words)).all():
+        cedict_by_word.setdefault(c.simplified, []).append(c)
+
+    freq_by_word: dict[str, tuple[float | None, str | None]] = {
+        w: (freq, tier) for w, freq, tier in db.query(
+            DictionaryWord.word, DictionaryWord.freq_per_million, DictionaryWord.rarity_tier,
+        ).filter(DictionaryWord.word.in_(words)).all()
+    }
+
+    # UserWord rows relevant to this analysis's context (global, this text,
+    # this exact analysis) - same _scope_filter_conditions
+    # _resolve_user_word_detail uses above, but keeping the actual rows
+    # (this needs .pronunciation/.meaning, not just .affects_dag) and
+    # reusing _resolve_scope_context_info for the label data (text_id/
+    # text_title/analysis_id/analysis_created_at) each entry needs to
+    # render "Global"/"From {text}"/"From {text} (Analysis ...)" via the
+    # frontend's existing entryLabel helper.
+    uw_rows = db.query(UserWord).filter(
+        UserWord.user_id == current_user.id,
+        or_(*_scope_filter_conditions(UserWord, analysis.id, analysis.input_text_id)),
+    ).all()
+    uw_context = _resolve_scope_context_info(uw_rows, db)
+    uw_by_word: dict[str, dict[str, UserWord]] = {}
+    for row in uw_rows:
+        uw_by_word.setdefault(row.word, {})[uw_context[row.id]["scope"]] = row
+
+    scope_order = {"global": 0, "text": 1, "analysis": 2}
+
+    export_words: list[ExportWordData] = []
+    for word in words:
+        hsk_entry = hsk_entry_by_word.get(word)
+        forms = forms_by_entry_id.get(hsk_entry.id, []) if hsk_entry else []
+        cedict_entries = cedict_by_word.get(word, [])
+        by_scope = uw_by_word.get(word, {})
+
+        hsk_meanings: list[str] = []
+        for form in forms:
+            for m in (form.meanings or []):
+                if m not in hsk_meanings:
+                    hsk_meanings.append(m)
+
+        cedict_definitions = ["; ".join(c.definitions) for c in cedict_entries if c.definitions]
+
+        user_entries = [
+            ExportUserEntry(
+                scope=scope,
+                text_id=uw_context[row.id]["text_id"],
+                text_title=uw_context[row.id]["text_title"],
+                analysis_id=uw_context[row.id]["analysis_id"],
+                analysis_created_at=uw_context[row.id]["analysis_created_at"],
+                pronunciation=row.pronunciation,
+                meaning=row.meaning,
+            )
+            for scope, row in sorted(by_scope.items(), key=lambda kv: scope_order[kv[0]])
+        ]
+
+        # Same HSK -> CC-CEDICT -> user-pronunciation fallback order
+        # get_word_search already uses, except the user-pronunciation leg
+        # walks analysis -> text -> global (mirroring
+        # userword_resolved_affects_dag's own walk) instead of "prefer
+        # global" - export wants the most specific applicable entry, not a
+        # global-first display fallback.
+        pinyin = (
+            (forms[0].pinyin if forms else None)
+            or (cedict_entries[0].pinyin if cedict_entries else None)
+            or next(
+                (by_scope[s].pronunciation for s in ("analysis", "text", "global") if by_scope.get(s) and by_scope[s].pronunciation),
+                None,
+            )
+        )
+
+        freq_per_million, rarity_tier = freq_by_word.get(word, (None, None))
+
+        export_words.append(ExportWordData(
+            word=word,
+            pinyin=pinyin,
+            freq_per_million=freq_per_million,
+            rarity_tier=rarity_tier,
+            hsk_meanings=hsk_meanings,
+            cedict_definitions=cedict_definitions,
+            user_entries=user_entries,
+        ))
+
+    return ExportDataResponse(
+        analysis_id=analysis.id,
+        input_text_id=analysis.input_text_id,
+        text_title=analysis.input_text.title,
+        words=export_words,
     )
 
 

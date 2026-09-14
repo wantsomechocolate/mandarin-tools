@@ -227,6 +227,57 @@ class AnalysisSpansResponse(BaseModel):
     spans: list[AnalysisSpan]
 
 
+class ExportUserEntry(BaseModel):
+    """
+    One UserWord entry relevant to a specific analysis's export - same
+    context-scoped set as WordResult.userword_scopes (global, plus this
+    text's/this analysis's own row if applicable), NOT WordDetail's
+    unbounded "every scope this word has ever been customized in" list.
+    Carries the actual pronunciation/meaning text (unlike UserWordResponse's
+    use elsewhere, which only needs affects_dag for the results-table
+    quick-action) plus the same text_id/text_title/analysis_id/
+    analysis_created_at label data `_resolve_scope_context_info` already
+    produces, so the frontend can prefix a definition line with "Global" /
+    the text's title / "Analysis of ..." via the exact same `entryLabel`
+    helper the word-detail panel uses - no new label format to invent.
+    """
+    scope: ScopeChoice
+    text_id: int | None = None
+    text_title: str | None = None
+    analysis_id: int | None = None
+    analysis_created_at: datetime | None = None
+    pronunciation: str | None = None
+    meaning: str | None = None
+
+
+class ExportWordData(BaseModel):
+    """One word's worth of export-time data - see get_export_data's
+    docstring (service.py) for how each field is resolved."""
+    word: str
+    # Resolved fallback: first HSK form pinyin, else first CC-CEDICT
+    # pinyin, else the first non-null pronunciation walking
+    # analysis -> text -> global over this word's UserWord rows (same walk
+    # order userword_resolved_affects_dag uses) - same precedence
+    # WordSearchResult.pinyin already uses elsewhere in this module.
+    pinyin: str | None = None
+    freq_per_million: float | None = None
+    rarity_tier: str | None = None
+    # Every HSK form's meanings, flattened and deduplicated - not just the
+    # first form's, unlike the search preview's single-string fallback.
+    hsk_meanings: list[str] = []
+    # One string per CC-CEDICT sense (a word can have several, e.g. 差's 3
+    # pronunciations) - each sense's own definitions already joined.
+    cedict_definitions: list[str] = []
+    user_entries: list[ExportUserEntry] = []
+
+
+class ExportDataResponse(BaseModel):
+    analysis_id: int
+    input_text_id: int
+    text_title: str | None = None
+    words: list[ExportWordData] = []
+
+
 class AnalysisSummary(BaseModel):
     """One entry in an input text's list of past analysis runs."""
     id: int
