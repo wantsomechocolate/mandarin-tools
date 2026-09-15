@@ -196,9 +196,10 @@
 		shows up on its own as an "unrecognized sequence" either.
 	</p>
 	<p class="text-sm text-gray-600 dark:text-slate-400 mb-3">
-		They're consulted in two places, both the same list: the DAG segmenter's own word-boundary
-		scan, and the tokenizer's repeated-sequence pass (the one that flags runs of unrecognized
-		characters worth reviewing) - both simply skip over every stopword the same way.
+		These apply to the segmenter's own word-boundary scan only. The repeated-sequence pass
+		(the one that flags repeated runs worth reviewing) deliberately doesn't stop at punctuation -
+		only at a paragraph break - so it can still find a repeat that spans a comma or period; that
+		list isn't customizable here yet.
 	</p>
 	<p class="text-xs font-medium text-gray-500 dark:text-slate-400 mb-1.5">
 		Default stopwords - always on, built into the app, not something you can edit directly:

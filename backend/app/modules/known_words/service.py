@@ -17,21 +17,29 @@ from app.modules.known_words.dag_segmentor import aggregate_segments, aggregate_
 _CJK_RE = re.compile(r"[一-鿿]")
 
 
-# One unified stopword list, not two per-algorithm ones - both the DAG
-# (build_dag) and the tokenizer's repeated-sequence scan now consult the
-# same set (see analyze_text below), so there's no more "an algorithm
-# doesn't know about this stopword" gap for a symbol/bracket to slip
-# through. Union of the old DEFAULT_LM_STOPWORDS/DEFAULT_TOKENIZER_STOPWORDS
-# plus a CJK punctuation audit: 「」『』〈〉〔〕 (paired quotation/citation
-# brackets - the missing 「」 was the direct cause of a "「小猪"-style glued
-# row, an opening quote fusing onto the word it quotes), the ideographic
-# full-width space U+3000 (some CJK text uses it in place of an ASCII
-# space), and the full-width forms of a few common ASCII punctuation marks
-# that show up informally in CJK text (／ especially, in date-like
-# "2024／01／01" formatting - the halfwidth "/" alone doesn't catch it).
-# Not intended as an exhaustive punctuation list - just closing the gaps
-# found so far; segmentation_affixes-style DB-backed additions are the
-# path for anything else that turns up.
+# DAG-only stopwords (Segmenter.build_dag/segment - see analyze_text below).
+# Punctuation/whitespace here are real word-boundary breaks for
+# segmentation: a word can never start with or extend through one. Union of
+# the old DEFAULT_LM_STOPWORDS/DEFAULT_TOKENIZER_STOPWORDS plus a CJK
+# punctuation audit: 「」『』〈〉〔〕 (paired quotation/citation brackets -
+# the missing 「」 was the direct cause of a "「小猪"-style glued row, an
+# opening quote fusing onto the word it quotes), the ideographic full-width
+# space U+3000 (some CJK text uses it in place of an ASCII space), and the
+# full-width forms of a few common ASCII punctuation marks that show up
+# informally in CJK text (／ especially, in date-like "2024／01／01"
+# formatting - the halfwidth "/" alone doesn't catch it). Not intended as
+# an exhaustive punctuation list - just closing the gaps found so far;
+# segmentation_affixes-style DB-backed additions are the path for anything
+# else that turns up.
+#
+# Deliberately NOT shared with the tokenizer's repeated-sequence pass (see
+# TOKENIZER_STOPWORDS below) - these two were briefly unified (migration
+# e5640d2e5491) but that was reverted: stopping the repeated-sequence scan
+# at every piece of punctuation means it can never find a repeat that spans
+# a comma/period, which defeats the point of that pass. User-customizable
+# (get_user_stopwords, DB-backed `stopwords` table) - that customization
+# only ever applied to the DAG even when the two sets were unified, since
+# nothing ever exposed a way to scope a stopword to just the tokenizer.
 DEFAULT_STOPWORDS = {
     "\n", "，", "。", "！", "？", "、", "；", "：",
     """, """, "'", "'", "（", "）", "【", "】",
@@ -42,6 +50,39 @@ DEFAULT_STOPWORDS = {
     "／", "＼", "－",
 }
 
+# Tokenizer-only stopwords (tokenize(), repeated-sequence detection). Just
+# the newline - a repeated sequence should be free to span punctuation
+# (that's the whole point of scanning for it separately from the DAG), but
+# never a paragraph break, which isn't part of any real sequence a user
+# would recognize as repeated. Fixed, not user-customizable yet - unlike
+# DEFAULT_STOPWORDS this isn't backed by the `stopwords` DB table today;
+# making it configurable the same way is a deliberate later follow-up, not
+# done in this pass.
+TOKENIZER_STOPWORDS = {"\n"}
+
+
+def _promote_confirmed_unknown_runs(best_guess: dict[str, dict], repeated: dict[str, dict]) -> None:
+    """
+    A merged "unknown" run (see _merge_unknown_runs, dag_segmentor.py) that
+    the tokenizer *also* independently confirms as a repeated sequence
+    graduates from "we don't recognize this at all" to "not in any
+    dictionary, but this text repeats it enough to be a real unit" -
+    relabeled in place, right here in best_guess (mutated directly), rather
+    than added as a separate extra-match row. Deliberately an exact-string
+    match only - no partial-credit slicing when the tokenizer's own
+    candidate only overlaps part of a run, it just stays "unknown". Real
+    positions/count stay best_guess's own (from the DAG walk), never the
+    tokenizer's - only `source` changes.
+
+    Must run before `extra` is built in analyze_text: once a word's
+    `source` flips here, the existing "not already in best_guess" dedup
+    automatically drops the tokenizer's own copy of the same word from
+    `extra` - no separate bookkeeping needed for that.
+    """
+    for word, data in best_guess.items():
+        if data["source"] == "unknown" and word in repeated:
+            data["source"] = "repeated_sequence"
+
 
 def analyze_text(
     text_body: str,
@@ -49,7 +90,7 @@ def analyze_text(
     user_id: int | None = None,
     input_text_id: int | None = None,
     min_token_length: int = 2,
-    max_token_length: int = 20,
+    max_token_length: int = 100,
     min_token_count: int = 2,
     stopwords: set[str] | None = None,
 ) -> dict[str, dict]:
@@ -58,7 +99,10 @@ def analyze_text(
     dag_segmentor.py's module docstring for the full jieba-mode framing):
 
     - best-guess: the DP's single chosen path (aggregate_segments) -
-      source is "dag"/"overlay"/"unknown" per word, exactly as before.
+      source is "dag"/"overlay"/"unknown" per word, plus "repeated_sequence"
+      for an "unknown" run the tokenizer also independently confirms
+      repeats (see the promotion step below) - a merged run that doesn't
+      clear the tokenizer's own thresholds stays "unknown".
     - extra matches: full segmentation minus best-guess (source
       "extra_match") unioned with the tokenizer's repeated-sequence finds
       not already in best-guess (source "repeated_sequence") - two
@@ -85,6 +129,17 @@ def analyze_text(
     UserWord scoped to this text (but not others) is included - see that
     function's docstring for why only input-text scope, never analysis
     scope, is relevant when building an overlay.
+
+    `stopwords` (the caller-supplied/DEFAULT_STOPWORDS set) governs the DAG
+    build/segment/full-segmentation calls only - the tokenizer's repeated-
+    sequence pass always uses its own fixed TOKENIZER_STOPWORDS (just the
+    newline) regardless of what's passed here, so a repeated sequence can
+    span punctuation the DAG itself would treat as a hard word boundary.
+    See TOKENIZER_STOPWORDS' own comment above for why these two were
+    re-split apart after briefly being unified. `stopwords` is also passed
+    to tokenize() a second time as `junk_chars` though - a different role
+    from the scan-boundary one above (see tokenize()'s own docstring for
+    why a match can move through punctuation but not start or end on it).
 
     Lowercased before any of the below - Chinese characters have no case
     concept, so str.lower() is a no-op on them and only ever touches
@@ -115,23 +170,31 @@ def analyze_text(
         if user_id is not None else None
     )
 
+    trie = get_trie(db)
+
     # Built exactly once - both best-guess (via segment()'s dag= param) and
     # full segmentation consume this same dict, never rebuilding it.
     dag = segmenter.build_dag(text_body, overlay, stopwords)
     best_guess = aggregate_segments(segmenter.segment(text_body, overlay=overlay, stopwords=stopwords, dag=dag))
-    full = aggregate_full_segmentation(text_body, dag, stopwords)
+    # trie/overlay here (not just stopwords) so full segmentation doesn't
+    # emit one row per unrecognized character now that best-guess merges
+    # consecutive ones into a single run - see aggregate_full_segmentation's
+    # own docstring.
+    full = aggregate_full_segmentation(text_body, dag, stopwords, trie=trie, overlay=overlay)
 
-    trie = get_trie(db)
     overlay_trie = overlay.trie if overlay is not None else None
     repeated = tokenize(
         text_body,
-        stopwords,
+        TOKENIZER_STOPWORDS,
         trie,
         overlay_trie=overlay_trie,
         min_length=min_token_length,
         max_length=max_token_length,
         min_count=min_token_count,
+        junk_chars=stopwords,
     )
+
+    _promote_confirmed_unknown_runs(best_guess, repeated)
 
     repeated_tagged = {word: {**data, "source": "repeated_sequence"} for word, data in repeated.items()}
     full_tagged = {word: {**data, "source": "extra_match"} for word, data in full.items()}
@@ -147,9 +210,9 @@ def analyze_text(
 def get_user_stopwords(user_id: int, db: Session) -> set[str]:
     """
     Returns one merged stopword set for a user (system defaults plus user
-    additions, minus user overrides) - unified from the old per-algorithm
-    (lm_stopwords, tokenizer_stopwords) pair now that both the DAG and the
-    tokenizer consult the same list (see DEFAULT_STOPWORDS/analyze_text).
+    additions, minus user overrides) - DAG-only (see DEFAULT_STOPWORDS/
+    TOKENIZER_STOPWORDS above for why the tokenizer's repeated-sequence
+    pass doesn't consult this).
     """
     rows = db.execute(text("""
         SELECT word, is_override

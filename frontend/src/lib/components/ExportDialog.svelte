@@ -111,14 +111,14 @@
 	});
 
 	// Pleco's categories and .xlsx's sheets are the same underlying
-	// Main/Extra/Sequences grouping (sourceCategory, wordDisplay.ts) - only
-	// the noun describing them, and whether the text's title is baked into
-	// each name (Pleco) or just the file itself (.xlsx, one file per text
-	// already), differs per format.
+	// Main/Extra grouping (sourceCategory, wordDisplay.ts) - only the noun
+	// describing them, and whether the text's title is baked into each name
+	// (Pleco) or just the file itself (.xlsx, one file per text already),
+	// differs per format.
 	const groupingSummary = $derived(
 		format === 'pleco'
-			? `grouped into Main/Extra/Sequences categories under "${textTitle ?? 'Untitled text'}"`
-			: 'grouped into Main/Extra/Sequences sheets'
+			? `grouped into Main/Extra categories under "${textTitle ?? 'Untitled text'}"`
+			: 'grouped into Main/Extra sheets'
 	);
 
 	function downloadBlob(filename: string, blob: Blob) {

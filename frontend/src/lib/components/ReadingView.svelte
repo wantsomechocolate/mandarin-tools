@@ -57,7 +57,7 @@
 		// on the span (spanTitle still reads off it via dictionary_source's
 		// presence, and it's the fallback if dictionary_source is ever null
 		// on an otherwise-"dictionary" word - see sourceDetailTier).
-		evidence_tier: 'user' | 'dictionary' | 'corpus' | 'unknown' | null;
+		evidence_tier: 'user' | 'dictionary' | 'corpus' | 'repeated_sequence' | 'unknown' | null;
 		// Splits evidence_tier's "dictionary" value into which curated
 		// source backs the word - see AnalysisSpan.dictionary_source's
 		// docstring, schemas.py, for the null cases and the HSK > CC-CEDICT
@@ -228,6 +228,7 @@
 		hsk: 'dark:bg-blue-400/30',
 		cedict: 'dark:bg-fuchsia-400/30',
 		corpus: 'dark:bg-teal-400/30',
+		repeated_sequence: 'dark:bg-purple-400/30',
 		none: 'dark:bg-slate-500/15',
 	};
 	const FAMILIARITY_TINT_DARK: Record<number, string> = {
@@ -259,15 +260,17 @@
 		5: '',
 	};
 
-	// User > HSK > CC-CEDICT > Corpus > None - see AnalysisSpan.
-	// dictionary_source's docstring (schemas.py) for the same order and
-	// the HSK-over-CC-CEDICT tie-break. Falls back to evidence_tier's own
-	// "corpus"/"unknown" for the two cases dictionary_source doesn't cover
-	// (it's only ever "hsk"/"cedict"/null).
+	// User > HSK > CC-CEDICT > Corpus > Repeated sequence > None - see
+	// AnalysisSpan.dictionary_source's docstring (schemas.py) for the same
+	// order and the HSK-over-CC-CEDICT tie-break. Falls back to
+	// evidence_tier's own "corpus"/"repeated_sequence"/"unknown" for the
+	// cases dictionary_source doesn't cover (it's only ever "hsk"/"cedict"/
+	// null).
 	function sourceDetailTier(span: WordSpan): SourceDetailTier {
 		if (span.userword_scopes.length > 0) return 'user';
 		if (span.dictionary_source) return span.dictionary_source;
 		if (span.evidence_tier === 'corpus') return 'corpus';
+		if (span.evidence_tier === 'repeated_sequence') return 'repeated_sequence';
 		return 'none';
 	}
 

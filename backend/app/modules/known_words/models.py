@@ -581,13 +581,16 @@ class WordNote(Base):
 
 class Stopword(Base):
     """
-    One unified list, not one per algorithm - both the DAG (Segmenter.
-    build_dag) and the tokenizer's repeated-sequence scan consult the same
-    set (see service.get_user_stopwords/DEFAULT_STOPWORDS). Previously
-    split by `algo_type` ("longest_match"/"tokenization"), each algorithm
-    only seeing its own half - dropped once every consumer needed the same
-    list anyway and the split only ever meant a stopword added for one
-    algorithm silently didn't apply to the other.
+    Governs the DAG segmenter only (Segmenter.build_dag - see
+    service.get_user_stopwords/DEFAULT_STOPWORDS). Previously split by
+    `algo_type` ("longest_match"/"tokenization"), then briefly unified so
+    both the DAG and the tokenizer's repeated-sequence scan consulted this
+    same table - reverted (see service.TOKENIZER_STOPWORDS' own comment):
+    stopping the repeated-sequence scan at every piece of punctuation means
+    it can never find a repeat spanning a comma/period. The tokenizer now
+    uses a fixed, code-level newline-only stopword instead of this table;
+    making that configurable too is a deliberate later follow-up, not
+    something this table drives today.
     """
     __tablename__ = "stopwords"
 
@@ -645,7 +648,12 @@ class Analysis(Base):
     # transient request params) so future runs with different config are
     # distinguishable from this one.
     min_token_length: Mapped[int] = mapped_column(Integer, nullable=False, default=2)
-    max_token_length: Mapped[int] = mapped_column(Integer, nullable=False, default=20)
+    # See AnalyzeTextRequest.max_token_length's own comment (schemas.py) for
+    # why 100, not 20 - this column's default is effectively unused today
+    # (router.py's /analyze always passes an explicit value from the
+    # request), kept in sync for any other path that might construct an
+    # Analysis directly.
+    max_token_length: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
     min_token_count: Mapped[int] = mapped_column(Integer, nullable=False, default=2)
     min_familiarity_filter: Mapped[int] = mapped_column(Integer, nullable=False, default=4)
     max_familiarity_filter: Mapped[int] = mapped_column(Integer, nullable=False, default=5)

@@ -62,75 +62,60 @@ export function familiarityDotColor(score: number): string {
     return colors[score] ?? 'bg-gray-200 dark:bg-slate-600';
 }
 
-// Bucket label/color mapping - the "which pass produced this row" axis,
-// orthogonal to evidence tier below. Three buckets going forward: best-
-// guess segmentation (dag/overlay/unknown - the DP's single chosen path,
-// including its own "unknown" fallback), Extra match (extra_match - a
-// full-segmentation candidate that existed but wasn't chosen), Repeated
-// sequence (repeated_sequence - a tokenizer/repeated-substring find).
-// Legacy pre-rework values map onto their semantic successor so old
-// analyses still bucket sensibly: trie -> main segmentation (same meaning
-// as dag, pre-rename), longest_match_only -> extra match, token -> repeated
-// sequence.
-export function bucketLabel(source: string | null | undefined): string {
-    if (!source) return 'Main segmentation';
-    const labels: Record<string, string> = {
-        dag: 'Main segmentation',
-        overlay: 'Main segmentation',
-        unknown: 'Main segmentation',
-        trie: 'Main segmentation',
-        extra_match: 'Extra match',
-        longest_match_only: 'Extra match',
-        repeated_sequence: 'Repeated sequence',
-        token: 'Repeated sequence',
-    };
-    return labels[source] ?? source;
+// Bucket label/color mapping - the "is this row part of best-guess's one
+// disjoint walk through the text" axis, orthogonal to evidence tier below.
+// Two buckets: Main segmentation (is_main_segmentation true - best-guess's
+// own dag/overlay/unknown rows, plus a repeated_sequence/token row that
+// carries a real position, meaning it's a promoted merged-unknown-run, not
+// a purely supplemental find - see is_main_segmentation_row's docstring,
+// difficulty.py) and Extra match (everything else - a full-segmentation
+// candidate that existed but wasn't chosen, or a repeated-sequence find
+// that's genuinely supplemental). Used to be three buckets, with Repeated
+// sequence as its own third bucket - collapsed to two once it became clear
+// a repeated sequence is sometimes Main segmentation and sometimes Extra
+// match, exactly like a dictionary word already was, so it doesn't belong
+// on this axis as a category of its own - see evidenceTierLabel/Color
+// below for where that concept moved to instead.
+export function bucketLabel(isMainSegmentation: boolean): string {
+    return isMainSegmentation ? 'Main segmentation' : 'Extra match';
 }
 
 // Short-form counterpart to bucketLabel, for contexts that want the same
-// 3-way partition as a compact category key rather than a display label -
-// first consumer is the Pleco export's Main/Extra/Sequences subcategories
-// (pleco.ts), a second, non-UI use of the exact same grouping the BUCKETS
-// filter-bar chips already test for (analyze/[id]/+page.svelte) - both now
-// go through this one function rather than each keeping its own copy of
-// the source-value lists.
-export type SourceCategory = 'main' | 'extra' | 'sequence';
+// 2-way partition as a compact category key rather than a display label -
+// consumers are the Pleco/.xlsx export's Main/Extra subcategories
+// (pleco.ts/xlsxExport.ts) and the BUCKETS filter-bar chips
+// (analyze/[id]/+page.svelte) - all three go through this one function
+// rather than each keeping its own copy.
+export type SourceCategory = 'main' | 'extra';
 
-export function sourceCategory(source: string | null | undefined): SourceCategory {
-    const label = bucketLabel(source);
-    if (label === 'Extra match') return 'extra';
-    if (label === 'Repeated sequence') return 'sequence';
-    return 'main';
+export function sourceCategory(isMainSegmentation: boolean): SourceCategory {
+    return isMainSegmentation ? 'main' : 'extra';
 }
 
-export function bucketColor(source: string | null | undefined): string {
-    if (!source) return 'bg-blue-100 text-blue-700 dark:bg-blue-500/15 dark:text-blue-300';
-    const colors: Record<string, string> = {
-        dag: 'bg-blue-100 text-blue-700 dark:bg-blue-500/15 dark:text-blue-300',
-        overlay: 'bg-blue-100 text-blue-700 dark:bg-blue-500/15 dark:text-blue-300',
-        unknown: 'bg-blue-100 text-blue-700 dark:bg-blue-500/15 dark:text-blue-300',
-        trie: 'bg-blue-100 text-blue-700 dark:bg-blue-500/15 dark:text-blue-300',
-        extra_match: 'bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300',
-        longest_match_only: 'bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300',
-        repeated_sequence: 'bg-purple-100 text-purple-700 dark:bg-purple-500/15 dark:text-purple-300',
-        token: 'bg-purple-100 text-purple-700 dark:bg-purple-500/15 dark:text-purple-300',
-    };
-    return colors[source] ?? 'bg-gray-100 text-gray-600 dark:bg-slate-500/15 dark:text-slate-400';
+export function bucketColor(isMainSegmentation: boolean): string {
+    return isMainSegmentation
+        ? 'bg-blue-100 text-blue-700 dark:bg-blue-500/15 dark:text-blue-300'
+        : 'bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300';
 }
 
 // Evidence-tier label/color mapping - the primary per-row chip (results
 // table/cards, ReadingView's "Color by" mode). Orthogonal to bucket above:
-// bucket answers "which pass produced this row" (bucketLabel/bucketColor,
-// still shown via the BUCKETS filter bar and the per-row bucket chip);
-// evidence tier answers "why should a user trust this as a real word"
-// (User > Dictionary > Corpus > None - see WordResult.evidence_tier's
-// docstring, schemas.py, for the resolution hierarchy).
+// bucket answers "is this row part of the one disjoint walk through the
+// text" (bucketLabel/bucketColor, still shown via the BUCKETS filter bar
+// and the per-row bucket chip); evidence tier answers "why should a user
+// trust this as a real word" (User > Dictionary > Corpus > Repeated
+// sequence > None - see WordResult.evidence_tier's docstring, schemas.py,
+// for the resolution hierarchy). "Repeated sequence" moved here from being
+// its own bucket - a tokenizer-confirmed repeat is real evidence a word is
+// genuine even without dictionary backing, which is exactly the kind of
+// thing this axis (not the bucket one) already exists to express.
 export function evidenceTierLabel(tier: string | null | undefined): string {
     if (!tier) return 'None';
     const labels: Record<string, string> = {
         user: 'Your word',
         dictionary: 'Dictionary',
         corpus: 'Corpus',
+        repeated_sequence: 'Repeated sequence',
         unknown: 'None',
     };
     return labels[tier] ?? tier;
@@ -152,6 +137,10 @@ export function evidenceTierColor(tier: string | null | undefined): string {
         // genuinely different signal from either Dictionary or None,
         // and needs its own color to read as a third thing at a glance.
         corpus: 'bg-teal-100 text-teal-700 dark:bg-teal-500/15 dark:text-teal-300',
+        // Reused verbatim from the old bucket badge's own purple - this is
+        // the same signal, just relocated to this axis instead of being a
+        // third bucket.
+        repeated_sequence: 'bg-purple-100 text-purple-700 dark:bg-purple-500/15 dark:text-purple-300',
         unknown: 'bg-gray-100 text-gray-600 dark:bg-slate-500/15 dark:text-slate-400',
     };
     return colors[tier] ?? 'bg-gray-100 text-gray-600 dark:bg-slate-500/15 dark:text-slate-400';
@@ -164,8 +153,11 @@ export function evidenceTierColor(tier: string | null | undefined): string {
 // Everywhere else that reads evidence_tier (the results table/card chip,
 // WordDetail) keeps treating HSK/CC-CEDICT as one undifferentiated
 // "Dictionary" tier - this is a new, additive scale for the one place that
-// wanted the split, not a replacement for the 4-tier one above.
-export type SourceDetailTier = 'user' | 'hsk' | 'cedict' | 'corpus' | 'none';
+// wanted the split, not a replacement for the 5-tier one above.
+// "repeated_sequence" carries straight over (no further split needed - it
+// has no HSK/CC-CEDICT-style sub-source) so this mode doesn't flatten a
+// promoted repeated-sequence word into indistinguishable-from-"None" gray.
+export type SourceDetailTier = 'user' | 'hsk' | 'cedict' | 'corpus' | 'repeated_sequence' | 'none';
 
 export function sourceDetailLabel(tier: SourceDetailTier): string {
     const labels: Record<SourceDetailTier, string> = {
@@ -173,6 +165,7 @@ export function sourceDetailLabel(tier: SourceDetailTier): string {
         hsk: 'HSK',
         cedict: 'CC-CEDICT',
         corpus: 'Corpus',
+        repeated_sequence: 'Repeated sequence',
         none: 'None',
     };
     return labels[tier];
@@ -199,6 +192,8 @@ export function sourceDetailColor(tier: SourceDetailTier): string {
         cedict: 'bg-fuchsia-100 text-fuchsia-700 dark:bg-fuchsia-500/15 dark:text-fuchsia-300',
         // Same teal as evidenceTierColor's 'corpus'.
         corpus: 'bg-teal-100 text-teal-700 dark:bg-teal-500/15 dark:text-teal-300',
+        // Same purple as evidenceTierColor's 'repeated_sequence'.
+        repeated_sequence: 'bg-purple-100 text-purple-700 dark:bg-purple-500/15 dark:text-purple-300',
         none: 'bg-gray-100 text-gray-600 dark:bg-slate-500/15 dark:text-slate-400',
     };
     return colors[tier];

@@ -146,14 +146,31 @@ export async function setPreference<T = unknown>(key: string, value: T) {
 }
 
 // Analysis
-export async function analyzeText(title: string | null, body: string) {
-    return request('POST', '/known-words/analyze', { title, body });
+
+// `thresholds` is the account-level repeated-sequence min length/count
+// (see repeatedSequencePreferences.ts) - not a per-analysis option, but
+// resolved by the caller (once, from the account preference) and passed
+// through here rather than this module reaching into preferences itself.
+interface RepeatedSequenceThresholds {
+    minTokenLength: number;
+    minTokenCount: number;
+}
+
+export async function analyzeText(title: string | null, body: string, thresholds?: RepeatedSequenceThresholds) {
+    return request('POST', '/known-words/analyze', {
+        title,
+        body,
+        ...(thresholds && { min_token_length: thresholds.minTokenLength, min_token_count: thresholds.minTokenCount }),
+    });
 }
 
 // Re-runs analysis against an existing input text (a new Analysis is
 // created under it, distinct from any earlier runs of the same text).
-export async function reanalyzeInputText(inputTextId: number) {
-    return request('POST', '/known-words/analyze', { input_text_id: inputTextId });
+export async function reanalyzeInputText(inputTextId: number, thresholds?: RepeatedSequenceThresholds) {
+    return request('POST', '/known-words/analyze', {
+        input_text_id: inputTextId,
+        ...(thresholds && { min_token_length: thresholds.minTokenLength, min_token_count: thresholds.minTokenCount }),
+    });
 }
 
 export async function getAnalysis(id: number) {

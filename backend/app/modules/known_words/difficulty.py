@@ -56,7 +56,47 @@ def _contains_chinese(word: str) -> bool:
 # imports it from here rather than defining its own copy, since both the
 # reading-view spans endpoint and this module need exactly the same
 # definition of "one pass over the actual text, with no double-counting."
+#
+# Deliberately does NOT include "repeated_sequence"/"token" outright, even
+# though service._promote_confirmed_unknown_runs can now relabel a
+# best-guess row to "repeated_sequence" - most repeated_sequence rows are
+# NOT part of best-guess's disjoint walk (a pure tokenizer find never gets
+# real positions at all - see aggregate_full_segmentation's docstring,
+# dag_segmentor.py), and counting those here would double-count tokens
+# against a stretch of text a real main-segmentation row already covers,
+# exactly the bug this constant exists to prevent. A *promoted* row is the
+# one exception - it keeps its real best-guess position, unchanged, so it's
+# exactly as disjoint as any other best-guess row. `positions` is what
+# distinguishes the two cases (present only for the promoted kind - see
+# router.py's persistence comment, "positions is only present for words
+# that came from the DAG's own ordered walk") - see is_main_segmentation_row
+# below, usable by any raw-AnalysisResult caller that has `positions` in
+# hand. compute_difficulty below deliberately does NOT use it - it only
+# ever sees WordResult (schemas.py), which has no `positions` field to
+# check - so a promoted row's Chinese-only, non-garbage content (rare: the
+# DAG's per-character fallback that produces a mergeable "unknown" run
+# almost always fires on non-Chinese text in the first place, which
+# _contains_chinese already excludes here regardless) simply doesn't count
+# toward difficulty, same as before this feature existed. Narrow known gap,
+# not fixed here - revisit only if it turns out to matter in practice.
 MAIN_SEGMENTATION_SOURCES = {"dag", "overlay", "unknown", "trie"}
+
+
+def is_main_segmentation_row(source: str, positions) -> bool:
+    """
+    Whether a raw AnalysisResult row counts as part of best-guess's disjoint
+    walk - true for the ordinary dag/overlay/unknown/trie sources, plus a
+    "repeated_sequence"/"token" row *only* when it carries real positions
+    (meaning it's a promoted merged-unknown-run, not a pure supplemental
+    tokenizer find - see MAIN_SEGMENTATION_SOURCES' own comment above for
+    why that distinction matters here). Only usable where `positions` is
+    actually in hand (e.g. router.py's /spans endpoint, querying
+    AnalysisResult directly) - see that same comment for why
+    compute_difficulty below can't use this.
+    """
+    if source in MAIN_SEGMENTATION_SOURCES:
+        return True
+    return source in ("repeated_sequence", "token") and bool(positions)
 
 # Familiarity (1-5, see KnownWord.familiarity) -> a [0,1] "how much of this
 # word can the reader be assumed to get through" weight. Unmarked/None is

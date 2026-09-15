@@ -113,14 +113,20 @@
 		// Drives each badge in the fan showing ITS OWN scope's setting,
 		// rather than every badge showing the one resolved winner's.
 		userword_scope_affects_dag: Record<string, api.AffectsDag | null>;
+		// Resolved (never persisted) same as is_garbage/is_hidden - whether
+		// this row is part of best-guess's one disjoint walk through the
+		// text ("Main segmentation") or a supplemental candidate layered on
+		// top of it ("Extra match") - the only two buckets now (previously
+		// three, with "Repeated sequence" as its own bucket - see
+		// evidence_tier below for where that moved to). See
+		// is_main_segmentation_row's docstring (difficulty.py, backend).
+		is_main_segmentation: boolean;
 		// Resolved (never persisted) same as is_garbage/is_hidden - a second,
-		// orthogonal dimension from `source`: `source` is which pipeline
-		// pass produced this row (still backs BUCKETS and the
-		// longest_match_only warning below, unchanged); `evidence_tier` is
+		// orthogonal dimension from `source`/is_main_segmentation above:
 		// why a user should trust this as a real word (User > Dictionary >
-		// Corpus > Unknown - see WordResult.evidence_tier's docstring,
-		// schemas.py). This is what the per-row chip now shows.
-		evidence_tier: 'user' | 'dictionary' | 'corpus' | 'unknown';
+		// Corpus > Repeated sequence > Unknown - see WordResult.evidence_tier's
+		// docstring, schemas.py). This is what the per-row chip now shows.
+		evidence_tier: 'user' | 'dictionary' | 'corpus' | 'repeated_sequence' | 'unknown';
 	}
 
 	interface UserWordDetail {
@@ -374,24 +380,31 @@
 	}
 
 	const BUCKETS: Bucket[] = [
-		// --- Bucket axis: which pass produced this row. Every word falls into
-		// exactly one of these three - see sourceCategory/bucketLabel/
-		// bucketColor (wordDisplay.ts) for the canonical source->bucket
-		// mapping (and its legacy-value folding: trie/longest_match_only/
-		// token from before the segmentation-engine rework) - also reused
-		// as-is by the Pleco export's Main/Extra/Sequences subcategories
-		// (pleco.ts), so this partition can't drift between the two.
-		{ id: 'mainSegmentation', label: 'Main segmentation', swatchColor: 'bg-blue-500', group: 'bucket', test: (r) => sourceCategory(r.source) === 'main', defaultHide: false },
-		{ id: 'extraMatch', label: 'Extra matches', swatchColor: 'bg-amber-500', group: 'bucket', test: (r) => sourceCategory(r.source) === 'extra', defaultHide: false },
-		{ id: 'repeatedSequence', label: 'Repeated sequences', swatchColor: 'bg-purple-500', group: 'bucket', test: (r) => sourceCategory(r.source) === 'sequence', defaultHide: false },
+		// --- Bucket axis: is this row part of best-guess's one disjoint walk
+		// through the text, or a supplemental candidate layered on top of it.
+		// Two buckets now (previously three, with Repeated sequence as its
+		// own bucket - collapsed once it became clear a repeated sequence is
+		// sometimes Main segmentation and sometimes Extra match, exactly like
+		// a dictionary word already was - see sourceCategory/bucketLabel/
+		// bucketColor, wordDisplay.ts, for the canonical is_main_segmentation
+		// -> bucket mapping, also reused as-is by the Pleco/.xlsx export's
+		// Main/Extra subcategories (pleco.ts/xlsxExport.ts), so this
+		// partition can't drift between the two.
+		{ id: 'mainSegmentation', label: 'Main segmentation', swatchColor: 'bg-blue-500', group: 'bucket', test: (r) => sourceCategory(r.is_main_segmentation) === 'main', defaultHide: false },
+		{ id: 'extraMatch', label: 'Extra matches', swatchColor: 'bg-amber-500', group: 'bucket', test: (r) => sourceCategory(r.is_main_segmentation) === 'extra', defaultHide: false },
 		// --- Source axis (evidence_tier): why to trust the word - User >
-		// Dictionary > Corpus > None. Garbage lives in the Other row below -
+		// Dictionary > Corpus > Repeated sequence > None. "Repeated sequence"
+		// moved here from being its own bucket - a tokenizer-confirmed
+		// repeat is real evidence a word is genuine even with no dictionary
+		// backing, which is exactly what this axis (not the bucket one)
+		// already exists to express. Garbage lives in the Other row below -
 		// it's its own is_garbage boolean, not an evidence_tier value, and the
 		// row/card's own red tint plus the "not allowed" quick-action icon
 		// already flag it without a chip duplicating that here.
 		{ id: 'userTier', label: 'User', swatchColor: 'bg-indigo-500', group: 'tier', test: (r) => r.is_user_word, defaultHide: false },
 		{ id: 'dictionaryTier', label: 'Dictionary', swatchColor: 'bg-blue-500', group: 'tier', test: (r) => r.evidence_tier === 'dictionary', defaultHide: false },
 		{ id: 'corpusTier', label: 'Corpus', swatchColor: 'bg-teal-500', group: 'tier', test: (r) => r.evidence_tier === 'corpus', defaultHide: false },
+		{ id: 'repeatedSequenceTier', label: 'Repeated sequence', swatchColor: 'bg-purple-500', group: 'tier', test: (r) => r.evidence_tier === 'repeated_sequence', defaultHide: false },
 		{ id: 'noneTier', label: 'None', swatchColor: 'bg-gray-400', group: 'tier', test: (r) => r.evidence_tier === 'unknown', defaultHide: false },
 		// --- Other: orthogonal display states, not part of either axis.
 		// Starred has no resolved WordResult field (unlike garbage/hidden/
@@ -1994,10 +2007,10 @@
 									<td class="px-4 py-3 text-gray-600 dark:text-slate-400 text-center">{result.count}</td>
 									<td class="px-4 py-3 text-center">
 										<span
-											class="inline-block text-center text-xs px-2 py-1 rounded-full {bucketColor(result.source)}"
+											class="inline-block text-center text-xs px-2 py-1 rounded-full {bucketColor(result.is_main_segmentation)}"
 											title={result.source === 'longest_match_only' ? 'Found only by the legacy longest-matching pass — not confirmed by the main segmenter. Likely a dictionary gap; review before trusting it.' : ''}
 										>
-											{bucketLabel(result.source)}
+											{bucketLabel(result.is_main_segmentation)}
 										</span>
 									</td>
 									<td class="px-4 py-3 text-center">
@@ -2160,10 +2173,10 @@
 								     compactFamiliarity is a bare number with no label). -->
 								<div class="flex flex-wrap items-center gap-2 border-t border-gray-50 dark:border-slate-800 px-4 pt-2 pb-3 text-sm">
 									<span
-										class="inline-block text-center text-xs px-2 py-1 rounded-full {bucketColor(result.source)}"
+										class="inline-block text-center text-xs px-2 py-1 rounded-full {bucketColor(result.is_main_segmentation)}"
 										title={result.source === 'longest_match_only' ? 'Found only by the legacy longest-matching pass — not confirmed by the main segmenter. Likely a dictionary gap; review before trusting it.' : ''}
 									>
-										{bucketLabel(result.source)}
+										{bucketLabel(result.is_main_segmentation)}
 									</span>
 									<span class="inline-block text-center text-xs px-2 py-1 rounded-full {evidenceTierColor(result.evidence_tier)}">
 										{evidenceTierLabel(result.evidence_tier)}

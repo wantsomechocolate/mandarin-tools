@@ -510,6 +510,72 @@ class TestFullSegmentation:
         assert full["好多了"]["count"] == 1
         assert full["好多了"]["positions"] == [(0, 3)]
 
+    def test_single_unrecognized_character_excluded_when_trie_given(self):
+        # build_dag's synthetic single-character fallback (emitted whenever
+        # nothing matched at all) is structurally identical to a genuine
+        # one-character trie hit - trie=/overlay= is what tells them apart.
+        freq = {"你好": 900}
+        trie = Trie()
+        trie.insert("你好")
+        segmenter = Segmenter(trie=trie, freq_dict=freq)
+
+        text = "e"
+        dag = segmenter.build_dag(text, overlay=None)
+
+        # Old behavior preserved when trie isn't passed (existing callers
+        # that don't care about this distinction).
+        assert "e" in aggregate_full_segmentation(text, dag)
+        # New behavior once trie is given - the fallback is excluded.
+        assert "e" not in aggregate_full_segmentation(text, dag, trie=trie)
+
+    def test_genuine_single_character_dictionary_word_still_included(self):
+        freq = {"了": 5000}
+        trie = Trie()
+        trie.insert("了")
+        segmenter = Segmenter(trie=trie, freq_dict=freq)
+
+        text = "了"
+        dag = segmenter.build_dag(text, overlay=None)
+        full = aggregate_full_segmentation(text, dag, trie=trie)
+
+        assert "了" in full
+
+
+class TestUnknownRunMerging:
+    """
+    Segmenter.segment() merges consecutive, position-contiguous
+    `in_dictionary=False` results into one (_merge_unknown_runs,
+    dag_segmentor.py) - a run of Latin letters, which never matches a
+    Chinese dictionary trie at all, otherwise comes out as one row per
+    character instead of one row for the whole unrecognized word.
+    """
+
+    def test_consecutive_unrecognized_characters_merge_into_one_run(self, segmenter: Segmenter):
+        result = segmenter.segment("smart")
+        assert words(result) == ["smart"]
+        assert result[0].in_dictionary is False
+        assert result[0].start == 0
+        assert result[0].end == 5
+
+    def test_merge_stops_at_a_dictionary_word(self, segmenter: Segmenter):
+        result = segmenter.segment("study我here")
+        assert words(result) == ["study", "我", "here"]
+        assert result[0].in_dictionary is False
+        assert result[1].in_dictionary is True
+        assert result[2].in_dictionary is False
+
+    def test_merge_stops_at_a_stopword(self, segmenter: Segmenter):
+        result = segmenter.segment("cat dog", stopwords={" "})
+        assert words(result) == ["cat", "dog"]
+
+    def test_aggregate_segments_counts_a_repeated_merged_run_once(self, segmenter: Segmenter):
+        result = segmenter.segment("smart smart", stopwords={" "})
+        aggregated = aggregate_segments(result)
+
+        assert aggregated["smart"]["count"] == 2
+        assert aggregated["smart"]["source"] == "unknown"
+        assert aggregated["smart"]["positions"] == [(0, 5), (6, 11)]
+
 
 class TestStopwordsInDag:
     """

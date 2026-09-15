@@ -1,7 +1,7 @@
 // .xlsx counterpart to pleco.ts - same inputs (the account's
 // ExportPreferences, the bulk GET /analyze/{id}/export-data payload, and
 // whichever words the dialog decided to include), reshaped for a
-// spreadsheet: one sheet per bucket (Main/Extra/Sequences, only the
+// spreadsheet: one sheet per bucket (Main/Extra, only the
 // non-empty ones - same omission rule pleco.ts uses) with the 12-column
 // layout the user specified (word/segmentation-source/count/corpus/HSK/
 // CC-CEDICT/user/auto-generated/familiarity/sample-sentences/context/
@@ -51,7 +51,6 @@ import type { CellValue } from 'exceljs';
 const SHEET_NAMES: Record<SourceCategory, string> = {
 	main: 'Main',
 	extra: 'Extra',
-	sequence: 'Sequences',
 };
 
 const HEADERS = [
@@ -153,15 +152,15 @@ export async function buildXlsxBlob(
 	const ExcelJS = (await import('exceljs')).default;
 
 	const dataByWord = new Map(exportData.map((w) => [w.word, w]));
-	const byCategory: Record<SourceCategory, ExportableWord[]> = { main: [], extra: [], sequence: [] };
+	const byCategory: Record<SourceCategory, ExportableWord[]> = { main: [], extra: [] };
 	for (const w of wordsToExport) {
-		byCategory[sourceCategory(w.source)].push(w);
+		byCategory[sourceCategory(w.is_main_segmentation)].push(w);
 	}
 
 	const workbook = new ExcelJS.Workbook();
 	let sheetCount = 0;
 
-	for (const category of ['main', 'extra', 'sequence'] as const) {
+	for (const category of ['main', 'extra'] as const) {
 		const words = byCategory[category];
 		if (words.length === 0) continue;
 		sheetCount++;

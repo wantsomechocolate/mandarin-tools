@@ -5,6 +5,7 @@
 	import { goto } from '$app/navigation';
 	import { page } from '$app/stores';
 	import AccountMenu from '$lib/components/AccountMenu.svelte';
+	import { loadRepeatedSequencePreferences } from '$lib/repeatedSequencePreferences';
 
 	interface AnalysisSummary {
 		id: number;
@@ -66,7 +67,10 @@
 		reanalyzing = true;
 		error = '';
 		try {
-			const result = await api.reanalyzeInputText(id) as any;
+			// Account-level setting (Account page's "Advanced" card) - see
+			// repeatedSequencePreferences.ts.
+			const thresholds = await loadRepeatedSequencePreferences();
+			const result = await api.reanalyzeInputText(id, thresholds) as any;
 			goto(`/analyze/${result.analysis_id}`);
 		} catch (e: unknown) {
 			error = e instanceof Error ? e.message : 'Failed to re-analyze';

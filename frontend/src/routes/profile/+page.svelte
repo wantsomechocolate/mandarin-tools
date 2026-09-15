@@ -14,6 +14,11 @@
 	} from '$lib/sectionVisibilityPersistence';
 	import { getContextChars, setContextChars, MIN_CONTEXT_CHARS, MAX_CONTEXT_CHARS } from '$lib/contextPreferences';
 	import { loadExportPreferences, saveExportPreferences, type ExportPreferences } from '$lib/exportPreferences';
+	import {
+		loadRepeatedSequencePreferences,
+		saveRepeatedSequencePreferences,
+		type RepeatedSequencePreferences,
+	} from '$lib/repeatedSequencePreferences';
 
 	// The Account page - username/email/member-since, change password,
 	// delete account. Deliberately NOT the vocabulary-management section
@@ -52,6 +57,11 @@
 		} catch {
 			// Non-fatal - the Export card just stays in its loading state;
 			// every other card on this page already loaded independently.
+		}
+		try {
+			repeatedSequencePrefs = await loadRepeatedSequencePreferences();
+		} catch {
+			// Non-fatal, same reasoning as the Export card above.
 		}
 	});
 
@@ -94,6 +104,29 @@
 	) {
 		if (!exportPrefs) return;
 		updateExportPrefs({ ...exportPrefs, [key]: !exportPrefs[key] });
+	}
+
+	// Advanced - the repeated-sequence tokenizer's minimum word length/count
+	// thresholds (see repeatedSequencePreferences.ts's own docstring for why
+	// these are an account-wide default rather than a per-analysis option).
+	// Backend-persisted like Export above, not localStorage - same
+	// immediate-save-on-change pattern, applied to every analysis run from
+	// here on (not retroactively to analyses already run).
+	let repeatedSequencePrefs: RepeatedSequencePreferences | null = $state(null);
+
+	function updateRepeatedSequencePrefs(next: RepeatedSequencePreferences) {
+		repeatedSequencePrefs = next;
+		saveRepeatedSequencePreferences(next);
+	}
+
+	function updateMinTokenLength(value: number) {
+		if (!repeatedSequencePrefs || !Number.isFinite(value)) return;
+		updateRepeatedSequencePrefs({ ...repeatedSequencePrefs, minTokenLength: Math.max(1, Math.round(value)) });
+	}
+
+	function updateMinTokenCount(value: number) {
+		if (!repeatedSequencePrefs || !Number.isFinite(value)) return;
+		updateRepeatedSequencePrefs({ ...repeatedSequencePrefs, minTokenCount: Math.max(1, Math.round(value)) });
 	}
 
 	// Preferences - theme (moved here from AccountMenu's dropdown, which
@@ -413,6 +446,60 @@
 									<input type="checkbox" checked={exportPrefs.includeGlobalNote} onchange={() => toggleAdditionalInfo('includeGlobalNote')} class="rounded border-gray-300" />
 									Global note
 								</label>
+							</div>
+						</div>
+					</div>
+				{/if}
+			</div>
+
+			<!-- Advanced - repeated-sequence detection thresholds. A separate
+			     card from Preferences above (not backend-persisted the same
+			     way) and Export (a different feature entirely) - grouped here
+			     as "Advanced" since these are tuning knobs for a specific
+			     algorithm's sensitivity, not general app preferences. -->
+			<div class="bg-white dark:bg-slate-900 rounded-lg shadow-sm p-6 mb-6">
+				<h2 class="text-sm font-semibold text-gray-700 dark:text-slate-300 mb-1">Advanced</h2>
+				<p class="text-xs text-gray-400 dark:text-slate-500 mb-4">
+					Applies to new analyses only - re-run a text's analysis to pick up a change here.
+				</p>
+				{#if !repeatedSequencePrefs}
+					<p class="text-xs text-gray-400 dark:text-slate-500">Loading…</p>
+				{:else}
+					<div>
+						<span class="block text-xs text-gray-500 dark:text-slate-400 mb-1.5">
+							Repeated sequence detection
+						</span>
+						<p class="text-xs text-gray-400 dark:text-slate-500 mb-2">
+							Controls which repeated runs of unrecognized characters get flagged for review.
+						</p>
+						<div class="flex flex-wrap gap-4">
+							<div>
+								<label for="min-token-length" class="block text-xs text-gray-500 dark:text-slate-400 mb-1">
+									Minimum word length
+								</label>
+								<input
+									id="min-token-length"
+									type="number"
+									min="1"
+									step="1"
+									value={repeatedSequencePrefs.minTokenLength}
+									onchange={(e) => updateMinTokenLength(Number(e.currentTarget.value))}
+									class="w-20 border border-gray-300 rounded px-2 py-1.5 text-sm bg-white text-gray-700 dark:bg-slate-800 dark:border-slate-600 dark:text-slate-200"
+								/>
+							</div>
+							<div>
+								<label for="min-token-count" class="block text-xs text-gray-500 dark:text-slate-400 mb-1">
+									Minimum count
+								</label>
+								<input
+									id="min-token-count"
+									type="number"
+									min="1"
+									step="1"
+									value={repeatedSequencePrefs.minTokenCount}
+									onchange={(e) => updateMinTokenCount(Number(e.currentTarget.value))}
+									class="w-20 border border-gray-300 rounded px-2 py-1.5 text-sm bg-white text-gray-700 dark:bg-slate-800 dark:border-slate-600 dark:text-slate-200"
+								/>
 							</div>
 						</div>
 					</div>

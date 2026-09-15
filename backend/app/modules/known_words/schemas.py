@@ -30,7 +30,21 @@ class AnalyzeTextRequest(BaseModel):
     title: str | None = None
     body: str | None = None
     min_token_length: int = 2
-    max_token_length: int = 20
+    # Was 20 - too tight for space-containing content (English sentences/
+    # lyric lines routinely run past 20 characters), which meant a genuinely
+    # longer repeated line could never be captured as one candidate: the
+    # tokenizer's containment logic only suppresses a shorter fragment once
+    # a longer candidate containing it is found and accepted, so a repeat
+    # exceeding this cap produced a wall of truncated, overlapping
+    # sub-fragments instead of one clean result. 100 is a pragmatic bump,
+    # not a principled "no repeat is ever longer than this" claim - an
+    # unusually long repeated passage could still get truncated, just far
+    # less often than at 20. A more thorough fix (decoupling the scan's
+    # performance-bounded window from how long a reported match can be, via
+    # a second pass that extends capped-and-still-repeating candidates
+    # rather than raising this ceiling further) is worth revisiting if that
+    # turns out to matter in practice.
+    max_token_length: int = 100
     min_token_count: int = 2
     min_familiarity_filter: int = 4
     max_familiarity_filter: int = 5
@@ -85,19 +99,39 @@ class WordResult(BaseModel):
     # present scope's actual setting instead of only the winner's - see
     # _resolve_user_word_detail's docstring, router.py.
     userword_scope_affects_dag: dict[str, AffectsDagChoice | None] = {}
+    # Resolved (never persisted), same pattern as is_garbage/is_hidden -
+    # whether this row is part of best-guess's one disjoint walk through the
+    # text ("Main segmentation") or a supplemental candidate layered on top
+    # of it ("Extra match") - the only two buckets now (previously three,
+    # with "Repeated sequence" as its own bucket; see evidence_tier below
+    # for where that concept lives instead). Computed via
+    # difficulty.is_main_segmentation_row(source, positions) - true for the
+    # ordinary dag/overlay/unknown/trie sources, plus a repeated_sequence/
+    # token row *only* when it carries a real position (meaning
+    # service._promote_confirmed_unknown_runs relabeled an actual best-guess
+    # row, not a purely supplemental tokenizer find). See that function's
+    # own docstring for the full reasoning.
+    is_main_segmentation: bool = True
     # Resolved (never persisted) same as is_garbage/is_hidden - a second,
-    # orthogonal dimension from `source` above: `source` answers "which
-    # pipeline pass produced this row" (dag/overlay/unknown for best-guess,
-    # extra_match/repeated_sequence for everything else, or a legacy
-    # trie/token/longest_match_only/pre-split-ambiguous extra_match value on
-    # an older row); `evidence_tier` answers "why should a user trust this
-    # as a real word," resolved fresh from current UserWord/dictionary_words
-    # state on every read - see service.get_word_dictionary_tiers and
-    # router.py's per-endpoint resolution. Hierarchy: 'user' (an applicable
-    # UserWord entry at this scope, active or not) > 'dictionary' (HSK
-    # and/or CC-CEDICT backed) > 'corpus' (real corpus frequency, no
-    # dictionary backing) > 'unknown'.
-    evidence_tier: Literal["user", "dictionary", "corpus", "unknown"] = "unknown"
+    # orthogonal dimension from `source`/is_main_segmentation above:
+    # `evidence_tier` answers "why should a user trust this as a real
+    # word," resolved fresh from current UserWord/dictionary_words state on
+    # every read - see service.get_word_dictionary_tiers and router.py's
+    # per-endpoint resolution. Hierarchy: 'user' (an applicable UserWord
+    # entry at this scope, active or not) > 'dictionary' (HSK and/or
+    # CC-CEDICT backed) > 'corpus' (real corpus frequency, no dictionary
+    # backing) > 'repeated_sequence' (no dictionary/corpus backing at all,
+    # but this row's own source is repeated_sequence/token - not a
+    # dictionary word, but independently confirmed to repeat in this text,
+    # which is real evidence even without a dictionary behind it) >
+    # 'unknown' (none of the above - the word has no evidence backing it
+    # whatsoever). 'repeated_sequence' used to be its own bucket (alongside
+    # Main segmentation/Extra match) rather than a rung on this ladder - a
+    # repeated sequence is sometimes part of best-guess (is_main_segmentation
+    # True) and sometimes not, exactly like a dictionary word already was,
+    # so it belongs on the same axis as dictionary/corpus/user, not as a
+    # third bucket of its own.
+    evidence_tier: Literal["user", "dictionary", "corpus", "repeated_sequence", "unknown"] = "unknown"
 
 
 class CompareSegmentationRequest(BaseModel):
@@ -165,11 +199,12 @@ class AnalysisResponse(BaseModel):
 class AnalysisSpan(BaseModel):
     """
     One span in the reading view's ordered walk of InputText.body - either
-    a "word" span (a dag/overlay-sourced occurrence, from AnalysisResult.
-    positions - see its docstring, models.py) or a "gap" span (everything
-    else: token/unknown/longest_match_only content, whitespace,
-    punctuation - rendered as plain unstyled text). Together, in order,
-    spans cover the entire body with no gaps or overlaps.
+    a "word" span (an is_main_segmentation_row occurrence - see its
+    docstring, difficulty.py - from AnalysisResult.positions) or a "gap"
+    span (everything else: extra_match/un-promoted repeated_sequence
+    content, whitespace, punctuation - rendered as plain unstyled text).
+    Together, in order, spans cover the entire body with no gaps or
+    overlaps.
 
     "word"-only fields mirror a subset of WordResult's own resolved
     fields (same resolution functions, not reimplemented - see
@@ -204,7 +239,7 @@ class AnalysisSpan(BaseModel):
     # already uses here, since both are only meaningful for a "word" span.
     # Powers ReadingView's "Color by: Source" mode's fallback (see
     # dictionary_source below for the finer split that mode actually uses).
-    evidence_tier: Literal["user", "dictionary", "corpus", "unknown"] | None = None
+    evidence_tier: Literal["user", "dictionary", "corpus", "repeated_sequence", "unknown"] | None = None
     # Splits evidence_tier's "dictionary" bucket into which curated source
     # actually backs the word - reading view only (WordResult.evidence_tier,
     # and every other consumer of evidence_tier, keeps treating HSK/CC-CEDICT
@@ -294,12 +329,12 @@ class ExportWordData(BaseModel):
     # else WordEnrichment.pinyin - same precedence WordSearchResult.pinyin
     # uses elsewhere in this module, plus the new auto-generated fallback.
     pinyin: str | None = None
-    # "Segmentation Source" column - same 4-way hierarchy as WordResult.
-    # evidence_tier (user > dictionary > corpus > unknown), with
-    # dictionary_source below splitting which curated source backs a
-    # "dictionary" word - same split get_analysis_spans already computes
-    # for the reading view's "Color by: Source" mode.
-    evidence_tier: Literal["user", "dictionary", "corpus", "unknown"]
+    # "Segmentation Source" column - same 5-way hierarchy as WordResult.
+    # evidence_tier (user > dictionary > corpus > repeated_sequence >
+    # unknown), with dictionary_source below splitting which curated source
+    # backs a "dictionary" word - same split get_analysis_spans already
+    # computes for the reading view's "Color by: Source" mode.
+    evidence_tier: Literal["user", "dictionary", "corpus", "repeated_sequence", "unknown"]
     dictionary_source: Literal["hsk", "cedict"] | None = None
     frequency: int | None = None
     freq_per_million: float | None = None

@@ -3,6 +3,7 @@
 	import { isLoggedIn } from '$lib/auth';
 	import * as api from '$lib/api';
 	import { goto } from '$app/navigation';
+	import { loadRepeatedSequencePreferences } from '$lib/repeatedSequencePreferences';
 
 	let title = $state('');
 	let body = $state('');
@@ -21,7 +22,10 @@
 		error = '';
 		loading = true;
 		try {
-			const result = await api.analyzeText(title || null, body) as any;
+			// Account-level setting (Account page's "Advanced" card), not a
+			// per-analysis option here - see repeatedSequencePreferences.ts.
+			const thresholds = await loadRepeatedSequencePreferences();
+			const result = await api.analyzeText(title || null, body, thresholds) as any;
 			goto(`/analyze/${result.analysis_id}`);
 		} catch (e: unknown) {
 			error = e instanceof Error ? e.message : 'Analysis failed';

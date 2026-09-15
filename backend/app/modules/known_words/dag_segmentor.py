@@ -89,6 +89,43 @@ class SegmentResult:
     from_overlay: bool = False
 
 
+def _merge_unknown_runs(results: list[SegmentResult]) -> list[SegmentResult]:
+    """
+    Collapses a run of consecutive, position-contiguous `in_dictionary=False`
+    results into one - the DAG falls back to a single unknown *character* at
+    every position nothing matched (build_dag), which is exactly right for
+    Chinese text (almost everything matches something) but means a run of
+    Latin letters - which never match a Chinese dictionary trie at all -
+    comes out as one "unknown" row per character instead of one row for the
+    whole unrecognized word (e.g. "smart" as five single-letter rows, one of
+    which then collides with every other stray "s" in the text).
+
+    Called from Segmenter.segment() *after* stopword rows are already
+    dropped from `results` - deliberately, not incidentally: two unknown
+    runs separated by a stopword (a space, punctuation) end up with a gap
+    between their positions once that stopword's row is gone (`prev.end !=
+    next.start`), so the plain contiguity check below already refuses to
+    merge across it with no need to know about stopwords directly. A
+    dictionary word breaks a run the same way - only `in_dictionary=False`
+    results ever merge into each other.
+    """
+    merged: list[SegmentResult] = []
+    for r in results:
+        if (
+            not r.in_dictionary
+            and merged
+            and not merged[-1].in_dictionary
+            and merged[-1].end == r.start
+        ):
+            prev = merged[-1]
+            merged[-1] = SegmentResult(
+                word=prev.word + r.word, start=prev.start, end=r.end, in_dictionary=False,
+            )
+        else:
+            merged.append(r)
+    return merged
+
+
 class UserOverlay:
     """
     Small per-user trie + frequency table. Built fresh per request (see
@@ -363,7 +400,7 @@ class Segmenter:
         # excludes stopwords rather than surfacing them as clutter.
         if stopwords:
             results = [r for r in results if not (len(r.word) == 1 and r.word in stopwords)]
-        return results
+        return _merge_unknown_runs(results)
 
 
 def aggregate_segments(results: list[SegmentResult]) -> dict[str, dict]:
@@ -403,6 +440,8 @@ def aggregate_full_segmentation(
     text: str,
     dag: dict[int, list[tuple[int, bool]]],
     stopwords: set[str] | None = None,
+    trie: Trie | None = None,
+    overlay: UserOverlay | None = None,
 ) -> dict[str, dict]:
     """
     Jieba's "full mode" counterpart to aggregate_segments: every candidate
@@ -420,15 +459,28 @@ def aggregate_full_segmentation(
     single-character fallback (`if not candidates: candidates = [(i,
     False)]`), emitted whenever nothing else matched at position i -
     structurally identical whether that position holds a stopword
-    character or a genuinely unrecognized one, so this function can't tell
-    those two cases apart by shape alone. The stopword case is filtered
-    explicitly here (same rule Segmenter.segment() applies to its own
-    output) because that word was already stripped out of best-guess, so
-    the caller's "not already in best-guess" dedup wouldn't otherwise catch
-    it. A genuinely unrecognized character needs no such handling: nothing
-    can span across it either (it has no trie children at all), so it's
-    guaranteed to land in best-guess's own "unknown" output wherever it
-    occurs, and the caller's dedup against best-guess takes care of it.
+    character, a genuinely unrecognized one, or (confusingly) a real
+    single-character dictionary word, so this function can't tell those
+    apart by shape alone. The stopword case is filtered explicitly here
+    (same rule Segmenter.segment() applies to its own output) because that
+    word was already stripped out of best-guess, so the caller's "not
+    already in best-guess" dedup wouldn't otherwise catch it.
+
+    A genuinely unrecognized character used to need no such handling
+    (nothing can span across it either, so it always landed in best-guess's
+    own "unknown" output, and the caller's dedup against best-guess took
+    care of it) - but best-guess now *merges* consecutive unrecognized
+    characters into one run (Segmenter._merge_unknown_runs), so best-guess
+    no longer has each individual character as its own key, and that dedup
+    would silently stop catching them. `trie`/`overlay`, when given, close
+    that gap: a length-1 candidate only survives if it's a genuine trie/
+    overlay hit, not just build_dag's fallback shape - the same
+    distinction Segmenter.segment() already draws for its own
+    `in_dictionary` field, applied here too so full segmentation doesn't
+    start leaking one row per unrecognized character into "extra matches"
+    now that best-guess groups them. Passing neither keeps the old
+    behavior (every length-1 candidate kept, ambiguity and all) for
+    callers that don't care.
     """
     stopwords = stopwords or set()
     output: dict[str, dict] = {}
@@ -448,6 +500,12 @@ def aggregate_full_segmentation(
             seen_ends.add(end)
             word = text[i:end + 1]
             if len(word) == 1 and word in stopwords:
+                continue
+            if (
+                len(word) == 1
+                and trie is not None
+                and not (trie.contains(word) or (overlay is not None and overlay.trie.contains(word)))
+            ):
                 continue
             if word in output:
                 output[word]["count"] += 1

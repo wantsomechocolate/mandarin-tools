@@ -5,7 +5,7 @@ that don't need a Postgres connection. Run with:
     uv run pytest tests/known_words/test_service.py -v
 """
 
-from app.modules.known_words.service import filter_results
+from app.modules.known_words.service import filter_results, _promote_confirmed_unknown_runs
 
 
 SAMPLE_RESULTS = {
@@ -54,3 +54,45 @@ class TestFilterResults:
         assert filtered["森林"]["familiarity"] == 1
         assert filtered["猪"]["familiarity"] == 5
         assert filtered["，"]["familiarity"] is None
+
+
+class TestPromoteConfirmedUnknownRuns:
+    """
+    A merged "unknown" run (Segmenter._merge_unknown_runs, dag_segmentor.py)
+    that the tokenizer also independently confirms as a repeated sequence
+    gets relabeled in place - see _promote_confirmed_unknown_runs' own
+    docstring.
+    """
+
+    def test_unknown_run_confirmed_by_tokenizer_is_relabeled(self):
+        best_guess = {
+            "smart": {"count": 3, "source": "unknown", "positions": [(0, 5), (10, 15), (20, 25)]},
+        }
+        repeated = {"smart": {"count": 3, "source": "token"}}
+
+        _promote_confirmed_unknown_runs(best_guess, repeated)
+
+        assert best_guess["smart"]["source"] == "repeated_sequence"
+        # count/positions stay best_guess's own (from the DAG walk) -
+        # nothing copied over from the tokenizer's own entry.
+        assert best_guess["smart"]["count"] == 3
+        assert best_guess["smart"]["positions"] == [(0, 5), (10, 15), (20, 25)]
+
+    def test_unknown_run_not_confirmed_stays_unknown(self):
+        best_guess = {"xkq": {"count": 1, "source": "unknown", "positions": [(0, 3)]}}
+        repeated: dict = {}
+
+        _promote_confirmed_unknown_runs(best_guess, repeated)
+
+        assert best_guess["xkq"]["source"] == "unknown"
+
+    def test_dictionary_backed_word_never_relabeled_even_if_string_collides(self):
+        # Guards against accidentally promoting a real dag/overlay word just
+        # because the same string also happens to show up in `repeated` -
+        # promotion only ever applies to source == "unknown".
+        best_guess = {"你好": {"count": 5, "source": "dag", "positions": [(0, 2)]}}
+        repeated = {"你好": {"count": 5, "source": "token"}}
+
+        _promote_confirmed_unknown_runs(best_guess, repeated)
+
+        assert best_guess["你好"]["source"] == "dag"

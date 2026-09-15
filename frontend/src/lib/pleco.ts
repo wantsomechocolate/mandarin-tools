@@ -58,7 +58,6 @@ import {
 const CATEGORY_LABELS: Record<SourceCategory, string> = {
 	main: 'Main',
 	extra: 'Extra',
-	sequence: 'Sequences',
 };
 
 // Separates lines within one source's own block (e.g. between two HSK
@@ -246,12 +245,12 @@ function definitionField(word: ExportWordData, prefs: ExportPreferences): string
 // falls back to something sensible there, e.g. "Untitled text", since this
 // function has no opinion on that). `wordsToExport` decides which words go
 // in at all (the caller applies "respect current filter" or not before
-// calling this) and which of the 3 subcategories each lands in, via
-// sourceCategory - `exportData` supplies everything else, looked up by
-// word. A word present in `wordsToExport` but missing from `exportData`
-// (shouldn't happen - the backend returns every word in the analysis) just
-// gets blank pinyin/definition fields, same as any other word with nothing
-// resolved.
+// calling this) and which of the 2 subcategories each lands in, via
+// sourceCategory(w.is_main_segmentation) - `exportData` supplies everything
+// else, looked up by word. A word present in `wordsToExport` but missing
+// from `exportData` (shouldn't happen - the backend returns every word in
+// the analysis) just gets blank pinyin/definition fields, same as any
+// other word with nothing resolved.
 export function buildPlecoExport(
 	categoryTitle: string,
 	wordsToExport: ExportableWord[],
@@ -259,17 +258,17 @@ export function buildPlecoExport(
 	prefs: ExportPreferences
 ): string {
 	const dataByWord = new Map(exportData.map((w) => [w.word, w]));
-	const byCategory: Record<SourceCategory, string[]> = { main: [], extra: [], sequence: [] };
+	const byCategory: Record<SourceCategory, string[]> = { main: [], extra: [] };
 
 	for (const w of wordsToExport) {
 		const data = dataByWord.get(w.word);
 		const pinyin = prefs.includePinyin ? sanitizeField(data?.pinyin ?? '') : '';
 		const definition = prefs.includeDefinitions && data ? definitionField(data, prefs) : '';
-		byCategory[sourceCategory(w.source)].push(`${sanitizeField(w.word)}\t${pinyin}\t${definition}`);
+		byCategory[sourceCategory(w.is_main_segmentation)].push(`${sanitizeField(w.word)}\t${pinyin}\t${definition}`);
 	}
 
 	const sections: string[] = [];
-	for (const category of ['main', 'extra', 'sequence'] as const) {
+	for (const category of ['main', 'extra'] as const) {
 		const lines = byCategory[category];
 		if (lines.length === 0) continue;
 		sections.push(`//${categoryTitle}/${CATEGORY_LABELS[category]}`);

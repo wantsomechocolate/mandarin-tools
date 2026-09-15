@@ -8,6 +8,7 @@ pieces that don't need a Postgres connection. Run with:
 from app.modules.known_words.difficulty import (
     compute_difficulty,
     effective_weight,
+    is_main_segmentation_row,
     _band_for,
     FAMILIARITY_WEIGHTS,
 )
@@ -53,6 +54,35 @@ class TestEffectiveWeight:
         # never dragged down by weak/absent character data.
         weight = effective_weight("希奇", 5, known_words={})
         assert weight == FAMILIARITY_WEIGHTS[5]
+
+
+class TestIsMainSegmentationRow:
+    """
+    A promoted "repeated_sequence" row (service._promote_confirmed_unknown_
+    runs relabeling a merged-unknown-run best-guess entry) is the one
+    exception where that source still belongs in "Main segmentation" - see
+    the function's own docstring for why `positions` is what distinguishes
+    it from a pure supplemental tokenizer find, which never carries any.
+    """
+
+    def test_ordinary_main_segmentation_sources_always_count(self):
+        for source in ("dag", "overlay", "unknown", "trie"):
+            assert is_main_segmentation_row(source, positions=None) is True
+            assert is_main_segmentation_row(source, positions=[[0, 2]]) is True
+
+    def test_repeated_sequence_without_positions_does_not_count(self):
+        # A pure tokenizer/extra-match find - never has real positions.
+        assert is_main_segmentation_row("repeated_sequence", positions=None) is False
+        assert is_main_segmentation_row("token", positions=None) is False
+
+    def test_repeated_sequence_with_positions_counts(self):
+        # A promoted merged-unknown-run - carries a real best-guess position.
+        assert is_main_segmentation_row("repeated_sequence", positions=[[0, 5]]) is True
+        assert is_main_segmentation_row("token", positions=[[0, 5]]) is True
+
+    def test_extra_match_never_counts(self):
+        assert is_main_segmentation_row("extra_match", positions=[[0, 2]]) is False
+        assert is_main_segmentation_row("longest_match_only", positions=[[0, 2]]) is False
 
 
 class TestComputeDifficulty:

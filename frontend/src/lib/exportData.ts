@@ -53,7 +53,7 @@ export interface ExportContext {
 export interface ExportWordData {
 	word: string;
 	pinyin: string | null;
-	evidence_tier: 'user' | 'dictionary' | 'corpus' | 'unknown';
+	evidence_tier: 'user' | 'dictionary' | 'corpus' | 'repeated_sequence' | 'unknown';
 	dictionary_source: 'hsk' | 'cedict' | null;
 	frequency: number | null;
 	freq_per_million: number | null;
@@ -83,15 +83,22 @@ export interface ExportWordData {
 // `count` is the one field neither formatter gets from ExportWordData
 // (it's per-analysis occurrence count, already on the page's own
 // AnalysisResult-backed rows, not worth a second round trip for).
+// `is_main_segmentation` drives the Main/Extra category split (formerly
+// derived from `source` alone via a 3-way sourceCategory - see
+// WordResult.is_main_segmentation's backend docstring, schemas.py, for why
+// `source` alone can no longer answer this: a repeated_sequence-sourced
+// word is sometimes Main segmentation and sometimes Extra match, exactly
+// like a dictionary word already was).
 export interface ExportableWord {
 	word: string;
 	source: string;
+	is_main_segmentation: boolean;
 	count?: number;
 }
 
 // "Segmentation Source" - the evidence-tier hierarchy (user > dictionary >
-// corpus > unknown), with the dictionary tier split by which curated
-// source backs it (HSK wins when both, same priority
+// corpus > repeated sequence > unknown), with the dictionary tier split by
+// which curated source backs it (HSK wins when both, same priority
 // AnalysisSpan.dictionary_source uses). Deliberately its own literal
 // casing ("Your Word", not evidenceTierLabel's "Your word") - this export
 // has its own template to match, not the app's own UI label scale.
@@ -101,6 +108,7 @@ export function segmentationSourceText(word: ExportWordData): string {
 		return word.dictionary_source === 'cedict' ? 'Dictionary (CC-CEDICT)' : 'Dictionary (HSK)';
 	}
 	if (word.evidence_tier === 'corpus') return 'Corpus';
+	if (word.evidence_tier === 'repeated_sequence') return 'Repeated Sequence';
 	return 'None';
 }
 

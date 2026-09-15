@@ -11,7 +11,7 @@ from app.modules.known_words import service
 from app.modules.known_words.segmenter_loader import get_segmenter, build_user_overlay
 from app.modules.known_words.dag_segmentor import aggregate_segments, aggregate_full_segmentation
 from app.modules.known_words import difficulty
-from app.modules.known_words.difficulty import MAIN_SEGMENTATION_SOURCES
+from app.modules.known_words.difficulty import is_main_segmentation_row
 
 from app.modules.known_words.models import (
     InputText,
@@ -191,6 +191,28 @@ def _sort_most_specific_first(rows):
     return sorted(rows, key=_scope_priority, reverse=True)
 
 
+def _resolve_evidence_tier(source: str, is_user_word: bool, dictionary_tier: str | None) -> str:
+    """
+    User > Dictionary > Corpus > Repeated sequence > None - see
+    WordResult.evidence_tier's docstring (schemas.py) for the full
+    hierarchy and why "repeated sequence" is a rung on this ladder now
+    rather than its own bucket (a repeated sequence, like a dictionary
+    word, is sometimes part of Main segmentation and sometimes an Extra
+    match - see is_main_segmentation_row, difficulty.py - so it doesn't
+    belong on that axis at all). `dictionary_tier` is
+    dictionary_tiers.get(word) - None when the word has no dictionary/
+    corpus backing at all (see service.get_word_dictionary_tiers's
+    docstring), which is the one case this function still has a say in.
+    """
+    if is_user_word:
+        return "user"
+    if dictionary_tier is not None:
+        return dictionary_tier
+    if source in ("repeated_sequence", "token"):
+        return "repeated_sequence"
+    return "unknown"
+
+
 def _resolve_word_visibility(
     user_id: int, db: Session, analysis_id: int | None, input_text_id: int | None
 ) -> dict[str, tuple[bool, str]]:
@@ -333,7 +355,12 @@ def compare_segmentation(
     best_guess = aggregate_segments(
         segmenter.segment(request.body, overlay=overlay, stopwords=stopwords, dag=dag)
     )
-    full_segmentation = aggregate_full_segmentation(request.body, dag, stopwords)
+    # trie/overlay here so this comparison view doesn't show one row per
+    # unrecognized character now that best-guess merges them into a single
+    # run - see aggregate_full_segmentation's own docstring.
+    full_segmentation = aggregate_full_segmentation(
+        request.body, dag, stopwords, trie=segmenter.trie, overlay=overlay
+    )
 
     def to_list(results: dict[str, dict]) -> list[SegmentedWord]:
         return [
@@ -493,15 +520,13 @@ def analyze(
             userword_scopes=user_words.get(word, _uw_default)["scopes"],
             userword_resolved_affects_dag=user_words.get(word, _uw_default)["resolved_affects_dag"],
             userword_scope_affects_dag=user_words.get(word, _uw_default)["scope_affects_dag"],
+            is_main_segmentation=is_main_segmentation_row(data["source"], data.get("positions")),
             # 'user' wins whenever ANY applicable UserWord entry exists at
             # this scope, active or not - affects_dag only controls
             # segmentation weight, not evidence trust - even if the word is
             # also dictionary/corpus-backed. See WordResult.evidence_tier's
             # docstring, schemas.py, for the full hierarchy.
-            evidence_tier=(
-                "user" if word in user_words
-                else dictionary_tiers.get(word, "unknown")
-            ),
+            evidence_tier=_resolve_evidence_tier(data["source"], word in user_words, dictionary_tiers.get(word)),
         )
         for word, data in sorted(filtered.items(), key=lambda x: x[1]["count"], reverse=True)
     ]
@@ -564,10 +589,8 @@ def get_analysis(
             userword_scopes=user_words.get(r.word, _uw_default)["scopes"],
             userword_resolved_affects_dag=user_words.get(r.word, _uw_default)["resolved_affects_dag"],
             userword_scope_affects_dag=user_words.get(r.word, _uw_default)["scope_affects_dag"],
-            evidence_tier=(
-                "user" if r.word in user_words
-                else dictionary_tiers.get(r.word, "unknown")
-            ),
+            is_main_segmentation=is_main_segmentation_row(r.source, r.positions),
+            evidence_tier=_resolve_evidence_tier(r.source, r.word in user_words, dictionary_tiers.get(r.word)),
         )
         for r in sorted(results, key=lambda x: x.count, reverse=True)
     ]
@@ -639,7 +662,7 @@ def get_analysis_spans(
     """
     Reading-view payload: InputText.body walked in order, split into
     Main-segmentation "word" spans (from AnalysisResult.positions, rows
-    whose source is in MAIN_SEGMENTATION_SOURCES - see its docstring)
+    is_main_segmentation_row (difficulty.py) accepts - see its docstring)
     interleaved with plain-text "gap" spans for everything a word span
     doesn't cover (extra_match/repeated_sequence content, whitespace,
     punctuation). See AnalysisSpan's docstring (schemas.py) for the exact
@@ -691,10 +714,18 @@ def get_analysis_spans(
     # same left-to-right order the original disjoint DAG walk produced them
     # in - AnalysisResult rows are per-word (one row can have many
     # occurrences), not per-occurrence, so this is the step that recovers
-    # the actual reading order. Restricted to MAIN_SEGMENTATION_SOURCES -
-    # see this function's docstring for why letting extra_match/
+    # the actual reading order. Restricted via is_main_segmentation_row
+    # (difficulty.py), not a bare MAIN_SEGMENTATION_SOURCES membership
+    # check - see this function's docstring for why letting extra_match/
     # repeated_sequence rows' (also-real) positions into this same walk
-    # fragments/drops Main-segmentation words whenever the two overlap.
+    # fragments/drops Main-segmentation words whenever the two overlap, and
+    # is_main_segmentation_row's own docstring for why a *promoted*
+    # repeated_sequence row (service._promote_confirmed_unknown_runs) is the
+    # one exception that still belongs here: it's a relabeled best-guess row
+    # with a real, disjoint position, not a supplemental tokenizer find.
+    # Missing that exception here previously turned every promoted word
+    # into an unstyled "gap" span in the reading view (no underline) despite
+    # carrying perfectly good positions.
     # Filtering on `r.positions` truthiness (Python-side, not a SQL `IS NOT
     # NULL`) is deliberate - SQLAlchemy's JSONB columns store an unset value
     # as the JSON literal `null` by default (none_as_null=False), which
@@ -703,7 +734,7 @@ def get_analysis_spans(
     # treats both "no row" and "row with a JSON null" as "no positions".
     occurrences: list[tuple[str, int, int, str]] = []
     for r in results:
-        if r.source not in MAIN_SEGMENTATION_SOURCES:
+        if not is_main_segmentation_row(r.source, r.positions):
             continue
         if not r.positions:
             continue
@@ -769,10 +800,7 @@ def get_analysis_spans(
             dictionary_source=dictionary_source_by_word.get(word),
             userword_scopes=user_words.get(word, _uw_default)["scopes"],
             userword_resolved_affects_dag=user_words.get(word, _uw_default)["resolved_affects_dag"],
-            evidence_tier=(
-                "user" if word in user_words
-                else dictionary_tiers.get(word, "unknown")
-            ),
+            evidence_tier=_resolve_evidence_tier(source, word in user_words, dictionary_tiers.get(word)),
         ))
         cursor = end
     if cursor < len(body):
@@ -932,6 +960,7 @@ def get_export_data(
     positions_by_word: dict[str, list[tuple[int, int]]] = {
         r.word: [(p[0], p[1]) for p in r.positions] for r in results if r.positions
     }
+    source_by_word = {r.word: r.source for r in results}
 
     export_words: list[ExportWordData] = []
     for word in words:
@@ -961,7 +990,9 @@ def get_export_data(
             for row in uw_rows_for_word
         ]
 
-        evidence_tier = "user" if uw_rows_for_word else dictionary_tiers.get(word, "unknown")
+        evidence_tier = _resolve_evidence_tier(
+            source_by_word.get(word, "unknown"), bool(uw_rows_for_word), dictionary_tiers.get(word)
+        )
         dictionary_source = dictionary_source_by_word.get(word) if evidence_tier == "dictionary" else None
 
         # Pinyin fallback: HSK -> CC-CEDICT -> the UserWord entry most
@@ -1076,6 +1107,17 @@ def get_word_context(
     span too (e.g. a search for a common radical inside longer words) - still
     real, useful text for a learner to see, just not guaranteed to align
     exactly with how this word was itself segmented.
+
+    Searches `body.lower()`, not `body` - `word` itself is always already
+    lowercased (analyze_text lowercases the whole text before segmenting/
+    tokenizing, specifically so casing variants of the same word merge into
+    one result - see its own docstring), so a case-sensitive search against
+    the original casing silently finds nothing whenever the real occurrence
+    was capitalized differently than the stored word (e.g. a repeated
+    English lyric line that's capitalized at the start of one line but not
+    another). `.lower()` never changes string length, so the offsets found
+    this way stay valid, correct slice positions into the original `body`
+    used below.
     """
     analysis = (
         db.query(Analysis)
@@ -1091,7 +1133,7 @@ def get_word_context(
 
     positions = result.positions if result and result.positions else None
     if positions is None:
-        positions = [(m.start(), m.end()) for m in re.finditer(re.escape(word), body)]
+        positions = [(m.start(), m.end()) for m in re.finditer(re.escape(word), body.lower())]
 
     occurrences = [
         WordOccurrence(
