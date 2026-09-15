@@ -13,14 +13,18 @@
 	// Starred (the words you most actively chose to flag), then Known/User
 	// (day-to-day vocabulary management), then Notes (words you've
 	// annotated, regardless of starred/known/user-word status - see
-	// WordNote's docstring, models.py), then Stopwords/Garbage last
-	// (maintenance/cleanup lists, touched less often).
+	// WordNote's docstring, models.py), then Hidden (results-visibility
+	// overrides - a step further removed from day-to-day vocabulary than
+	// Notes, but still something a user chose deliberately, unlike the
+	// maintenance/cleanup Stopwords/Garbage tabs after it), then Stopwords/
+	// Garbage last (maintenance/cleanup lists, touched less often).
 	const tabs = [
 		{ href: '/word-lists/search', label: 'Search' },
 		{ href: '/word-lists/starred-words', label: 'Starred Words' },
 		{ href: '/word-lists/known-words', label: 'Known Words' },
 		{ href: '/word-lists/user-words', label: 'User Words' },
 		{ href: '/word-lists/notes', label: 'Notes' },
+		{ href: '/word-lists/hidden-words', label: 'Hidden Words' },
 		{ href: '/word-lists/stopwords', label: 'Stopwords' },
 		{ href: '/word-lists/garbage-words', label: 'Garbage Words' },
 	];

@@ -8,6 +8,7 @@
 	import type { WordDetailContext } from '$lib/wordDetailContext';
 	import { saveOpenWordPanel, loadOpenWordPanel } from '$lib/panelWordPersistence';
 	import { trackScrollPosition, restoreScrollPosition } from '$lib/scrollPersistence';
+	import { findNeighborWord } from '$lib/wordListSwipe';
 
 	// Global list page - see the matching comment in known-words/+page.svelte.
 	const panelContext: WordDetailContext = { type: 'global' };
@@ -187,6 +188,16 @@
 		} finally {
 			saving = null;
 		}
+	}
+
+	// Mobile swipe-to-navigate (WordDetailModal's onSwipeNext/onSwipePrevious)
+	// - see findNeighborWord's docstring, wordListSwipe.ts, for why this
+	// page just re-reads its own live filtered() array rather than freezing
+	// a session list the way analyze/[id]'s own swipeToWord does.
+	function swipeToWord(direction: 'next' | 'prev') {
+		if (!selectedWordForPanel) return;
+		const target = findNeighborWord(filtered(), selectedWordForPanel, direction);
+		if (target) selectedWordForPanel = target;
 	}
 
 	// Reactive lookup so the form can warn before the word is even submitted,
@@ -388,5 +399,7 @@
 			if (!selectedWordForPanel) return;
 			rows = rows.filter((r) => r.word !== selectedWordForPanel);
 		}}
+		onSwipeNext={() => swipeToWord('next')}
+		onSwipePrevious={() => swipeToWord('prev')}
 	/>
 </div>

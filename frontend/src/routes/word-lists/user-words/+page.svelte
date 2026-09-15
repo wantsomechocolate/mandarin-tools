@@ -9,6 +9,7 @@
 	import type { WordDetailContext } from '$lib/wordDetailContext';
 	import { saveOpenWordPanel, loadOpenWordPanel } from '$lib/panelWordPersistence';
 	import { trackScrollPosition, restoreScrollPosition } from '$lib/scrollPersistence';
+	import { findNeighborWord } from '$lib/wordListSwipe';
 
 	// Persisted filter preferences - see known-words/+page.svelte's own
 	// FILTER_STORAGE_KEY comment for the full pattern and why search is
@@ -244,6 +245,16 @@
 		}
 	}
 
+	// Mobile swipe-to-navigate (WordDetailModal's onSwipeNext/onSwipePrevious)
+	// - see findNeighborWord's docstring, wordListSwipe.ts, for why this
+	// page just re-reads its own live filtered() array rather than freezing
+	// a session list the way analyze/[id]'s own swipeToWord does.
+	function swipeToWord(direction: 'next' | 'prev') {
+		if (!selectedWordForPanel) return;
+		const target = findNeighborWord(filtered(), selectedWordForPanel, direction);
+		if (target) selectedWordForPanel = target;
+	}
+
 	// Fired by the panel after any UserWord mutation, with that word's
 	// fresh full entries list - replace this word's raw rows wholesale
 	// (rather than trying to patch individual scope rows) so an add/edit/
@@ -404,5 +415,7 @@
 			if (!selectedWordForPanel) return;
 			rawRows = rawRows.filter((r) => r.word !== selectedWordForPanel);
 		}}
+		onSwipeNext={() => swipeToWord('next')}
+		onSwipePrevious={() => swipeToWord('prev')}
 	/>
 </div>

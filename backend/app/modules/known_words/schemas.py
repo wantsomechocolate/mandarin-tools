@@ -355,10 +355,23 @@ class AnalysisSummary(BaseModel):
 class InputTextDetailResponse(BaseModel):
     id: int
     title: str | None = None
+    note: str | None = None
     body: str
     created_at: datetime
     updated_at: datetime
     analyses: list[AnalysisSummary]
+
+
+class InputTextUpdate(BaseModel):
+    """
+    PUT /input-texts/{id} body. Only fields explicitly present in the
+    request are changed - same exclude_unset convention as UserWordUpsert/
+    WordVisibilityUpsert, so e.g. saving a note doesn't require resending
+    the current title. `title`/`note` are each nullable (clearing either
+    back to unset is a valid edit, not just setting new text).
+    """
+    title: str | None = None
+    note: str | None = None
 
 
 class WordOccurrence(BaseModel):
@@ -520,6 +533,7 @@ class WordVisibilityResponse(BaseModel):
 class InputTextResponse(BaseModel):
     id: int
     title: str | None = None
+    note: str | None = None
     created_at: datetime
     updated_at: datetime
     # Most recent Analysis of this text, if any - lets the input-texts list
@@ -527,6 +541,22 @@ class InputTextResponse(BaseModel):
     # round trip through the text's own hub page. Computed query-time (not
     # stored), same as other summaries (see AnalysisSummary).
     latest_analysis_id: int | None = None
+    # Word-count stats for that same latest analysis, so the input-texts
+    # list cards can show a quick sense of a text's size/coverage without a
+    # second round trip - same total_words/unique_words shape as
+    # AnalysisSummary, just for the one most-recent run. None/None when
+    # there's no analysis yet (mirrors latest_analysis_id being None).
+    latest_analysis_total_words: int | None = None
+    latest_analysis_unique_words: int | None = None
+    # Same DifficultyBreakdown.score/band pair the analysis page's own chip
+    # reads (difficultyColor/difficultyLabel/difficultyOutOfTen, wordDisplay.ts)
+    # - just the two fields that chip actually needs, not the full
+    # breakdown (weakest_words etc. have no use on a list card). None/None
+    # when there's no analysis yet, or that analysis has zero counted
+    # tokens (see difficulty.compute_difficulty) - same as DifficultyBreakdown
+    # itself being optional on AnalysisResponse.
+    latest_analysis_difficulty_score: float | None = None
+    latest_analysis_difficulty_band: Literal["very_easy", "easy", "manageable", "difficult", "very_difficult"] | None = None
 
     model_config = {"from_attributes": True}
 
@@ -661,6 +691,19 @@ class VisibilityEntryDetail(BaseModel):
     hidden: bool
 
     model_config = {"from_attributes": True}
+
+
+class WordVisibilityEntry(VisibilityEntryDetail):
+    """
+    VisibilityEntryDetail plus the word itself - for GET /word-visibility
+    (list_word_visibility, router.py), which lists every WordVisibility row
+    for the user across every word, not scoped to one word the way
+    get_word_detail's own visibility_entries is. Reuses the exact same
+    per-entry shape so the frontend's "Hidden Words" management page can
+    share wordDetailContext.ts's entryLabel/jumpLink with the word-detail
+    panel instead of inventing a parallel labeling scheme.
+    """
+    word: str
 
 
 class WordDetail(BaseModel):

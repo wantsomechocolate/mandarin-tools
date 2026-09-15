@@ -8,6 +8,7 @@
 	import type { WordDetailContext } from '$lib/wordDetailContext';
 	import { saveOpenWordPanel, loadOpenWordPanel } from '$lib/panelWordPersistence';
 	import { trackScrollPosition, restoreScrollPosition } from '$lib/scrollPersistence';
+	import { findNeighborWord } from '$lib/wordListSwipe';
 
 	// Persisted filter preferences - see known-words/+page.svelte's own
 	// FILTER_STORAGE_KEY comment for the full pattern and why search is
@@ -160,6 +161,16 @@
 		const target = event.target as HTMLElement;
 		if (target.closest('button, a, input, select, textarea')) return;
 		selectedWordForPanel = word;
+	}
+
+	// Mobile swipe-to-navigate (WordDetailModal's onSwipeNext/onSwipePrevious)
+	// - see findNeighborWord's docstring, wordListSwipe.ts, for why this
+	// page just re-reads its own live filteredGarbage() array rather than
+	// freezing a session list the way analyze/[id]'s own swipeToWord does.
+	function swipeToWord(direction: 'next' | 'prev') {
+		if (!selectedWordForPanel) return;
+		const target = findNeighborWord(filteredGarbage(), selectedWordForPanel, direction);
+		if (target) selectedWordForPanel = target;
 	}
 
 	// unmark_garbage_word (router.py) does one of two different things
@@ -395,6 +406,8 @@
 		word={selectedWordForPanel}
 		context={panelContext}
 		onClose={() => selectedWordForPanel = null}
+		onSwipeNext={() => swipeToWord('next')}
+		onSwipePrevious={() => swipeToWord('prev')}
 	/>
 </div>
 

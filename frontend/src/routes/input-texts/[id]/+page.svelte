@@ -21,6 +21,7 @@
 	interface InputTextDetail {
 		id: number;
 		title: string | null;
+		note: string | null;
 		body: string;
 		created_at: string;
 		updated_at: string;
@@ -31,6 +32,19 @@
 	let loading = $state(true);
 	let error = $state('');
 	let reanalyzing = $state(false);
+
+	// Title editing - inline pencil-click-to-edit, same shape as the note
+	// editing below (editing flag + draft + Save/Cancel), just single-line.
+	let editingTitle = $state(false);
+	let titleDraft = $state('');
+	let savingTitle = $state(false);
+
+	// Note editing - mirrors WordDetailPanel's own note section
+	// (editingNote/noteDraft/savingNote, Save/Cancel/+ Add note) for a
+	// consistent editing pattern across the app.
+	let editingNote = $state(false);
+	let noteDraft = $state('');
+	let savingNote = $state(false);
 
 	const id = $derived(parseInt($page.params.id ?? '0'));
 
@@ -59,7 +73,57 @@
 			reanalyzing = false;
 		}
 	}
+
+	async function saveTitle() {
+		if (!inputText) return;
+		savingTitle = true;
+		try {
+			const trimmed = titleDraft.trim();
+			await api.updateInputText(id, { title: trimmed || null });
+			inputText.title = trimmed || null;
+			editingTitle = false;
+		} catch (e: unknown) {
+			error = e instanceof Error ? e.message : 'Failed to rename';
+		} finally {
+			savingTitle = false;
+		}
+	}
+
+	async function saveNote() {
+		if (!inputText) return;
+		savingNote = true;
+		try {
+			const trimmed = noteDraft.trim();
+			await api.updateInputText(id, { note: trimmed || null });
+			inputText.note = trimmed || null;
+			editingNote = false;
+		} catch (e: unknown) {
+			error = e instanceof Error ? e.message : 'Failed to save note';
+		} finally {
+			savingNote = false;
+		}
+	}
+
+	async function removeNote() {
+		if (!inputText) return;
+		savingNote = true;
+		try {
+			await api.updateInputText(id, { note: null });
+			inputText.note = null;
+			editingNote = false;
+		} catch (e: unknown) {
+			error = e instanceof Error ? e.message : 'Failed to remove note';
+		} finally {
+			savingNote = false;
+		}
+	}
 </script>
+
+{#snippet iconPencil()}
+	<svg class="w-4 h-4" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+		<path d="M13.5 3.5a1.5 1.5 0 0 1 2.12 2.12L6.5 14.75l-3 .75.75-3 9.25-9z" />
+	</svg>
+{/snippet}
 
 {#snippet iconHome()}
 	<svg class="w-8 h-8" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
@@ -121,6 +185,68 @@
 		{#if loading}
 			<p class="text-gray-500 dark:text-slate-400">Loading...</p>
 		{:else if inputText}
+			<!-- Title & note - editable any time, separate card from the
+			     read-only Source text below it since these two are edited
+			     independently (title/note here, body never edited after
+			     creation - re-analyzing or creating a new text is the path
+			     for a changed body). -->
+			<div class="bg-white dark:bg-slate-900 rounded-lg shadow-sm p-6 mb-6">
+				<p class="text-xs font-medium text-gray-400 dark:text-slate-500 uppercase tracking-wide mb-2">Title</p>
+				{#if editingTitle}
+					<div class="flex items-center gap-2 mb-4">
+						<input
+							type="text"
+							bind:value={titleDraft}
+							placeholder="Untitled"
+							class="flex-1 min-w-0 border border-gray-300 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 rounded px-2 py-1 text-sm"
+							onkeydown={(e) => { if (e.key === 'Enter') saveTitle(); if (e.key === 'Escape') editingTitle = false; }}
+						/>
+						<button onclick={saveTitle} disabled={savingTitle} class="text-xs px-3 py-1.5 bg-blue-600 dark:bg-blue-500 text-white rounded hover:bg-blue-700 dark:hover:bg-blue-600 disabled:opacity-50">
+							{savingTitle ? 'Saving...' : 'Save'}
+						</button>
+						<button onclick={() => editingTitle = false} disabled={savingTitle} class="text-xs text-gray-500 dark:text-slate-400 hover:text-gray-700 dark:hover:text-slate-300">Cancel</button>
+					</div>
+				{:else}
+					<div class="flex items-center gap-2 mb-4">
+						<p class="text-sm text-gray-800 dark:text-slate-200">{inputText.title ?? 'Untitled'}</p>
+						<button
+							onclick={() => { editingTitle = true; titleDraft = inputText?.title ?? ''; }}
+							class="text-gray-400 dark:text-slate-500 hover:text-blue-600 dark:hover:text-blue-400"
+							aria-label="Edit title"
+							title="Edit title"
+						>
+							{@render iconPencil()}
+						</button>
+					</div>
+				{/if}
+
+				<p class="text-xs font-medium text-gray-400 dark:text-slate-500 uppercase tracking-wide mb-2">Note</p>
+				{#if editingNote}
+					<div class="flex flex-col gap-1.5">
+						<textarea
+							bind:value={noteDraft}
+							rows="3"
+							placeholder="Add a note - source, context, why you saved it..."
+							class="border border-gray-300 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 rounded px-2 py-1 text-sm resize-none"
+						></textarea>
+						<div class="flex items-center gap-2">
+							<button onclick={saveNote} disabled={savingNote} class="text-xs px-3 py-1.5 bg-blue-600 dark:bg-blue-500 text-white rounded hover:bg-blue-700 dark:hover:bg-blue-600 disabled:opacity-50">
+								{savingNote ? 'Saving...' : 'Save'}
+							</button>
+							<button onclick={() => { editingNote = false; noteDraft = inputText?.note ?? ''; }} disabled={savingNote} class="text-xs text-gray-500 dark:text-slate-400 hover:text-gray-700 dark:hover:text-slate-300">Cancel</button>
+							{#if inputText.note}
+								<button onclick={removeNote} disabled={savingNote} class="text-xs text-red-500 dark:text-red-400 hover:text-red-700 dark:hover:text-red-400 ml-auto">Delete</button>
+							{/if}
+						</div>
+					</div>
+				{:else if inputText.note}
+					<p class="text-sm text-gray-700 dark:text-slate-300 whitespace-pre-wrap break-words mb-1.5">{inputText.note}</p>
+					<button onclick={() => { editingNote = true; noteDraft = inputText?.note ?? ''; }} class="text-xs text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300">Edit note</button>
+				{:else}
+					<button onclick={() => { editingNote = true; noteDraft = ''; }} class="text-xs text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300">+ Add note</button>
+				{/if}
+			</div>
+
 			<!-- Source text -->
 			<div class="bg-white dark:bg-slate-900 rounded-lg shadow-sm p-6 mb-6">
 				<div class="flex justify-between items-start mb-4">

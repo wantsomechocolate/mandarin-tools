@@ -125,6 +125,38 @@
 			: { type: 'global' } // unreachable in practice - textId is always set once spans have loaded, before any word is clickable
 	);
 
+	// Which `spans` index opened the panel - unlike every other word-list
+	// page's swipe (findNeighborWord, wordListSwipe.ts), a plain "find this
+	// word's row" lookup doesn't work here: the same word can occur many
+	// times in a passage, and swiping is about walking reading order
+	// (occurrence by occurrence), not jumping to that word's first
+	// occurrence every time. Null whenever the panel was opened some other
+	// way than a span click - see swipeToWord's own fallback for that case.
+	let selectedSpanIndex: number | null = $state(null);
+
+	// Mobile swipe-to-navigate (WordDetailModal's onSwipeNext/onSwipePrevious)
+	// - walks `spans` by index from selectedSpanIndex, skipping gap spans,
+	// same dead-end-at-either-end behavior as every other swipeToWord in
+	// this app (no wraparound). Falls back to this word's first occurrence
+	// in `spans` when selectedSpanIndex is null - the panel-reopened-after-
+	// reload case (panelWordPersistence.ts only ever restores the word
+	// string, not which occurrence was open) - a reasonable starting point
+	// rather than refusing to swipe at all.
+	function swipeToWord(direction: 'next' | 'prev') {
+		if (!selectedWordForPanel) return;
+		const start = selectedSpanIndex ?? spans.findIndex((s) => s.type === 'word' && s.word === selectedWordForPanel);
+		if (start === -1) return;
+		const step = direction === 'next' ? 1 : -1;
+		for (let i = start + step; i >= 0 && i < spans.length; i += step) {
+			const span = spans[i];
+			if (span.type === 'word') {
+				selectedWordForPanel = span.word;
+				selectedSpanIndex = i;
+				return;
+			}
+		}
+	}
+
 	async function load() {
 		loading = true;
 		error = '';
@@ -202,8 +234,29 @@
 		1: 'dark:bg-red-400/30',
 		2: 'dark:bg-orange-400/30',
 		3: 'dark:bg-yellow-400/30',
-		4: 'dark:bg-green-400/30',
-		5: 'dark:bg-emerald-400/30',
+		// 4/5 deliberately don't follow the "full hue step brighter, roughly
+		// double the opacity" rule above - a word you already know well or
+		// have mastered is the one thing reading through a passage shouldn't
+		// keep drawing the eye back to, the opposite of what every other
+		// tint on this scale is for. Faded down instead, the same direction
+		// rarityContinuousColor fades its own "as common as it gets" end
+		// toward no visible tint at all - see FAMILIARITY_FILL_LIGHT below
+		// for the light-mode half of this same change.
+		4: 'dark:bg-green-500/10',
+		5: '',
+	};
+	// Light-mode counterpart to the 4/5 fade above - familiarityColor's own
+	// bg-green-100/bg-emerald-100 (what bgOnly(familiarityColor(...)) would
+	// otherwise return) read as too prominent for "already know this" at
+	// reading-view's full-word-fill size, the same complaint that motivated
+	// FAMILIARITY_TINT_DARK's own bolder-than-familiarityColor departure in
+	// the first place, just in the opposite direction. 5 goes fully
+	// uncolored (mirrors rarityContinuousColor's own most-common stop, which
+	// is literal white, not a pale green) rather than a paler version of its
+	// own hue - "as known as it gets" reads as neutral, not as a color.
+	const FAMILIARITY_FILL_LIGHT: Record<number, string> = {
+		4: 'bg-green-50',
+		5: '',
 	};
 
 	// User > HSK > CC-CEDICT > Corpus > None - see AnalysisSpan.
@@ -231,7 +284,13 @@
 			// above - a word with no familiarity score set still needs an
 			// explicit (subtle) dark tint, not an absent one.
 			const tint = span.familiarity ? FAMILIARITY_TINT_DARK[span.familiarity] : 'dark:bg-slate-500/15';
-			return bgOnly(familiarityColor(span.familiarity)) + ' ' + tint;
+			// 4/5 fade toward uncolored instead of familiarityColor's own
+			// bg-green-100/bg-emerald-100 - see FAMILIARITY_FILL_LIGHT's own
+			// docstring above.
+			const fill = span.familiarity && span.familiarity >= 4
+				? FAMILIARITY_FILL_LIGHT[span.familiarity]
+				: bgOnly(familiarityColor(span.familiarity));
+			return fill + ' ' + tint;
 		}
 		// 'none' - word boundaries shown as a broken underline instead of
 		// the old alternating bg-slate-100/bg-white tint (reported as hard
@@ -296,10 +355,10 @@
 		<p class="text-red-600 dark:text-red-400 text-sm">{error}</p>
 	{:else}
 		<p class="text-xl leading-loose whitespace-pre-wrap break-words text-gray-900 dark:text-slate-100">
-			{#each spans as span}
+			{#each spans as span, idx}
 				{#if span.type === 'gap'}<span>{span.text}</span
 				>{:else}<button
-						onclick={() => selectedWordForPanel = span.word}
+						onclick={() => { selectedWordForPanel = span.word; selectedSpanIndex = idx; }}
 						class="rounded px-0.5 hover:ring-1 hover:ring-blue-400 {spanClass(span)}"
 						style={spanStyle(span)}
 						title={spanTitle(span)}
@@ -313,11 +372,13 @@
 	<WordDetailModal
 		word={selectedWordForPanel}
 		context={panelContext}
-		onClose={() => selectedWordForPanel = null}
+		onClose={() => { selectedWordForPanel = null; selectedSpanIndex = null; }}
 		onFamiliarityChanged={(familiarity) => {
 			const word = selectedWordForPanel;
 			if (!word) return;
 			spans = spans.map((s) => s.type === 'word' && s.word === word ? { ...s, familiarity } : s);
 		}}
+		onSwipeNext={() => swipeToWord('next')}
+		onSwipePrevious={() => swipeToWord('prev')}
 	/>
 </div>

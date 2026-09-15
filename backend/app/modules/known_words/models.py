@@ -610,6 +610,10 @@ class InputText(Base):
     user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     title: Mapped[str | None] = mapped_column(String, nullable=True)
     body: Mapped[str] = mapped_column(String, nullable=False)
+    # Free-form user notes about this text (source, context, why it was
+    # saved, etc.) - independent of title/body, editable any time after
+    # creation the same way title is.
+    note: Mapped[str | None] = mapped_column(String, nullable=True)
     image: Mapped[str | None] = mapped_column(String, nullable=True)  # path or URL, populated later
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

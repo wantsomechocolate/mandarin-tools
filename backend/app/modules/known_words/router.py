@@ -39,6 +39,7 @@ from app.modules.known_words.schemas import (
     AnalysisSpansResponse,
     AnalysisSummary,
     InputTextDetailResponse,
+    InputTextUpdate,
     WordOccurrence,
     WordContextResponse,
     WordEnrichmentResponse,
@@ -70,6 +71,7 @@ from app.modules.known_words.schemas import (
     WordDetail,
     UserWordEntryDetail,
     VisibilityEntryDetail,
+    WordVisibilityEntry,
     WordSearchResult,
     WordSearchResponse,
     CompareSegmentationRequest,
@@ -1553,6 +1555,45 @@ def upsert_user_word_detail(
 # Word visibility ("hide from results") - see WordVisibility's docstring
 # (models.py) for why this is its own scoped table rather than a column on
 # UserWord.
+@router.get("/word-visibility", response_model=list[WordVisibilityEntry])
+def list_word_visibility(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Every WordVisibility row for this user, across every word and every
+    scope, unresolved - for the "Hidden Words" management page
+    (word-lists/hidden-words/+page.svelte), which needs to show not just
+    which words are hidden but *which scope's row is doing it* - e.g. a
+    word hidden globally but overridden back to shown in one specific text.
+
+    Unlike list_user_words, there's no separate resolved-by-viewing-context
+    mode here (no `all_scopes` flag) - nothing today needs a single-context-
+    resolved *list* of hidden words the way segmentation needs a resolved
+    UserWord overlay (that per-word resolution already exists, at
+    get_analysis/GET /analyze/{id} read time, via _resolve_word_visibility),
+    so this endpoint is a flat "everything" list, same shape of simplicity
+    as list_garbage_words/list_stopwords/list_sample_sentences.
+
+    Returns the same per-entry shape as get_word_detail's own
+    visibility_entries (scope/text_id/text_title/analysis_id/
+    analysis_created_at/hidden), plus `word` - so the frontend can reuse
+    wordDetailContext.ts's entryLabel/jumpLink unchanged rather than
+    inventing a parallel labeling scheme for this one page.
+
+    Excludes garbage words - same read-time-filter-only treatment as
+    list_starred_words/list_known_words/list_user_words/list_word_notes.
+    """
+    garbage_words = service.get_user_garbage_words(current_user.id, db)
+    rows = db.query(WordVisibility).filter(WordVisibility.user_id == current_user.id).all()
+    rows = [r for r in rows if r.word not in garbage_words]
+    context = _resolve_scope_context_info(rows, db)
+    return [
+        WordVisibilityEntry(id=r.id, word=r.word, hidden=r.hidden, **context[r.id])
+        for r in rows
+    ]
+
+
 @router.put("/word-visibility/{word}", response_model=WordVisibilityResponse)
 def upsert_word_visibility(
     word: str,
@@ -1673,23 +1714,83 @@ def list_input_texts(
         .all()
     )
 
-    # Latest Analysis id per text (by created_at, not just id, to be
-    # correct even if that were ever to diverge) - DISTINCT ON is the
-    # idiomatic Postgres way to get "top row per group" in one query.
-    latest_analysis_ids = dict(db.execute(text("""
-        SELECT DISTINCT ON (input_text_id) input_text_id, id
-        FROM analyses
-        WHERE input_text_id = ANY(:input_text_ids)
-        ORDER BY input_text_id, created_at DESC
-    """), {"input_text_ids": [t.id for t in input_texts]}).fetchall())
+    # Latest Analysis per text (by created_at, not just id, to be correct
+    # even if that were ever to diverge) - DISTINCT ON is the idiomatic
+    # Postgres way to get "top row per group" in one query. Word-count
+    # stats for that same latest analysis are aggregated right alongside
+    # it (a LEFT JOIN + GROUP BY on analysis_results) so the list page's
+    # cards can show them without a second round trip per text - same
+    # total_words/unique_words shape AnalysisSummary computes per-analysis,
+    # just folded into this one query.
+    latest_analyses = {
+        row.input_text_id: row
+        for row in db.execute(text("""
+            SELECT DISTINCT ON (a.input_text_id)
+                a.input_text_id,
+                a.id,
+                COALESCE(SUM(r.count), 0) AS total_words,
+                COUNT(r.id) AS unique_words
+            FROM analyses a
+            LEFT JOIN analysis_results r ON r.analysis_id = a.id
+            WHERE a.input_text_id = ANY(:input_text_ids)
+            GROUP BY a.input_text_id, a.id, a.created_at
+            ORDER BY a.input_text_id, a.created_at DESC
+        """), {"input_text_ids": [t.id for t in input_texts]}).fetchall()
+    }
+
+    # Difficulty for each of those same latest analyses (score/band only -
+    # see InputTextResponse.latest_analysis_difficulty_score's docstring).
+    # known_words/garbage_words are per-USER, not per-analysis, so they're
+    # each fetched exactly once here regardless of how many texts/analyses
+    # are being listed - same two queries get_analysis_difficulty already
+    # makes for a single analysis, just amortized across every card on this
+    # page instead of one round trip per card. The AnalysisResult rows
+    # themselves are the only genuinely per-analysis fetch, and that's one
+    # bulk query (`analysis_id = ANY(...)`), not N.
+    latest_analysis_ids = [row.id for row in latest_analyses.values()]
+    known_words = service.get_known_words_for_user(current_user.id, db)
+    garbage_words = service.get_user_garbage_words(current_user.id, db)
+    results_by_analysis: dict[int, list] = {aid: [] for aid in latest_analysis_ids}
+    if latest_analysis_ids:
+        for r in db.query(AnalysisResult).filter(AnalysisResult.analysis_id.in_(latest_analysis_ids)).all():
+            results_by_analysis[r.analysis_id].append(r)
+    difficulty_by_analysis = {
+        aid: difficulty.compute_difficulty(
+            [
+                WordResult(
+                    word=r.word,
+                    count=r.count,
+                    source=r.source,
+                    familiarity=known_words.get(r.word),
+                    is_garbage=r.word in garbage_words,
+                )
+                for r in rows
+            ],
+            known_words,
+        )
+        for aid, rows in results_by_analysis.items()
+    }
 
     return [
         InputTextResponse(
             id=t.id,
             title=t.title,
+            note=t.note,
             created_at=t.created_at,
             updated_at=t.updated_at,
-            latest_analysis_id=latest_analysis_ids.get(t.id),
+            latest_analysis_id=latest_analyses[t.id].id if t.id in latest_analyses else None,
+            latest_analysis_total_words=latest_analyses[t.id].total_words if t.id in latest_analyses else None,
+            latest_analysis_unique_words=latest_analyses[t.id].unique_words if t.id in latest_analyses else None,
+            latest_analysis_difficulty_score=(
+                difficulty_by_analysis[latest_analyses[t.id].id].score
+                if t.id in latest_analyses and difficulty_by_analysis.get(latest_analyses[t.id].id)
+                else None
+            ),
+            latest_analysis_difficulty_band=(
+                difficulty_by_analysis[latest_analyses[t.id].id].band
+                if t.id in latest_analyses and difficulty_by_analysis.get(latest_analyses[t.id].id)
+                else None
+            ),
         )
         for t in input_texts
     ]
@@ -1734,10 +1835,61 @@ def get_input_text(
     return InputTextDetailResponse(
         id=input_text.id,
         title=input_text.title,
+        note=input_text.note,
         body=input_text.body,
         created_at=input_text.created_at,
         updated_at=input_text.updated_at,
         analyses=summaries,
+    )
+
+
+@router.put("/input-texts/{input_text_id}", response_model=InputTextResponse)
+def update_input_text(
+    input_text_id: int,
+    update: InputTextUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Renames/annotates an existing InputText - title and note are both
+    editable any time after creation. Only fields explicitly present in the
+    request body are changed (see InputTextUpdate's docstring), same
+    exclude_unset convention as the UserWord/WordVisibility upsert
+    endpoints, though this one only ever updates (never creates) since
+    every InputText already exists by the time it can be edited.
+    """
+    input_text = db.query(InputText).filter_by(
+        id=input_text_id, user_id=current_user.id
+    ).first()
+    if not input_text:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Input text not found")
+
+    for field, value in update.model_dump(exclude_unset=True).items():
+        setattr(input_text, field, value)
+    db.commit()
+    db.refresh(input_text)
+
+    latest_analysis = (
+        db.query(Analysis)
+        .filter_by(input_text_id=input_text.id)
+        .order_by(Analysis.created_at.desc())
+        .first()
+    )
+    latest_total_words = latest_unique_words = None
+    if latest_analysis:
+        results = db.query(AnalysisResult).filter_by(analysis_id=latest_analysis.id).all()
+        latest_total_words = sum(r.count for r in results)
+        latest_unique_words = len(results)
+
+    return InputTextResponse(
+        id=input_text.id,
+        title=input_text.title,
+        note=input_text.note,
+        created_at=input_text.created_at,
+        updated_at=input_text.updated_at,
+        latest_analysis_id=latest_analysis.id if latest_analysis else None,
+        latest_analysis_total_words=latest_total_words,
+        latest_analysis_unique_words=latest_unique_words,
     )
 
 

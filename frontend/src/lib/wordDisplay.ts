@@ -400,16 +400,25 @@ export function difficultyPercent(score: number): number {
 
 // 1-10 display scale, display-only - never sent back to the backend or
 // stored anywhere, purely a friendlier alternate reading of the same raw
-// score. Linearly stretches the 91%-100% coverage range (where basically
-// all of this app's real variation lives - familiarity data below that is
-// already "very difficult" territory with little point subdividing
-// further) across the full 1-10 range: 91% or below floors at 1, 100%
-// (or anything that rounds to it) hits 10, and everything between is
-// continuous rather than hard-bucketed 2-per-band - so two texts that
-// both round to "8/10" can still be told apart by hovering for the exact
-// percent (see the badge's title attribute), while two texts on opposite
-// sides of a whole-point boundary read as visibly different at a glance.
-const OUT_OF_TEN_FLOOR_PERCENT = 91;
+// score. Linearly stretches the 90%-100% coverage range across the full
+// 1-10 range: 90% or below floors at 1, 100% (or anything that rounds to
+// it) hits 10, and everything between is continuous rather than
+// hard-bucketed 2-per-band - so two texts that both round to "8/10" can
+// still be told apart by hovering for the exact percent (see the badge's
+// title attribute), while two texts on opposite sides of a whole-point
+// boundary read as visibly different at a glance.
+//
+// 90, not some other cutoff - MUST match DIFFICULTY_BANDS' own
+// difficult/very_difficult boundary (difficulty.py, backend: very_difficult
+// is score < 0.90). A bug found live: this used to be 91, one point above
+// that boundary, which meant any text scoring 90-91% landed in the
+// "Difficult" band (correctly - it's above the very_difficult cutoff) but
+// still displayed a floored "1/10" - indistinguishable at a glance from an
+// actual "Very difficult" text at, say, 20%, even though the band label
+// correctly called out the difference. Keeping this floor exactly at the
+// same boundary the band itself uses is what guarantees "1/10" and "Very
+// difficult" always agree.
+const OUT_OF_TEN_FLOOR_PERCENT = 90;
 
 export function difficultyOutOfTen(score: number): number {
     const percent = score * 100;

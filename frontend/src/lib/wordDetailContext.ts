@@ -60,3 +60,15 @@ export function entryLabel(entry: { scope: string; text_title: string | null; an
 	const date = entry.analysis_created_at ? new Date(entry.analysis_created_at).toLocaleDateString() : '';
 	return `Analysis of "${entry.text_title ?? 'Untitled text'}"${date ? ` (${date})` : ''}`;
 }
+
+// Moved here alongside entryLabel once the Hidden Words profile page (word-
+// lists/hidden-words/+page.svelte) needed the exact same "where does a
+// text-/analysis-scoped entry actually live" link WordDetailPanel.svelte's
+// own read-only entries already use - same "extract once a second consumer
+// appears" precedent as entryLabel above. null for a global entry (nothing
+// to jump to) or when the scoped id is missing.
+export function jumpLink(entry: { scope: string; text_id: number | null; analysis_id: number | null }): string | null {
+	if (entry.scope === 'analysis' && entry.analysis_id != null) return `/analyze/${entry.analysis_id}`;
+	if (entry.scope === 'text' && entry.text_id != null) return `/input-texts/${entry.text_id}`;
+	return null;
+}

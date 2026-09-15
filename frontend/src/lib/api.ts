@@ -198,6 +198,10 @@ export async function getInputText(id: number) {
     return request('GET', `/known-words/input-texts/${id}`);
 }
 
+export async function updateInputText(id: number, update: { title?: string | null; note?: string | null }) {
+    return request('PUT', `/known-words/input-texts/${id}`, update);
+}
+
 export async function deleteInputText(id: number) {
     return request('DELETE', `/known-words/input-texts/${id}`);
 }
@@ -288,6 +292,16 @@ export async function upsertUserWordDetail(
         input_text_id: ctx?.inputTextId,
         scope: ctx?.scope ?? 'global',
     });
+}
+
+// Every WordVisibility row for the user across every word and every scope,
+// unresolved - each annotated with scope/text_title/analysis_id/etc. (see
+// list_word_visibility's docstring, router.py). For the profile "Hidden
+// Words" management page - NOT for anything that resolves a single word's
+// hidden state for a specific viewing context, which stays on
+// _resolve_word_visibility server-side (GET /analyze/{id}, POST /analyze).
+export async function listWordVisibility() {
+    return request('GET', '/known-words/word-visibility');
 }
 
 // Word visibility ("hide from results") - see WordVisibility's docstring

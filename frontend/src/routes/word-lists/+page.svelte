@@ -11,6 +11,7 @@
 		knownWords: null,
 		userWords: null,
 		notes: null,
+		hiddenWords: null,
 		garbageWords: null,
 		stopwords: null,
 		starredWords: null,
@@ -31,6 +32,7 @@
 		{ key: 'knownWords', href: '/word-lists/known-words', label: 'Known Words', description: 'Familiarity scores for vocabulary you’re studying.' },
 		{ key: 'userWords', href: '/word-lists/user-words', label: 'User Words', description: 'Your custom dictionary entries, across every text and analysis.' },
 		{ key: 'notes', href: '/word-lists/notes', label: 'Notes', description: 'Words you’ve written a personal note for.' },
+		{ key: 'hiddenWords', href: '/word-lists/hidden-words', label: 'Hidden Words', description: 'Words hidden from results, and scope overrides of that.' },
 		{ key: 'stopwords', href: '/word-lists/stopwords', label: 'Stopwords', description: 'Words excluded from the segmenter’s own algorithms.' },
 		{ key: 'garbageWords', href: '/word-lists/garbage-words', label: 'Garbage Words', description: 'Numbers, punctuation, and junk excluded from results by default.' },
 	];
@@ -45,6 +47,7 @@
 		api.listKnownWords().then((r: any) => counts = { ...counts, knownWords: r.length }).catch(() => {});
 		api.listAllUserWords().then((r: any) => counts = { ...counts, userWords: r.length }).catch(() => {});
 		api.listWordNotes().then((r: any) => counts = { ...counts, notes: r.length }).catch(() => {});
+		api.listWordVisibility().then((r: any) => counts = { ...counts, hiddenWords: r.length }).catch(() => {});
 		api.listGarbageWords().then((r: any) => counts = { ...counts, garbageWords: r.length }).catch(() => {});
 		api.listStopwords().then((r: any) => counts = { ...counts, stopwords: r.length }).catch(() => {});
 		api.listStarredWords().then((r: any) => counts = { ...counts, starredWords: r.length }).catch(() => {});

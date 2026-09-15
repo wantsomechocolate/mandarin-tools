@@ -1,7 +1,7 @@
 <script lang="ts">
 	import * as api from '$lib/api';
 	import { familiarityLabel, familiarityColor, rarityLabel, rarityColor } from '$lib/wordDisplay';
-	import { isEntryEditable, entryLabel, type WordDetailContext } from '$lib/wordDetailContext';
+	import { isEntryEditable, entryLabel, jumpLink, type WordDetailContext } from '$lib/wordDetailContext';
 	import { saveWordDraft, loadWordDraft, clearWordDraft } from '$lib/wordDraftPersistence';
 	import { isSectionCollapsed, setSectionCollapsedForWord, SECTION_ORDER, type PanelSectionId } from '$lib/sectionVisibilityPersistence';
 	import { getContextChars } from '$lib/contextPreferences';
@@ -520,12 +520,6 @@
 		context.type === 'analysis' ? (analysisVisibility.find((e: VisibilityEntry) => e.analysis_id === context.analysisId) ?? null) : null
 	);
 
-
-	function jumpLink(entry: { scope: string; text_id: number | null; analysis_id: number | null }): string | null {
-		if (entry.scope === 'analysis' && entry.analysis_id != null) return `/analyze/${entry.analysis_id}`;
-		if (entry.scope === 'text' && entry.text_id != null) return `/input-texts/${entry.text_id}`;
-		return null;
-	}
 
 	function scopeContextFor(scope: 'global' | 'text' | 'analysis'): api.ScopeContext {
 		if (scope === 'analysis' && context.type === 'analysis') return { analysisId: context.analysisId, scope: 'analysis' };
