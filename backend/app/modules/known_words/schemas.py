@@ -29,6 +29,13 @@ class AnalyzeTextRequest(BaseModel):
     input_text_id: int | None = None
     title: str | None = None
     body: str | None = None
+    # Only used when creating a new InputText (input_text_id unset) - same
+    # free-form field as InputText.note itself (models.py), settable here
+    # so the "New Analysis" form (which doubles as input text creation)
+    # doesn't need a second round trip to input-texts/[id] just to add one.
+    # Ignored on the re-analyze path - an existing InputText's note is
+    # edited from its own page, not overwritten by a later analysis run.
+    note: str | None = None
     min_token_length: int = 2
     # Was 20 - too tight for space-containing content (English sentences/
     # lyric lines routinely run past 20 characters), which meant a genuinely
@@ -163,6 +170,30 @@ class WeakWord(BaseModel):
     effective_weight: float
 
 
+class TokenCounts(BaseModel):
+    """See difficulty.TokenCounts - unique word count + combined occurrence count."""
+    unique: int
+    total: int
+
+
+class SegmentationBucketBreakdown(BaseModel):
+    """
+    One column of the difficulty breakdown table - see
+    difficulty.SegmentationBucketBreakdown for the full model writeup.
+    known_5..known_1/unknown partition every word in this column by its
+    own direct KnownWord.familiarity; total_tokens is their sum.
+    """
+    known_5: TokenCounts
+    known_4: TokenCounts
+    known_3: TokenCounts
+    known_2: TokenCounts
+    known_1: TokenCounts
+    unknown: TokenCounts
+    total_tokens: TokenCounts
+    partial_credit: TokenCounts
+    weighted_average_familiarity: float | None
+
+
 class DifficultyBreakdown(BaseModel):
     """
     See app.modules.known_words.difficulty for the full model writeup.
@@ -174,13 +205,14 @@ class DifficultyBreakdown(BaseModel):
     # source of truth rather than carrying multiple redundant fields.
     score: float
     band: Literal["very_easy", "easy", "manageable", "difficult", "very_difficult"]
-    counted_tokens: int
-    known_tokens: int
-    unknown_tokens: int
-    # Count of distinct words whose score got a boost specifically because
-    # their component characters are known, even though the word itself
-    # isn't - see difficulty.compute_difficulty's docstring.
-    partial_credit_words: int
+    # "Main segmentation" = the same set score/band are computed from.
+    # "Extra Matches" = everything else - supplemental segmentation passes
+    # plus any main-segmentation row excluded from scoring for being
+    # garbage or non-Chinese (see difficulty.compute_difficulty's
+    # docstring for why the two are grouped together under this label).
+    # Every word in the analysis appears in exactly one of the two.
+    main_segmentation: SegmentationBucketBreakdown
+    extra_matches: SegmentationBucketBreakdown
     weakest_words: list[WeakWord]
 
 
@@ -651,6 +683,15 @@ class WordNoteResponse(BaseModel):
 
 class SampleSentenceCreate(BaseModel):
     word: str
+    sentence: str
+
+
+# `word` is deliberately not editable here - a sentence's word is what it's
+# filed under (list_sample_sentences' own `word` filter, the panel's own
+# fetch-by-word), not free-form text worth correcting after the fact the
+# way the sentence itself is; editing the wrong sentence attached to a word
+# is the whole use case, not editing which word it's attached to.
+class SampleSentenceUpdate(BaseModel):
     sentence: str
 
 

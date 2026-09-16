@@ -156,10 +156,11 @@ interface RepeatedSequenceThresholds {
     minTokenCount: number;
 }
 
-export async function analyzeText(title: string | null, body: string, thresholds?: RepeatedSequenceThresholds) {
+export async function analyzeText(title: string, body: string, note: string | null, thresholds?: RepeatedSequenceThresholds) {
     return request('POST', '/known-words/analyze', {
         title,
         body,
+        note,
         ...(thresholds && { min_token_length: thresholds.minTokenLength, min_token_count: thresholds.minTokenCount }),
     });
 }
@@ -221,6 +222,12 @@ export async function updateInputText(id: number, update: { title?: string | nul
 
 export async function deleteInputText(id: number) {
     return request('DELETE', `/known-words/input-texts/${id}`);
+}
+
+// Deletes one analysis run, not the input text it belongs to - see
+// deleteInputText for that. Used from input-texts/[id]'s Analyses list.
+export async function deleteAnalysis(analysisId: number) {
+    return request('DELETE', `/known-words/analyze/${analysisId}`);
 }
 
 // Known words - familiarity is always global (see KnownWord's docstring,
@@ -351,6 +358,10 @@ export async function listSampleSentences(word: string) {
 
 export async function addSampleSentence(word: string, sentence: string) {
     return request('POST', '/known-words/sample-sentences', { word, sentence });
+}
+
+export async function updateSampleSentence(sentenceId: number, sentence: string) {
+    return request('PUT', `/known-words/sample-sentences/${sentenceId}`, { sentence });
 }
 
 export async function deleteSampleSentence(sentenceId: number) {

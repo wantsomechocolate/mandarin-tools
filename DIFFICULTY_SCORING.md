@@ -25,6 +25,27 @@ words was tanking the score on words that were never Mandarin vocabulary
 to begin with, and dominating "weighing your score down most" with single
 English letters instead of real unknown Chinese words).
 
+**Breakdown table, not a flat known/unknown split.** An early version
+reported a single `known_tokens`/`unknown_tokens` pair, which conflated
+two different things a user asked to see kept apart: "unique words" vs.
+"total occurrences" (492 unique known words is very different from 1235
+*occurrences* of known words, and reporting only the latter read as "you
+know 1235 words," which isn't true), and "words at each familiarity
+level" vs. one binary known/unknown cutoff. `DifficultyBreakdown` now
+carries two `SegmentationBucketBreakdown`s — `main_segmentation` (the
+exact set `score`/`band` are computed from) and `extra_matches`
+(everything else: supplemental segmentation passes, *and* any
+main-segmentation row excluded from scoring for being garbage or
+non-Chinese — see the schema's docstring for why those are grouped
+together under one label) — each reporting `TokenCounts`
+(`unique`/`total`) per familiarity level (`known_5`…`known_1`, `unknown`),
+plus `total_tokens`, `partial_credit`, and `weighted_average_familiarity`
+(the token-weighted average of each word's own raw familiarity, 1-5,
+unmarked counting as 0 — deliberately *not* the same number `score` is
+derived from, which additionally folds in character-decomposition credit;
+kept as two separate numbers so the table's own rows stay
+self-consistent, rather than mixing two different scales into one).
+
 ## 1. Lexical coverage research (the anchors behind the band cutoffs)
 
 The "98%/95%" thresholds referenced throughout this feature come from L2

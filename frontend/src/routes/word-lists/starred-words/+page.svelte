@@ -41,6 +41,10 @@
 	$effect(() => {
 		saveOpenWordPanel(selectedWordForPanel);
 	});
+	// Frozen swipe-session word order - see findNeighborWord's docstring,
+	// wordListSwipe.ts, for why this needs to be captured here rather than
+	// just re-reading filtered() on every swipe.
+	let sessionWords: string[] | null = $state(null);
 
 	// No more `note` field - that used to live here (a StarredWord-only
 	// column, with its own "+ Note"/"Edit note" UI on this page), but has
@@ -132,6 +136,14 @@
 		return list;
 	});
 
+	$effect(() => {
+		if (selectedWordForPanel && sessionWords === null) {
+			sessionWords = filtered().map((r) => r.word);
+		} else if (!selectedWordForPanel) {
+			sessionWords = null;
+		}
+	});
+
 	// Same click-passthrough pattern as Known/User Words - clicking anywhere
 	// on the row opens the panel, unless the click landed on the star button.
 	function handleRowClick(event: MouseEvent, word: string) {
@@ -141,12 +153,11 @@
 	}
 
 	// Mobile swipe-to-navigate (WordDetailModal's onSwipeNext/onSwipePrevious)
-	// - see findNeighborWord's docstring, wordListSwipe.ts, for why this
-	// page just re-reads its own live filtered() array rather than freezing
-	// a session list the way analyze/[id]'s own swipeToWord does.
+	// - see findNeighborWord's docstring, wordListSwipe.ts, for the frozen
+	// sessionWords list this now checks first.
 	function swipeToWord(direction: 'next' | 'prev') {
 		if (!selectedWordForPanel) return;
-		const target = findNeighborWord(filtered(), selectedWordForPanel, direction);
+		const target = findNeighborWord(filtered(), selectedWordForPanel, direction, sessionWords);
 		if (target) selectedWordForPanel = target;
 	}
 

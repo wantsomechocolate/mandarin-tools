@@ -7,6 +7,7 @@
 
 	let title = $state('');
 	let body = $state('');
+	let note = $state('');
 	let error = $state('');
 	let loading = $state(false);
 
@@ -15,6 +16,10 @@
 	});
 
 	async function handleSubmit() {
+		if (!title.trim()) {
+			error = 'Please enter a title';
+			return;
+		}
 		if (!body.trim()) {
 			error = 'Please enter some text to analyze';
 			return;
@@ -25,7 +30,7 @@
 			// Account-level setting (Account page's "Advanced" card), not a
 			// per-analysis option here - see repeatedSequencePreferences.ts.
 			const thresholds = await loadRepeatedSequencePreferences();
-			const result = await api.analyzeText(title || null, body, thresholds) as any;
+			const result = await api.analyzeText(title.trim(), body, note.trim() || null, thresholds) as any;
 			goto(`/analyze/${result.analysis_id}`);
 		} catch (e: unknown) {
 			error = e instanceof Error ? e.message : 'Analysis failed';
@@ -57,12 +62,13 @@
 		<div class="bg-white dark:bg-slate-900 rounded-lg shadow-sm p-6 space-y-4">
 			<div>
 				<label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1" for="title">
-					Title <span class="text-gray-400 dark:text-slate-500 font-normal">(optional)</span>
+					Title
 				</label>
 				<input
 					id="title"
 					type="text"
 					bind:value={title}
+					required
 					class="w-full border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400"
 					placeholder="e.g. Chapter 1 of my textbook"
 				/>
@@ -78,6 +84,19 @@
 					rows="12"
 					class="w-full border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 font-sans"
 					placeholder="Paste your Chinese text here..."
+				></textarea>
+			</div>
+
+			<div>
+				<label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1" for="note">
+					Note <span class="text-gray-400 dark:text-slate-500 font-normal">(optional)</span>
+				</label>
+				<textarea
+					id="note"
+					bind:value={note}
+					rows="3"
+					class="w-full border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 font-sans resize-none"
+					placeholder="Source, context, why you saved it..."
 				></textarea>
 			</div>
 

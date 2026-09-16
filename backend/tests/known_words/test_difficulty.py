@@ -8,7 +8,6 @@ pieces that don't need a Postgres connection. Run with:
 from app.modules.known_words.difficulty import (
     compute_difficulty,
     effective_weight,
-    is_main_segmentation_row,
     _band_for,
     FAMILIARITY_WEIGHTS,
 )
@@ -56,35 +55,6 @@ class TestEffectiveWeight:
         assert weight == FAMILIARITY_WEIGHTS[5]
 
 
-class TestIsMainSegmentationRow:
-    """
-    A promoted "repeated_sequence" row (service._promote_confirmed_unknown_
-    runs relabeling a merged-unknown-run best-guess entry) is the one
-    exception where that source still belongs in "Main segmentation" - see
-    the function's own docstring for why `positions` is what distinguishes
-    it from a pure supplemental tokenizer find, which never carries any.
-    """
-
-    def test_ordinary_main_segmentation_sources_always_count(self):
-        for source in ("dag", "overlay", "unknown", "trie"):
-            assert is_main_segmentation_row(source, positions=None) is True
-            assert is_main_segmentation_row(source, positions=[[0, 2]]) is True
-
-    def test_repeated_sequence_without_positions_does_not_count(self):
-        # A pure tokenizer/extra-match find - never has real positions.
-        assert is_main_segmentation_row("repeated_sequence", positions=None) is False
-        assert is_main_segmentation_row("token", positions=None) is False
-
-    def test_repeated_sequence_with_positions_counts(self):
-        # A promoted merged-unknown-run - carries a real best-guess position.
-        assert is_main_segmentation_row("repeated_sequence", positions=[[0, 5]]) is True
-        assert is_main_segmentation_row("token", positions=[[0, 5]]) is True
-
-    def test_extra_match_never_counts(self):
-        assert is_main_segmentation_row("extra_match", positions=[[0, 2]]) is False
-        assert is_main_segmentation_row("longest_match_only", positions=[[0, 2]]) is False
-
-
 class TestComputeDifficulty:
     def test_all_known_scores_near_one(self):
         results = [_wr("我们", 10, familiarity=5), _wr("知道", 5, familiarity=5)]
@@ -98,54 +68,59 @@ class TestComputeDifficulty:
         assert breakdown.score == 0.0
         assert breakdown.band == "very_difficult"
 
-    def test_garbage_words_are_excluded(self):
-        # v1 originally counted garbage words (marking something garbage
-        # said "don't clutter my vocab review," not "this costs nothing to
-        # read"), but real usage showed garbage rows (numbers/punctuation)
-        # were dragging the score down on words that were never real
-        # Mandarin vocabulary to begin with - same underlying problem as
-        # non-Chinese words below, so both are excluded the same way now.
+    def test_garbage_words_are_excluded_from_score_and_main_segmentation(self):
+        # Garbage rows drag score down on words that were never real
+        # Mandarin vocabulary - excluded from scoring, and from the Main
+        # segmentation column, landing in Extra Matches instead (see
+        # compute_difficulty's docstring on why "Extra Matches" absorbs
+        # excluded main-segmentation rows, not just supplemental sources).
         clean_only = compute_difficulty([_wr("我们", 10, familiarity=5)], known_words={})
         with_garbage = compute_difficulty(
             [_wr("我们", 10, familiarity=5), _wr("陌生", 10, is_garbage=True)],
             known_words={},
         )
         assert with_garbage.score == clean_only.score
-        assert with_garbage.counted_tokens == clean_only.counted_tokens
+        assert with_garbage.main_segmentation.total_tokens.total == clean_only.main_segmentation.total_tokens.total
+        assert with_garbage.extra_matches.total_tokens.total == 10
+        assert with_garbage.extra_matches.total_tokens.unique == 1
 
-    def test_non_chinese_words_are_excluded(self):
-        # A lone English word has no Mandarin familiarity to score - left
-        # in, it dominated "weighing your score down most" with single
-        # English letters instead of real unknown Chinese vocabulary,
-        # which is the bug report this exclusion fixes.
+    def test_non_chinese_words_are_excluded_from_score_and_main_segmentation(self):
+        # A lone English word has no Mandarin familiarity to score - it
+        # must not affect the score, and (same as garbage above) shows up
+        # under Extra Matches instead of vanishing entirely.
         clean_only = compute_difficulty([_wr("我们", 10, familiarity=5)], known_words={})
         with_english = compute_difficulty(
             [_wr("我们", 10, familiarity=5), _wr("hello", 10)],
             known_words={},
         )
         assert with_english.score == clean_only.score
-        assert with_english.counted_tokens == clean_only.counted_tokens
+        assert with_english.main_segmentation.total_tokens.total == clean_only.main_segmentation.total_tokens.total
         assert "hello" not in [w["word"] for w in with_english.weakest_words]
+        assert with_english.extra_matches.total_tokens.total == 10
 
-    def test_mixed_chinese_and_non_chinese_word_still_counts(self):
+    def test_mixed_chinese_and_non_chinese_word_still_scored(self):
         # Only words with ZERO CJK characters are excluded - a word mixing
-        # Chinese with a digit/letter (e.g. a segmentation artifact) still
-        # counts, mirroring the results page's own Non-Chinese bucket
-        # (containsChinese) exactly.
+        # Chinese with a digit/letter still counts toward Main segmentation
+        # and the score, mirroring the results page's own Non-Chinese
+        # bucket (containsChinese) exactly.
         breakdown = compute_difficulty([_wr("生词A", 5)], known_words={})
         assert breakdown is not None
-        assert breakdown.counted_tokens == 5
+        assert breakdown.main_segmentation.total_tokens.total == 5
 
-    def test_non_main_segmentation_sources_are_excluded(self):
+    def test_extra_match_source_rows_land_in_extra_matches_not_main_segmentation(self):
         # extra_match/longest_match_only annotate a range a main-segmentation
-        # row already covers - counting both would double-count tokens.
+        # row already covers - counting both toward the score would
+        # double-count tokens, so they're scored as 0 contribution and
+        # bucketed under Extra Matches instead.
         results = [
             _wr("我们", 10, source="dag", familiarity=5),
             _wr("们", 3, source="longest_match_only", familiarity=1),
         ]
         breakdown = compute_difficulty(results, known_words={})
-        assert breakdown.counted_tokens == 10
+        assert breakdown.main_segmentation.total_tokens.total == 10
         assert breakdown.score == 1.0
+        assert breakdown.extra_matches.total_tokens.total == 3
+        assert breakdown.extra_matches.total_tokens.unique == 1
 
     def test_empty_results_returns_none(self):
         assert compute_difficulty([], known_words={}) is None
@@ -158,22 +133,52 @@ class TestComputeDifficulty:
         results = [_wr("999", 3, is_garbage=True), _wr("OK", 2)]
         assert compute_difficulty(results, known_words={}) is None
 
-    def test_known_and_unknown_token_split(self):
-        results = [_wr("我们", 7, familiarity=5), _wr("陌生", 3)]
-        breakdown = compute_difficulty(results, known_words={})
-        assert breakdown.known_tokens == 7
-        assert breakdown.unknown_tokens == 3
+    def test_familiarity_level_buckets_partition_main_segmentation(self):
+        results = [
+            _wr("甲", 10, familiarity=5),
+            _wr("乙", 7, familiarity=4),
+            _wr("丙", 5, familiarity=3),
+            _wr("丁", 3, familiarity=2),
+            _wr("戊", 2, familiarity=1),
+            _wr("己", 1),  # unmarked -> unknown
+        ]
+        m = compute_difficulty(results, known_words={}).main_segmentation
+        assert (m.known_5.unique, m.known_5.total) == (1, 10)
+        assert (m.known_4.unique, m.known_4.total) == (1, 7)
+        assert (m.known_3.unique, m.known_3.total) == (1, 5)
+        assert (m.known_2.unique, m.known_2.total) == (1, 3)
+        assert (m.known_1.unique, m.known_1.total) == (1, 2)
+        assert (m.unknown.unique, m.unknown.total) == (1, 1)
+        assert (m.total_tokens.unique, m.total_tokens.total) == (6, 28)
 
-    def test_partial_credit_words_counts_distinct_boosted_words(self):
+    def test_partial_credit_bucket_counts_unique_and_total(self):
         results = [
             _wr("希奇", 4),  # boosted via character decomposition below
             _wr("我们", 6, familiarity=5),  # not boosted - already fully known
         ]
-        breakdown = compute_difficulty(results, known_words={"希": 5, "奇": 5})
-        assert breakdown.partial_credit_words == 1
+        m = compute_difficulty(results, known_words={"希": 5, "奇": 5}).main_segmentation
+        assert (m.partial_credit.unique, m.partial_credit.total) == (1, 4)
+
+    def test_weighted_average_familiarity_uses_raw_familiarity_not_effective_weight(self):
+        # Two words at familiarity 4 and 2, weighted by count (3 and 1):
+        # (4*3 + 2*1) / 4 = 3.5 - plain familiarity scale, unaffected by
+        # any character-decomposition credit either word might also get.
+        results = [_wr("甲乙", 3, familiarity=4), _wr("丙丁", 1, familiarity=2)]
+        m = compute_difficulty(results, known_words={}).main_segmentation
+        assert m.weighted_average_familiarity == 3.5
+
+    def test_weighted_average_familiarity_treats_unmarked_as_zero(self):
+        results = [_wr("甲", 1, familiarity=5), _wr("乙", 1)]
+        m = compute_difficulty(results, known_words={}).main_segmentation
+        assert m.weighted_average_familiarity == 2.5  # (5*1 + 0*1) / 2
+
+    def test_weighted_average_familiarity_none_when_bucket_empty(self):
+        breakdown = compute_difficulty([_wr("甲", 1, familiarity=5)], known_words={})
+        assert breakdown.extra_matches.total_tokens.total == 0
+        assert breakdown.extra_matches.weighted_average_familiarity is None
 
     def test_weakest_words_sorted_lowest_weight_first_ties_by_count(self):
-        # weakest_words is every counted word ordered lowest-weight-first
+        # weakest_words is every scored word ordered lowest-weight-first
         # (not filtered to "unknown" ones) - with only 3 distinct words
         # here, the fully-known one still appears, just last.
         results = [
@@ -191,6 +196,7 @@ class TestComputeDifficulty:
         results = [_wr(f"生词{i}", 1) for i in range(15)]
         breakdown = compute_difficulty(results, known_words={})
         assert len(breakdown.weakest_words) == 10
+
 
 class TestBandCutoffs:
     def test_all_five_boundaries(self):

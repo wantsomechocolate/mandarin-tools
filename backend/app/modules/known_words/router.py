@@ -56,6 +56,7 @@ from app.modules.known_words.schemas import (
     WordVisibilityUpsert,
     WordVisibilityResponse,
     SampleSentenceCreate,
+    SampleSentenceUpdate,
     SampleSentenceResponse,
     InputTextResponse,
     StopwordCreate,
@@ -78,6 +79,8 @@ from app.modules.known_words.schemas import (
     CompareSegmentationResponse,
     SegmentedWord,
     WeakWord,
+    TokenCounts,
+    SegmentationBucketBreakdown,
     DifficultyBreakdown,
     ExportHskForm,
     ExportCedictSense,
@@ -380,6 +383,24 @@ def compare_segmentation(
     )
 
 
+def _segmentation_bucket_response(stats) -> SegmentationBucketBreakdown:
+    """Adapts one difficulty.SegmentationBucketBreakdown into its response schema."""
+    def tc(counts) -> TokenCounts:
+        return TokenCounts(unique=counts.unique, total=counts.total)
+
+    return SegmentationBucketBreakdown(
+        known_5=tc(stats.known_5),
+        known_4=tc(stats.known_4),
+        known_3=tc(stats.known_3),
+        known_2=tc(stats.known_2),
+        known_1=tc(stats.known_1),
+        unknown=tc(stats.unknown),
+        total_tokens=tc(stats.total_tokens),
+        partial_credit=tc(stats.partial_credit),
+        weighted_average_familiarity=stats.weighted_average_familiarity,
+    )
+
+
 def _difficulty_response(
     word_results: list[WordResult], known_words: dict[str, int]
 ) -> DifficultyBreakdown | None:
@@ -397,10 +418,8 @@ def _difficulty_response(
     return DifficultyBreakdown(
         score=breakdown.score,
         band=breakdown.band,
-        counted_tokens=breakdown.counted_tokens,
-        known_tokens=breakdown.known_tokens,
-        unknown_tokens=breakdown.unknown_tokens,
-        partial_credit_words=breakdown.partial_credit_words,
+        main_segmentation=_segmentation_bucket_response(breakdown.main_segmentation),
+        extra_matches=_segmentation_bucket_response(breakdown.extra_matches),
         weakest_words=[WeakWord(**w) for w in breakdown.weakest_words],
     )
 
@@ -426,10 +445,16 @@ def analyze(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="body is required when input_text_id is not set"
             )
+        if not request.title or not request.title.strip():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="title is required when input_text_id is not set"
+            )
         input_text = InputText(
             user_id=current_user.id,
             title=request.title,
             body=request.body,
+            note=request.note,
         )
         db.add(input_text)
         db.flush()
@@ -604,6 +629,53 @@ def get_analysis(
         results=word_results,
         difficulty=_difficulty_response(word_results, known_words),
     )
+
+
+@router.delete("/analyze/{analysis_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_analysis(
+    analysis_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Deletes one analysis run, not the InputText it belongs to - see
+    delete_input_text for deleting the whole text and everything under it;
+    this is the narrower "just this one run" version, from the input
+    text's own Analyses list (input-texts/[id]/+page.svelte).
+
+    None of analyses.id's own referencing FKs are ON DELETE CASCADE at the
+    DB level (checked every migration that adds one - none specify
+    ondelete), so each has to be cleaned up by hand before the Analysis row
+    itself can go:
+    - AnalysisResult rows (analysis_id, NOT NULL): this analysis's own
+      results have no meaning without it, so they're deleted outright.
+    - UserWord/WordVisibility rows *scoped* to this analysis
+      (scope_analysis_id): an analysis-scoped customization is specific to
+      this exact run - with the run gone, so is what it was scoped to, so
+      these are deleted outright too, not promoted to a broader scope
+      (which would silently change segmentation/visibility for the user's
+      other analyses of the same text, with no action on their part).
+    - UserWord.created_from_analysis_id is purely informational (see its
+      own docstring, models.py) - nulled out, not deleted, on any UserWord
+      row that happens to reference this analysis that way, since deleting
+      those rows would destroy real global/text-scoped dictionary entries
+      that just happened to be created while viewing this analysis.
+    """
+    analysis = (
+        db.query(Analysis)
+        .join(InputText, Analysis.input_text_id == InputText.id)
+        .filter(Analysis.id == analysis_id, InputText.user_id == current_user.id)
+        .first()
+    )
+    if not analysis:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Analysis not found")
+
+    db.query(AnalysisResult).filter_by(analysis_id=analysis_id).delete()
+    db.query(UserWord).filter_by(scope_analysis_id=analysis_id).delete()
+    db.query(WordVisibility).filter_by(scope_analysis_id=analysis_id).delete()
+    db.query(UserWord).filter_by(created_from_analysis_id=analysis_id).update({"created_from_analysis_id": None})
+    db.delete(analysis)
+    db.commit()
 
 
 @router.get("/analyze/{analysis_id}/difficulty", response_model=DifficultyBreakdown | None)
@@ -1726,6 +1798,24 @@ def list_sample_sentences(
     if word is not None:
         query = query.filter(SampleSentence.word == word)
     return query.order_by(SampleSentence.created_at).all()
+
+
+@router.put("/sample-sentences/{sentence_id}", response_model=SampleSentenceResponse)
+def update_sample_sentence(
+    sentence_id: int,
+    sentence_in: SampleSentenceUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    sentence = db.query(SampleSentence).filter_by(
+        id=sentence_id, user_id=current_user.id
+    ).first()
+    if not sentence:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Sentence not found")
+    sentence.sentence = sentence_in.sentence
+    db.commit()
+    db.refresh(sentence)
+    return sentence
 
 
 @router.delete("/sample-sentences/{sentence_id}", status_code=status.HTTP_204_NO_CONTENT)

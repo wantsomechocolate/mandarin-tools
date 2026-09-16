@@ -177,17 +177,43 @@
 		effective_weight: number;
 	}
 
+	// unique = distinct words in this bucket, total = their combined
+	// occurrence count - see TokenCounts (schemas.py).
+	interface TokenCounts {
+		unique: number;
+		total: number;
+	}
+
+	// One column of the breakdown table (Main segmentation / Extra
+	// Matches) - see SegmentationBucketBreakdown (schemas.py).
+	// weighted_average_familiarity is on the plain 1-5 familiarity scale
+	// (unmarked words count as 0), deliberately NOT the same number the
+	// score/band are derived from - see difficulty.py's
+	// _segmentation_stats docstring for why the two are kept apart.
+	interface SegmentationBucketBreakdown {
+		known_5: TokenCounts;
+		known_4: TokenCounts;
+		known_3: TokenCounts;
+		known_2: TokenCounts;
+		known_1: TokenCounts;
+		unknown: TokenCounts;
+		total_tokens: TokenCounts;
+		partial_credit: TokenCounts;
+		weighted_average_familiarity: number | null;
+	}
+
 	// See DifficultyBreakdown (schemas.py) and DIFFICULTY_SCORING.md at the
 	// repo root for the full model. `score` is a raw 0-1 fraction - see
 	// wordDisplay.ts's difficultyPercent for the one place display
-	// formatting happens.
+	// formatting happens. `score`/`band` are derived only from
+	// `main_segmentation` - `extra_matches` is purely informational (see
+	// backend docstring for why a main-segmentation row can still end up
+	// counted under `extra_matches`: garbage/non-Chinese words).
 	interface DifficultyBreakdown {
 		score: number;
 		band: 'very_easy' | 'easy' | 'manageable' | 'difficult' | 'very_difficult';
-		counted_tokens: number;
-		known_tokens: number;
-		unknown_tokens: number;
-		partial_credit_words: number;
+		main_segmentation: SegmentationBucketBreakdown;
+		extra_matches: SegmentationBucketBreakdown;
 		weakest_words: WeakWord[];
 	}
 
@@ -1184,6 +1210,26 @@
 		}
 	}
 
+	// "unique(total)" - the display shape used throughout the difficulty
+	// breakdown table, matching TokenCounts (schemas.py) exactly.
+	// Comma-grouped for readability once a text runs into the thousands of
+	// tokens - used for every raw count in the breakdown table/summary
+	// lines below.
+	function fmtNum(n: number): string {
+		return n.toLocaleString();
+	}
+
+	function fmtTokenCounts(tc: TokenCounts): string {
+		return `${fmtNum(tc.unique)}(${fmtNum(tc.total)})`;
+	}
+
+	// Weighted-average-familiarity cells - null (empty bucket) reads as an
+	// em dash rather than "0.00", which would misleadingly suggest every
+	// token in that bucket scored a real 0 rather than there being none.
+	function fmtWeightedAverage(avg: number | null): string {
+		return avg === null ? '—' : avg.toFixed(2);
+	}
+
 	// WordDetailPanel.svelte now owns its own fetching - this just tells it
 	// which word to show and scrolls the triggering row into view (desktop
 	// only in practice - the matching mobile card is hidden (display:none)
@@ -1791,8 +1837,8 @@
 		</div>
 		{#if difficultyDetailsOpen && analysis.difficulty}
 			{@const d = analysis.difficulty}
-			<div class="bg-white dark:bg-slate-900 border-t border-gray-100 dark:border-slate-800 px-6 py-4">
-				<div class="max-w-5xl lg:max-w-6xl 2xl:max-w-7xl mx-auto">
+			<div class="bg-white dark:bg-slate-900 border-t border-gray-100 dark:border-slate-800 px-6 pt-4 pb-8">
+				<div class="max-w-xl mx-auto">
 					<div class="flex items-center justify-end mb-2">
 						<button
 							type="button"
@@ -1805,18 +1851,104 @@
 							{recalculatingDifficulty ? 'Recalculating…' : 'Recalculate'}
 						</button>
 					</div>
-					<div class="flex items-center gap-1 h-3 rounded-full overflow-hidden bg-gray-100 dark:bg-slate-800 mb-2" title="{d.known_tokens} known / {d.unknown_tokens} unknown, out of {d.counted_tokens} counted tokens">
-						<div class="h-full bg-emerald-400 dark:bg-emerald-500" style="width: {d.counted_tokens ? (d.known_tokens / d.counted_tokens) * 100 : 0}%"></div>
-						<div class="h-full bg-red-300 dark:bg-red-500/60 flex-1"></div>
-					</div>
-					<p class="text-xs text-gray-500 dark:text-slate-400 mb-3">
-						{d.known_tokens} known / {d.unknown_tokens} unknown tokens (of {d.counted_tokens} counted)
-						{#if d.partial_credit_words > 0}
-							· {d.partial_credit_words} word{d.partial_credit_words === 1 ? '' : 's'} got credit for characters you already know
-						{/if}
+					<p class="text-sm text-gray-600 dark:text-slate-300">
+						The main segmentation produced <span class="font-medium tabular-nums">{fmtTokenCounts(d.main_segmentation.total_tokens)}</span>
+						<span class="text-gray-400 dark:text-slate-500">[unique(total)]</span> tokens.
 					</p>
+					<p class="text-sm text-gray-600 dark:text-slate-300 mb-3">
+						Additionally, <span class="font-medium tabular-nums">{fmtTokenCounts(d.extra_matches.total_tokens)}</span>
+						extra tokens were found that may or may not be of interest to you.
+					</p>
+
+					<div class="overflow-x-auto mb-3 flex justify-center">
+						<table class="text-xs border-collapse">
+							<thead>
+								<tr class="text-gray-500 dark:text-slate-400">
+									<th class="py-1 pr-4 font-medium" rowspan="2"></th>
+									<th class="py-1 px-2 font-medium text-center border-b border-gray-200 dark:border-slate-700" colspan="2">Main segmentation</th>
+									<th class="py-1 pl-4 pr-2 font-medium text-center border-b border-gray-200 dark:border-slate-700" colspan="2">Extra Matches</th>
+								</tr>
+								<tr class="text-gray-500 dark:text-slate-400 border-b border-gray-200 dark:border-slate-700">
+									<th class="py-1 px-2 font-medium text-right">Unique</th>
+									<th class="py-1 px-2 font-medium text-right">Total</th>
+									<th class="py-1 pl-4 pr-2 font-medium text-right">Unique</th>
+									<th class="py-1 px-2 font-medium text-right">Total</th>
+								</tr>
+							</thead>
+							<tbody class="text-gray-700 dark:text-slate-300">
+								<tr>
+									<td class="py-1 pr-4">Known@5</td>
+									<td class="py-1 px-2 text-right tabular-nums">{fmtNum(d.main_segmentation.known_5.unique)}</td>
+									<td class="py-1 px-2 text-right tabular-nums">{fmtNum(d.main_segmentation.known_5.total)}</td>
+									<td class="py-1 pl-4 pr-2 text-right tabular-nums">{fmtNum(d.extra_matches.known_5.unique)}</td>
+									<td class="py-1 px-2 text-right tabular-nums">{fmtNum(d.extra_matches.known_5.total)}</td>
+								</tr>
+								<tr>
+									<td class="py-1 pr-4">Known@4</td>
+									<td class="py-1 px-2 text-right tabular-nums">{fmtNum(d.main_segmentation.known_4.unique)}</td>
+									<td class="py-1 px-2 text-right tabular-nums">{fmtNum(d.main_segmentation.known_4.total)}</td>
+									<td class="py-1 pl-4 pr-2 text-right tabular-nums">{fmtNum(d.extra_matches.known_4.unique)}</td>
+									<td class="py-1 px-2 text-right tabular-nums">{fmtNum(d.extra_matches.known_4.total)}</td>
+								</tr>
+								<tr>
+									<td class="py-1 pr-4">Known@3</td>
+									<td class="py-1 px-2 text-right tabular-nums">{fmtNum(d.main_segmentation.known_3.unique)}</td>
+									<td class="py-1 px-2 text-right tabular-nums">{fmtNum(d.main_segmentation.known_3.total)}</td>
+									<td class="py-1 pl-4 pr-2 text-right tabular-nums">{fmtNum(d.extra_matches.known_3.unique)}</td>
+									<td class="py-1 px-2 text-right tabular-nums">{fmtNum(d.extra_matches.known_3.total)}</td>
+								</tr>
+								<tr>
+									<td class="py-1 pr-4">Known@2</td>
+									<td class="py-1 px-2 text-right tabular-nums">{fmtNum(d.main_segmentation.known_2.unique)}</td>
+									<td class="py-1 px-2 text-right tabular-nums">{fmtNum(d.main_segmentation.known_2.total)}</td>
+									<td class="py-1 pl-4 pr-2 text-right tabular-nums">{fmtNum(d.extra_matches.known_2.unique)}</td>
+									<td class="py-1 px-2 text-right tabular-nums">{fmtNum(d.extra_matches.known_2.total)}</td>
+								</tr>
+								<tr>
+									<td class="py-1 pr-4">Known@1</td>
+									<td class="py-1 px-2 text-right tabular-nums">{fmtNum(d.main_segmentation.known_1.unique)}</td>
+									<td class="py-1 px-2 text-right tabular-nums">{fmtNum(d.main_segmentation.known_1.total)}</td>
+									<td class="py-1 pl-4 pr-2 text-right tabular-nums">{fmtNum(d.extra_matches.known_1.unique)}</td>
+									<td class="py-1 px-2 text-right tabular-nums">{fmtNum(d.extra_matches.known_1.total)}</td>
+								</tr>
+								<tr>
+									<td class="py-1 pr-4">Unknown</td>
+									<td class="py-1 px-2 text-right tabular-nums">{fmtNum(d.main_segmentation.unknown.unique)}</td>
+									<td class="py-1 px-2 text-right tabular-nums">{fmtNum(d.main_segmentation.unknown.total)}</td>
+									<td class="py-1 pl-4 pr-2 text-right tabular-nums">{fmtNum(d.extra_matches.unknown.unique)}</td>
+									<td class="py-1 px-2 text-right tabular-nums">{fmtNum(d.extra_matches.unknown.total)}</td>
+								</tr>
+								<tr class="border-t border-gray-200 dark:border-slate-700 font-medium">
+									<td class="py-1 pr-4">Total Tokens</td>
+									<td class="py-1 px-2 text-right tabular-nums">{fmtNum(d.main_segmentation.total_tokens.unique)}</td>
+									<td class="py-1 px-2 text-right tabular-nums">{fmtNum(d.main_segmentation.total_tokens.total)}</td>
+									<td class="py-1 pl-4 pr-2 text-right tabular-nums">{fmtNum(d.extra_matches.total_tokens.unique)}</td>
+									<td class="py-1 px-2 text-right tabular-nums">{fmtNum(d.extra_matches.total_tokens.total)}</td>
+								</tr>
+								<tr>
+									<td class="py-1 pr-4">Partial Credit</td>
+									<td class="py-1 px-2 text-right tabular-nums">{fmtNum(d.main_segmentation.partial_credit.unique)}</td>
+									<td class="py-1 px-2 text-right tabular-nums">{fmtNum(d.main_segmentation.partial_credit.total)}</td>
+									<td class="py-1 pl-4 pr-2 text-right tabular-nums">{fmtNum(d.extra_matches.partial_credit.unique)}</td>
+									<td class="py-1 px-2 text-right tabular-nums">{fmtNum(d.extra_matches.partial_credit.total)}</td>
+								</tr>
+								<tr class="border-t border-gray-200 dark:border-slate-700">
+									<td class="py-1 pr-4">Weighted Avg. Familiarity</td>
+									<td class="py-1 px-2 text-right tabular-nums" colspan="2">{fmtWeightedAverage(d.main_segmentation.weighted_average_familiarity)}</td>
+									<td class="py-1 pl-4 pr-2 text-right tabular-nums" colspan="2">{fmtWeightedAverage(d.extra_matches.weighted_average_familiarity)}</td>
+								</tr>
+							</tbody>
+						</table>
+					</div>
+
+					{#if d.main_segmentation.partial_credit.unique > 0}
+						<p class="text-xs text-gray-500 dark:text-slate-400 mb-3">
+							The final difficulty score received a bump for {fmtTokenCounts(d.main_segmentation.partial_credit)} token{d.main_segmentation.partial_credit.unique === 1 ? '' : 's'} that contain characters you already know.
+						</p>
+					{/if}
+
 					{#if d.weakest_words.length > 0}
-						<p class="text-xs font-medium text-gray-500 dark:text-slate-400 mb-1.5">Weighing your score down most:</p>
+						<p class="text-xs font-medium text-gray-500 dark:text-slate-400 mb-1.5">Tokens weighing your score down the most:</p>
 						<div class="flex flex-wrap gap-1.5">
 							{#each d.weakest_words as w (w.word)}
 								<button

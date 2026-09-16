@@ -78,6 +78,24 @@
 		}
 	}
 
+	// Deletes just this one analysis run, not the input text - same
+	// confirm()-then-delete-then-drop-locally shape as the home page's own
+	// handleDelete (deleteInputText).
+	let deletingAnalysisId: number | null = $state(null);
+	async function handleDeleteAnalysis(analysisId: number) {
+		if (!inputText) return;
+		if (!confirm('Delete this analysis?')) return;
+		deletingAnalysisId = analysisId;
+		try {
+			await api.deleteAnalysis(analysisId);
+			inputText.analyses = inputText.analyses.filter((a) => a.id !== analysisId);
+		} catch (e: unknown) {
+			error = e instanceof Error ? e.message : 'Failed to delete analysis';
+		} finally {
+			deletingAnalysisId = null;
+		}
+	}
+
 	async function saveTitle() {
 		if (!inputText) return;
 		savingTitle = true;
@@ -151,6 +169,21 @@
 		<path d="M6 16.5V11" />
 		<path d="M10 16.5V6.5" />
 		<path d="M14 16.5V9" />
+	</svg>
+{/snippet}
+
+<!-- Same glyph as the home page's own iconTrashCan (input text delete) -
+     kept as its own copy rather than a shared import, matching this app's
+     existing per-file icon-snippet convention. Takes a size param like
+     iconBarChart above, for the same reason: one glyph, used at this
+     page's one size. -->
+{#snippet iconTrashCan(sizeClass: string)}
+	<svg class={sizeClass} viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+		<path d="M4.5 6h11" />
+		<path d="M8 6V4.5a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1V6" />
+		<path d="M6 6l.7 9.5a1 1 0 0 0 1 .93h4.6a1 1 0 0 0 1-.93L14 6" />
+		<path d="M8.5 9v4.5" />
+		<path d="M11.5 9v4.5" />
 	</svg>
 {/snippet}
 
@@ -282,9 +315,20 @@
 				{:else}
 					<div class="space-y-2">
 						{#each inputText.analyses as analysis}
-							<a
-								href="/analyze/{analysis.id}"
-								class="flex justify-between items-center border border-gray-100 dark:border-slate-800 rounded-md px-4 py-3 hover:bg-gray-50 dark:hover:bg-slate-800"
+							<!-- Was a plain <a> wrapping the whole row - switched to a
+							     div + click-passthrough (same handleRowClick/
+							     handleCardClick pattern as the results table and the
+							     home page's own text cards) once the row needed to
+							     hold a second real interactive element (the trash
+							     button below): a <button> nested inside an <a> is
+							     invalid HTML and would also trigger the link's own
+							     navigation on click. -->
+							<div
+								role="button"
+								tabindex="0"
+								onclick={(e) => { if ((e.target as HTMLElement).closest('button, a')) return; goto(`/analyze/${analysis.id}`); }}
+								onkeydown={(e) => { if (e.key === 'Enter' && !(e.target as HTMLElement).closest('button, a')) goto(`/analyze/${analysis.id}`); }}
+								class="flex justify-between items-center border border-gray-100 dark:border-slate-800 rounded-md px-4 py-3 hover:bg-gray-50 dark:hover:bg-slate-800 cursor-pointer"
 							>
 								<div>
 									<p class="text-sm font-medium text-gray-800 dark:text-slate-200">
@@ -294,11 +338,22 @@
 										{analysis.unique_words} unique words · {analysis.total_words} total
 									</p>
 								</div>
-								<span class="text-gray-400 dark:text-slate-500" title="View results">
-									{@render iconBarChart('w-7 h-7')}
-									<span class="sr-only">View results</span>
-								</span>
-							</a>
+								<div class="flex items-center gap-3 shrink-0">
+									<a href="/analyze/{analysis.id}" class="text-gray-400 dark:text-slate-500 hover:text-blue-600 dark:hover:text-blue-400" title="View results">
+										{@render iconBarChart('w-7 h-7')}
+										<span class="sr-only">View results</span>
+									</a>
+									<button
+										onclick={() => handleDeleteAnalysis(analysis.id)}
+										disabled={deletingAnalysisId === analysis.id}
+										class="text-gray-400 dark:text-slate-500 hover:text-red-600 dark:hover:text-red-400 disabled:opacity-50"
+										aria-label="Delete analysis"
+										title="Delete analysis"
+									>
+										{@render iconTrashCan('w-7 h-7')}
+									</button>
+								</div>
+							</div>
 						{/each}
 					</div>
 				{/if}

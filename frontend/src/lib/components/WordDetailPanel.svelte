@@ -301,6 +301,14 @@
 	let newSentenceDraft = $state('');
 	let savingSentence = $state(false);
 	let deletingSentenceId: number | null = $state(null);
+	// Editing an existing sentence - same "set of ids currently editing" +
+	// "per-id draft" shape as the Your Entries section's own
+	// uwEditingIds/uwDrafts, for the same reason: more than one entry could
+	// plausibly be mid-edit at once, so this isn't a single boolean/draft
+	// pair the way Note's editing state is (Note only ever has the one).
+	let editingSentenceIds: Set<number> = $state(new Set());
+	let sentenceDrafts: Record<number, string> = $state({});
+	let savingSentenceId: number | null = $state(null);
 
 	// Note - single free-text field, upsert-typed like Familiarity, not
 	// list-typed like sample sentences above.
@@ -356,6 +364,8 @@
 		editingNote = false;
 		noteDraft = '';
 		newSentenceDraft = '';
+		editingSentenceIds = new Set();
+		sentenceDrafts = {};
 		// Restore an in-progress draft for this word, if one was saved before
 		// an interruption (e.g. a mobile browser discarding/reloading the page
 		// while backgrounded - see wordDraftPersistence.ts's docstring).
@@ -775,6 +785,37 @@
 			error = e instanceof Error ? e.message : 'Failed to remove sample sentence';
 		} finally {
 			deletingSentenceId = null;
+		}
+	}
+
+	function startEditingSentence(s: SampleSentence) {
+		editingSentenceIds = new Set([...editingSentenceIds, s.id]);
+		sentenceDrafts = { ...sentenceDrafts, [s.id]: s.sentence };
+	}
+
+	function cancelEditingSentence(sentenceId: number) {
+		const next = new Set(editingSentenceIds);
+		next.delete(sentenceId);
+		editingSentenceIds = next;
+	}
+
+	async function saveEditedSentence(sentenceId: number) {
+		const sentence = (sentenceDrafts[sentenceId] ?? '').trim();
+		if (!sentence) return;
+		savingSentenceId = sentenceId;
+		try {
+			const updated = await api.updateSampleSentence(sentenceId, sentence) as SampleSentence;
+			if (detail) {
+				detail = {
+					...detail,
+					sample_sentences: detail.sample_sentences.map((s) => s.id === sentenceId ? updated : s),
+				};
+			}
+			cancelEditingSentence(sentenceId);
+		} catch (e: unknown) {
+			error = e instanceof Error ? e.message : 'Failed to update sample sentence';
+		} finally {
+			savingSentenceId = null;
 		}
 	}
 
@@ -1391,8 +1432,28 @@
 				<ul class="space-y-1.5 mb-2">
 					{#each detail.sample_sentences as s (s.id)}
 						<li class="flex items-start justify-between gap-2">
-							<p class="text-sm text-gray-700 dark:text-slate-300 min-w-0 break-words">{s.sentence}</p>
-							<button onclick={() => removeSampleSentence(s.id)} disabled={deletingSentenceId === s.id} class="text-gray-300 dark:text-slate-600 hover:text-red-600 dark:hover:text-red-400 disabled:opacity-50 shrink-0" title="Remove sample sentence" aria-label="Remove sample sentence">✕</button>
+							{#if editingSentenceIds.has(s.id)}
+								<div class="flex-1 min-w-0 flex flex-col gap-1.5">
+									<input
+										type="text"
+										bind:value={sentenceDrafts[s.id]}
+										class="w-full border border-gray-300 rounded px-2 py-1 text-sm"
+										onkeydown={(e) => { if (e.key === 'Enter') saveEditedSentence(s.id); if (e.key === 'Escape') cancelEditingSentence(s.id); }}
+									/>
+									<div class="flex gap-2">
+										<button onclick={() => saveEditedSentence(s.id)} disabled={savingSentenceId === s.id || !(sentenceDrafts[s.id] ?? '').trim()} class="text-xs px-3 py-1.5 bg-blue-600 dark:bg-blue-500 text-white rounded hover:bg-blue-700 dark:hover:bg-blue-600 disabled:opacity-50">
+											{savingSentenceId === s.id ? 'Saving...' : 'Save'}
+										</button>
+										<button onclick={() => cancelEditingSentence(s.id)} disabled={savingSentenceId === s.id} class="text-xs text-gray-500 dark:text-slate-400 hover:text-gray-700 dark:hover:text-slate-300">Cancel</button>
+									</div>
+								</div>
+							{:else}
+								<p class="text-sm text-gray-700 dark:text-slate-300 min-w-0 break-words">{s.sentence}</p>
+								<div class="flex items-center gap-2 shrink-0">
+									<button onclick={() => startEditingSentence(s)} class="text-xs text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300">Edit</button>
+									<button onclick={() => removeSampleSentence(s.id)} disabled={deletingSentenceId === s.id} class="text-gray-300 dark:text-slate-600 hover:text-red-600 dark:hover:text-red-400 disabled:opacity-50" title="Remove sample sentence" aria-label="Remove sample sentence">✕</button>
+								</div>
+							{/if}
 						</li>
 					{/each}
 				</ul>

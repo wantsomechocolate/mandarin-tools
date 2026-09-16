@@ -112,10 +112,6 @@ FAMILIARITY_WEIGHTS: dict[int, float] = {
     5: 1.0,
 }
 
-# A word's own familiarity weight, if known well enough to count as
-# "known" for the known_tokens/unknown_tokens split below.
-KNOWN_WEIGHT_CUTOFF = 0.55
-
 # How much credit recognizing a word's component characters is worth,
 # relative to actually knowing the word itself - always a discount, never
 # full credit, since a compositional guess is not the same as knowing what
@@ -191,6 +187,128 @@ def _band_for(score: float) -> DifficultyBand:
     return "very_difficult"  # unreachable - DIFFICULTY_BANDS' last cutoff is 0.0
 
 
+def _is_scored(r: WordResult) -> bool:
+    """
+    Whether a word counts toward the actual difficulty score - a
+    main-segmentation row (see MAIN_SEGMENTATION_SOURCES) that's neither
+    garbage nor non-Chinese. This is also the dividing line the breakdown
+    table below uses for its two columns: every word in an analysis falls
+    on exactly one side of it (AnalysisResult has one row per word, never
+    duplicated across sources - see its docstring, models.py), so "Main
+    segmentation" and "Extra Matches" together always account for the
+    whole text with no overlap and no gaps.
+    """
+    return r.source in MAIN_SEGMENTATION_SOURCES and not r.is_garbage and _contains_chinese(r.word)
+
+
+class TokenCounts:
+    """
+    unique/total pair - `unique` is the number of distinct words in this
+    bucket (rows), `total` is their combined occurrence count. Reported
+    together everywhere in the breakdown table because they answer
+    different questions ("how many different words is this?" vs. "how
+    much of the text is this?") and neither alone is enough: a single very
+    common unknown word can dwarf the token count of ten rare known ones.
+    """
+
+    def __init__(self, unique: int, total: int):
+        self.unique = unique
+        self.total = total
+
+
+def _token_counts(rows: list[WordResult]) -> TokenCounts:
+    return TokenCounts(unique=len(rows), total=sum(r.count for r in rows))
+
+
+class SegmentationBucketBreakdown:
+    """
+    Plain result container for _segmentation_stats - one of these per
+    "Main segmentation"/"Extra Matches" column in the breakdown table.
+    known_5..known_1/unknown partition every row in this bucket by its OWN
+    direct KnownWord.familiarity (never by effective_weight - see
+    weighted_average_familiarity below for why the two are kept apart).
+    partial_credit and weighted_average_familiarity are computed the same
+    way for both columns (see _segmentation_stats) purely as an
+    informational parallel - only the Main segmentation column's numbers
+    actually feed the overall score/band.
+    """
+
+    def __init__(
+        self,
+        known_5: TokenCounts,
+        known_4: TokenCounts,
+        known_3: TokenCounts,
+        known_2: TokenCounts,
+        known_1: TokenCounts,
+        unknown: TokenCounts,
+        total_tokens: TokenCounts,
+        partial_credit: TokenCounts,
+        weighted_average_familiarity: float | None,
+    ):
+        self.known_5 = known_5
+        self.known_4 = known_4
+        self.known_3 = known_3
+        self.known_2 = known_2
+        self.known_1 = known_1
+        self.unknown = unknown
+        self.total_tokens = total_tokens
+        self.partial_credit = partial_credit
+        self.weighted_average_familiarity = weighted_average_familiarity
+
+
+def _segmentation_stats(rows: list[WordResult], known_words: dict[str, int]) -> SegmentationBucketBreakdown:
+    """
+    Buckets one column's worth of rows (either the scored main-segmentation
+    set or everything else - see _is_scored) by familiarity level, plus
+    two summary rows:
+
+    - partial_credit: rows whose effective_weight (familiarity +
+      character-decomposition credit) exceeds their own direct familiarity
+      - i.e. words the char-decomposition piece is actually helping, same
+        condition compute_difficulty's old partial_credit_words used, now
+        tracked with a token TOTAL alongside the unique count.
+    - weighted_average_familiarity: the token-count-weighted average of
+      each row's own RAW familiarity (1-5, unmarked words counting as 0) -
+      deliberately NOT effective_weight. effective_weight is a [0,1]
+      scoring input already discounted for character-decomposition
+      credit; this row is meant to answer a different, plainer question -
+      "on average, how well-known (on the 1-5 scale you already see
+      everywhere else in this app) are the words in this bucket" - so it
+      stays on that same familiarity scale rather than mixing two
+      different numeric scales into one row. None when the bucket has no
+      tokens at all.
+    """
+    by_familiarity: dict[int, list[WordResult]] = {n: [] for n in range(1, 6)}
+    unknown_rows: list[WordResult] = []
+    partial_credit_rows: list[WordResult] = []
+    familiarity_weighted_sum = 0.0
+    total_count = 0
+
+    for r in rows:
+        if r.familiarity in by_familiarity:
+            by_familiarity[r.familiarity].append(r)
+        else:
+            unknown_rows.append(r)
+
+        if effective_weight(r.word, r.familiarity, known_words) > _familiarity_weight(r.familiarity):
+            partial_credit_rows.append(r)
+
+        familiarity_weighted_sum += (r.familiarity or 0) * r.count
+        total_count += r.count
+
+    return SegmentationBucketBreakdown(
+        known_5=_token_counts(by_familiarity[5]),
+        known_4=_token_counts(by_familiarity[4]),
+        known_3=_token_counts(by_familiarity[3]),
+        known_2=_token_counts(by_familiarity[2]),
+        known_1=_token_counts(by_familiarity[1]),
+        unknown=_token_counts(unknown_rows),
+        total_tokens=_token_counts(rows),
+        partial_credit=_token_counts(partial_credit_rows),
+        weighted_average_familiarity=(familiarity_weighted_sum / total_count) if total_count else None,
+    )
+
+
 class DifficultyBreakdown:
     """
     Plain result container for compute_difficulty - router.py converts
@@ -204,18 +322,14 @@ class DifficultyBreakdown:
         self,
         score: float,
         band: DifficultyBand,
-        counted_tokens: int,
-        known_tokens: int,
-        unknown_tokens: int,
-        partial_credit_words: int,
+        main_segmentation: SegmentationBucketBreakdown,
+        extra_matches: SegmentationBucketBreakdown,
         weakest_words: list[dict],
     ):
         self.score = score
         self.band = band
-        self.counted_tokens = counted_tokens
-        self.known_tokens = known_tokens
-        self.unknown_tokens = unknown_tokens
-        self.partial_credit_words = partial_credit_words
+        self.main_segmentation = main_segmentation
+        self.extra_matches = extra_matches
         self.weakest_words = weakest_words
 
 
@@ -225,57 +339,44 @@ def compute_difficulty(
     """
     Computes the overall difficulty breakdown for one analysis's results.
 
-    Only counts rows whose source is in MAIN_SEGMENTATION_SOURCES -
-    supplemental rows (extra_match/repeated_sequence, legacy
-    token/longest_match_only) annotate ranges a main-segmentation row
-    already covers, so counting them too would double-count tokens
-    against the same stretch of text.
+    Splits `results` into exactly two groups via _is_scored: the scored
+    set (main-segmentation, non-garbage, Chinese words - the same set the
+    score/band and "weighing your score down most" have always used) and
+    everything else, labeled "Extra Matches" in the breakdown table -
+    supplemental segmentation passes (extra_match/repeated_sequence,
+    legacy token/longest_match_only) PLUS any main-segmentation-sourced
+    row that got excluded from scoring for being garbage or non-Chinese.
+    Grouping it this way means every word in the analysis lands in exactly
+    one column, and "Extra Matches" means exactly what its caption says on
+    the results page: tokens that may or may not be of interest to you,
+    but that never counted toward your score - whether because they're a
+    supplemental find or because they were never real Mandarin vocabulary
+    to begin with.
 
-    is_garbage rows and non-Chinese words (see _contains_chinese) are
-    excluded from the count entirely. v1 originally counted garbage words
-    on the reasoning that "marked garbage" isn't "costs nothing to read" -
-    but real usage showed the actual problem: a text mixing in English
-    words (each its own zero-familiarity "word" with no Mandarin
-    vocabulary to know in the first place) tanked the score on words that
-    were never a Mandarin-reading obstacle at all, and dominated "weighing
-    your score down most" with single English letters instead of real
-    unknown Chinese vocabulary. Garbage words are excluded for the same
-    reason once non-Chinese ones are: numbers/punctuation are exactly the
-    other "not really Mandarin vocabulary" case GarbageWord exists to
-    flag, and the whole point of building this exclusion for non-Chinese
-    text was to stop scoring things that were never a reading-comprehension
-    signal to begin with.
+    score/band are computed only from the scored set (token-weighted
+    average of effective_weight, same as always). main_segmentation/
+    extra_matches are full SegmentationBucketBreakdown stats computed the
+    same way for both groups (see _segmentation_stats) - the Extra Matches
+    side is purely informational, never used to compute score/band.
 
-    Returns None when there are zero counted tokens (e.g. an empty text,
-    or one that's entirely garbage/non-Chinese) - "not enough data" rather
-    than a misleading score.
+    Returns None when there are zero scored tokens (e.g. an empty text, or
+    one that's entirely garbage/non-Chinese) - "not enough data" rather
+    than a misleading score. A text can still have Extra Matches with no
+    scored tokens at all; that also returns None, same as an empty text -
+    there's nothing to score either way.
     """
-    counted = [
-        r for r in results
-        if r.source in MAIN_SEGMENTATION_SOURCES and not r.is_garbage and _contains_chinese(r.word)
-    ]
-    total_tokens = sum(r.count for r in counted)
+    scored = [r for r in results if _is_scored(r)]
+    other = [r for r in results if not _is_scored(r)]
+
+    total_tokens = sum(r.count for r in scored)
     if total_tokens == 0:
         return None
 
-    known_tokens = 0
-    unknown_tokens = 0
-    partial_credit_words = 0
     weighted_sum = 0.0
     weakest: list[dict] = []
-
-    for r in counted:
+    for r in scored:
         weight = effective_weight(r.word, r.familiarity, known_words)
         weighted_sum += weight * r.count
-
-        if weight >= KNOWN_WEIGHT_CUTOFF:
-            known_tokens += r.count
-        else:
-            unknown_tokens += r.count
-
-        if len(r.word) > 1 and weight > _familiarity_weight(r.familiarity):
-            partial_credit_words += 1
-
         weakest.append({"word": r.word, "count": r.count, "effective_weight": weight})
 
     score = weighted_sum / total_tokens
@@ -291,9 +392,7 @@ def compute_difficulty(
     return DifficultyBreakdown(
         score=score,
         band=band,
-        counted_tokens=total_tokens,
-        known_tokens=known_tokens,
-        unknown_tokens=unknown_tokens,
-        partial_credit_words=partial_credit_words,
+        main_segmentation=_segmentation_stats(scored, known_words),
+        extra_matches=_segmentation_stats(other, known_words),
         weakest_words=weakest_words,
     )
