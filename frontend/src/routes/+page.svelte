@@ -79,7 +79,7 @@
      shared import, matching this codebase's existing per-file icon-snippet
      convention (iconChevron/iconBook/etc. in analyze/[id], for instance). -->
 {#snippet iconBarChart()}
-	<svg class="w-7 h-7" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+	<svg class="w-7 h-7 block" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linecap="round" stroke-linejoin="round">
 		<path d="M3.5 16.5h13" />
 		<path d="M6 16.5V11" />
 		<path d="M10 16.5V6.5" />
@@ -216,7 +216,7 @@
 							{#if text.latest_analysis_id}
 								<a
 									href="/analyze/{text.latest_analysis_id}"
-									class="text-gray-400 dark:text-slate-500 hover:text-blue-600 dark:hover:text-blue-400"
+									class="text-gray-600 dark:text-slate-400 hover:text-blue-600 dark:hover:text-blue-400"
 									aria-label="View latest results"
 									title="View latest results"
 								>

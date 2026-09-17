@@ -148,10 +148,9 @@
 {/snippet}
 
 {#snippet iconHome()}
-	<svg class="w-8 h-8" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+	<svg class="w-8 h-8 block" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linecap="round" stroke-linejoin="round">
 		<path d="M3.5 9.5L10 4l6.5 5.5" />
-		<path d="M5 8.5v7a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1v-7" />
-		<path d="M8 16.5v-4a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v4" />
+		<path d="M5 8.5v7.75a0.25 0.25 0 0 0 0.25 0.25h9.5a0.25 0.25 0 0 0 0.25-0.25v-7.75" />
 	</svg>
 {/snippet}
 
@@ -164,7 +163,7 @@
      chart = what came out of analyzing it, rather than an app-specific
      "segmented text" glyph nobody's seen before. -->
 {#snippet iconBarChart(sizeClass: string)}
-	<svg class={sizeClass} viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+	<svg class="{sizeClass} block" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linecap="round" stroke-linejoin="round">
 		<path d="M3.5 16.5h13" />
 		<path d="M6 16.5V11" />
 		<path d="M10 16.5V6.5" />
@@ -192,7 +191,7 @@
 	     spaces to wrap on) - min-w-0 + truncate + title= protects it. -->
 	<nav class="bg-white dark:bg-slate-900 shadow-sm px-6 py-4 flex items-center justify-between gap-4">
 		<div class="flex items-center gap-4 min-w-0">
-			<a href="/" class="text-gray-400 dark:text-slate-500 hover:text-blue-600 dark:hover:text-blue-400 shrink-0" aria-label="Home" title="Home">
+			<a href="/" class="text-gray-600 dark:text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 shrink-0" aria-label="Home" title="Home">
 				{@render iconHome()}
 			</a>
 			<h1 class="text-xl font-bold text-gray-800 dark:text-slate-200 min-w-0 truncate" title={inputText?.title ?? 'Untitled'}>
@@ -201,7 +200,7 @@
 			{#if inputText && inputText.analyses.length > 0}
 				<a
 					href="/analyze/{inputText.analyses[0].id}"
-					class="text-gray-400 dark:text-slate-500 hover:text-blue-600 dark:hover:text-blue-400 shrink-0"
+					class="text-gray-600 dark:text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 shrink-0"
 					aria-label="View latest results"
 					title="View latest results"
 				>
@@ -339,7 +338,7 @@
 									</p>
 								</div>
 								<div class="flex items-center gap-3 shrink-0">
-									<a href="/analyze/{analysis.id}" class="text-gray-400 dark:text-slate-500 hover:text-blue-600 dark:hover:text-blue-400" title="View results">
+									<a href="/analyze/{analysis.id}" class="text-gray-600 dark:text-slate-400 hover:text-blue-600 dark:hover:text-blue-400" title="View results">
 										{@render iconBarChart('w-7 h-7')}
 										<span class="sr-only">View results</span>
 									</a>

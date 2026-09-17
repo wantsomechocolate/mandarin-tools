@@ -199,6 +199,10 @@
 		unknown: TokenCounts;
 		total_tokens: TokenCounts;
 		partial_credit: TokenCounts;
+		// The actual words behind partial_credit's count, most-frequent
+		// first, uncapped - backs the "Components known" filter bucket below
+		// (BUCKETS), not just the breakdown table.
+		partial_credit_words: WeakWord[];
 		weighted_average_familiarity: number | null;
 	}
 
@@ -402,8 +406,22 @@
 		swatchColor: string;
 		test: (r: WordResult) => boolean;
 		defaultHide: boolean;
-		group: 'bucket' | 'tier' | 'other';
+		group: 'bucket' | 'tier' | 'flags' | 'noise';
 	}
+
+	// Backs the "Components known" Flags-group bucket below - the set of
+	// words whose difficulty-score weight got boosted above their own
+	// direct familiarity via character decomposition (see difficulty.py's
+	// _segmentation_stats docstring - the same words the breakdown card's
+	// "Partial Credit" table row counts; the bucket's own label diverges
+	// from that internal term deliberately, framed around the reader-
+	// facing payoff - these are words worth noticing because their
+	// characters are already known, making the word itself an easier
+	// next pickup - rather than the scoring mechanism that produces them).
+	const partialCreditWords = $derived.by(() => {
+		const words = analysis?.difficulty?.main_segmentation.partial_credit_words ?? [];
+		return new Set(words.map((w) => w.word));
+	});
 
 	const BUCKETS: Bucket[] = [
 		// --- Bucket axis: is this row part of best-guess's one disjoint walk
@@ -423,24 +441,33 @@
 		// moved here from being its own bucket - a tokenizer-confirmed
 		// repeat is real evidence a word is genuine even with no dictionary
 		// backing, which is exactly what this axis (not the bucket one)
-		// already exists to express. Garbage lives in the Other row below -
-		// it's its own is_garbage boolean, not an evidence_tier value, and the
-		// row/card's own red tint plus the "not allowed" quick-action icon
-		// already flag it without a chip duplicating that here.
+		// already exists to express. Garbage lives in the Noise group below,
+		// not here - see that comment for why.
 		{ id: 'userTier', label: 'User', swatchColor: 'bg-indigo-500', group: 'tier', test: (r) => r.is_user_word, defaultHide: false },
 		{ id: 'dictionaryTier', label: 'Dictionary', swatchColor: 'bg-blue-500', group: 'tier', test: (r) => r.evidence_tier === 'dictionary', defaultHide: false },
 		{ id: 'corpusTier', label: 'Corpus', swatchColor: 'bg-teal-500', group: 'tier', test: (r) => r.evidence_tier === 'corpus', defaultHide: false },
 		{ id: 'repeatedSequenceTier', label: 'Repeated sequence', swatchColor: 'bg-purple-500', group: 'tier', test: (r) => r.evidence_tier === 'repeated_sequence', defaultHide: false },
 		{ id: 'noneTier', label: 'None', swatchColor: 'bg-gray-400', group: 'tier', test: (r) => r.evidence_tier === 'unknown', defaultHide: false },
-		// --- Other: orthogonal display states, not part of either axis.
-		// Starred has no resolved WordResult field (unlike garbage/hidden/
-		// user-word) - it's the same separately-fetched `starredWords` Set
-		// the row/card quick-actions already use, so this stays live via
-		// closure rather than needing a backend round trip of its own.
-		{ id: 'starred', label: 'Starred', swatchColor: 'bg-yellow-500', group: 'other', test: (r) => starredWords.has(r.word), defaultHide: false },
-		{ id: 'hidden', label: 'Hidden', swatchColor: 'bg-gray-400', group: 'other', test: (r) => r.is_hidden, defaultHide: true },
-		{ id: 'garbage', label: 'Garbage', swatchColor: 'bg-red-500', group: 'other', test: (r) => r.is_garbage, defaultHide: true },
-		{ id: 'nonChinese', label: 'Non-Chinese', swatchColor: 'bg-gray-400', group: 'other', test: (r) => !containsChinese(r.word), defaultHide: true },
+		// --- Flags: orthogonal states worth noticing, not excluding - every
+		// bucket here defaults to visible, unlike Noise below. Starred has no
+		// resolved WordResult field (unlike garbage/hidden/user-word) - it's
+		// the same separately-fetched `starredWords` Set the row/card quick-
+		// actions already use, so this stays live via closure rather than
+		// needing a backend round trip of its own.
+		{ id: 'starred', label: 'Starred', swatchColor: 'bg-yellow-500', group: 'flags', test: (r) => starredWords.has(r.word), defaultHide: false },
+		// A row whose difficulty-score weight got a boost from character
+		// decomposition (see partialCreditWords above) - only ever true for
+		// Main segmentation rows, since only those are scored at all.
+		{ id: 'partialCredit', label: 'Components known', swatchColor: 'bg-emerald-500', group: 'flags', test: (r) => partialCreditWords.has(r.word), defaultHide: false },
+		// --- Noise: orthogonal states worth excluding by default - every
+		// bucket here defaults to hidden, unlike Flags above. Garbage lives
+		// here rather than in the Source axis above - it's its own
+		// is_garbage boolean, not an evidence_tier value, and the row/card's
+		// own red tint plus the "not allowed" quick-action icon already flag
+		// it without a chip duplicating that here.
+		{ id: 'hidden', label: 'Hidden', swatchColor: 'bg-gray-400', group: 'noise', test: (r) => r.is_hidden, defaultHide: true },
+		{ id: 'garbage', label: 'Garbage', swatchColor: 'bg-red-500', group: 'noise', test: (r) => r.is_garbage, defaultHide: true },
+		{ id: 'nonChinese', label: 'Non-Chinese', swatchColor: 'bg-gray-400', group: 'noise', test: (r) => !containsChinese(r.word), defaultHide: true },
 	];
 
 	let bucketState: Record<string, BucketFilterState> = $state(
@@ -568,9 +595,9 @@
 		return sortDirection === 'desc' ? -cmp : cmp;
 	}
 
-	const GROUP_LABELS: Record<string, string> = { bucket: 'Bucket', tier: 'Source', other: 'Other' };
+	const GROUP_LABELS: Record<string, string> = { bucket: 'Bucket', tier: 'Source', flags: 'Flags', noise: 'Noise' };
 	const bucketGroups = $derived(
-		(['bucket', 'tier', 'other'] as const).map((group) => ({
+		(['bucket', 'tier', 'flags', 'noise'] as const).map((group) => ({
 			group,
 			label: GROUP_LABELS[group],
 			buckets: BUCKETS.filter((b) => b.group === group),
@@ -1426,15 +1453,14 @@
 {/snippet}
 
 {#snippet iconHome()}
-	<svg class="w-8 h-8" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+	<svg class="w-8 h-8 block" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linecap="round" stroke-linejoin="round">
 		<path d="M3.5 9.5L10 4l6.5 5.5" />
-		<path d="M5 8.5v7a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1v-7" />
-		<path d="M8 16.5v-4a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v4" />
+		<path d="M5 8.5v7.75a0.25 0.25 0 0 0 0.25 0.25h9.5a0.25 0.25 0 0 0 0.25-0.25v-7.75" />
 	</svg>
 {/snippet}
 
 {#snippet iconBook()}
-	<svg class="w-8 h-8" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+	<svg class="w-8 h-8 block" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linecap="round" stroke-linejoin="round">
 		<path d="M10 5.75c-1.3-1-3.1-1.5-5.25-1.5a.75.75 0 0 0-.75.75v9.5c0 .41.34.75.75.75 2.15 0 3.95.5 5.25 1.5 1.3-1 3.1-1.5 5.25-1.5.41 0 .75-.34.75-.75V5c0-.41-.34-.75-.75-.75-2.15 0-3.95.5-5.25 1.5Z" />
 		<path d="M10 5.75v11" />
 	</svg>
@@ -1779,7 +1805,7 @@
 	     fine at any width on its own. -->
 	<nav class="bg-white dark:bg-slate-900 shadow-sm px-6 py-4 flex items-center justify-between gap-4">
 		<div class="flex flex-wrap items-center gap-4 min-w-0">
-			<a href="/" class="text-gray-400 dark:text-slate-500 hover:text-blue-600 dark:hover:text-blue-400 shrink-0" aria-label="Home" title="Home">
+			<a href="/" class="text-gray-600 dark:text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 shrink-0" aria-label="Home" title="Home">
 				{@render iconHome()}
 			</a>
 			<h1 class="text-xl font-bold text-gray-800 dark:text-slate-200 min-w-0 truncate" title={analysis?.title ?? 'Analysis Results'}>
@@ -1788,7 +1814,7 @@
 			{#if analysis}
 				<a
 					href="/input-texts/{analysis.input_text_id}"
-					class="text-gray-400 dark:text-slate-500 hover:text-blue-600 dark:hover:text-blue-400 shrink-0"
+					class="text-gray-600 dark:text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 shrink-0"
 					title="View source text"
 					aria-label="View source text"
 				>
@@ -1852,12 +1878,11 @@
 						</button>
 					</div>
 					<p class="text-sm text-gray-600 dark:text-slate-300">
-						The main segmentation produced <span class="font-medium tabular-nums">{fmtTokenCounts(d.main_segmentation.total_tokens)}</span>
-						<span class="text-gray-400 dark:text-slate-500">[unique(total)]</span> tokens.
+						The main segmentation produced <span class="font-medium tabular-nums">{fmtTokenCounts(d.main_segmentation.total_tokens)}</span> tokens.
 					</p>
 					<p class="text-sm text-gray-600 dark:text-slate-300 mb-3">
 						Additionally, <span class="font-medium tabular-nums">{fmtTokenCounts(d.extra_matches.total_tokens)}</span>
-						extra tokens were found that may or may not be of interest to you.
+						extra tokens were found that may or may not be of interest to you!
 					</p>
 
 					<div class="overflow-x-auto mb-3 flex justify-center">
@@ -1877,35 +1902,35 @@
 							</thead>
 							<tbody class="text-gray-700 dark:text-slate-300">
 								<tr>
-									<td class="py-1 pr-4">Known@5</td>
+									<td class="py-1 pr-4">Mastered</td>
 									<td class="py-1 px-2 text-right tabular-nums">{fmtNum(d.main_segmentation.known_5.unique)}</td>
 									<td class="py-1 px-2 text-right tabular-nums">{fmtNum(d.main_segmentation.known_5.total)}</td>
 									<td class="py-1 pl-4 pr-2 text-right tabular-nums">{fmtNum(d.extra_matches.known_5.unique)}</td>
 									<td class="py-1 px-2 text-right tabular-nums">{fmtNum(d.extra_matches.known_5.total)}</td>
 								</tr>
 								<tr>
-									<td class="py-1 pr-4">Known@4</td>
+									<td class="py-1 pr-4">Know Well</td>
 									<td class="py-1 px-2 text-right tabular-nums">{fmtNum(d.main_segmentation.known_4.unique)}</td>
 									<td class="py-1 px-2 text-right tabular-nums">{fmtNum(d.main_segmentation.known_4.total)}</td>
 									<td class="py-1 pl-4 pr-2 text-right tabular-nums">{fmtNum(d.extra_matches.known_4.unique)}</td>
 									<td class="py-1 px-2 text-right tabular-nums">{fmtNum(d.extra_matches.known_4.total)}</td>
 								</tr>
 								<tr>
-									<td class="py-1 pr-4">Known@3</td>
+									<td class="py-1 pr-4">Know It</td>
 									<td class="py-1 px-2 text-right tabular-nums">{fmtNum(d.main_segmentation.known_3.unique)}</td>
 									<td class="py-1 px-2 text-right tabular-nums">{fmtNum(d.main_segmentation.known_3.total)}</td>
 									<td class="py-1 pl-4 pr-2 text-right tabular-nums">{fmtNum(d.extra_matches.known_3.unique)}</td>
 									<td class="py-1 px-2 text-right tabular-nums">{fmtNum(d.extra_matches.known_3.total)}</td>
 								</tr>
 								<tr>
-									<td class="py-1 pr-4">Known@2</td>
+									<td class="py-1 pr-4">Recognize</td>
 									<td class="py-1 px-2 text-right tabular-nums">{fmtNum(d.main_segmentation.known_2.unique)}</td>
 									<td class="py-1 px-2 text-right tabular-nums">{fmtNum(d.main_segmentation.known_2.total)}</td>
 									<td class="py-1 pl-4 pr-2 text-right tabular-nums">{fmtNum(d.extra_matches.known_2.unique)}</td>
 									<td class="py-1 px-2 text-right tabular-nums">{fmtNum(d.extra_matches.known_2.total)}</td>
 								</tr>
 								<tr>
-									<td class="py-1 pr-4">Known@1</td>
+									<td class="py-1 pr-4">Seen It</td>
 									<td class="py-1 px-2 text-right tabular-nums">{fmtNum(d.main_segmentation.known_1.unique)}</td>
 									<td class="py-1 px-2 text-right tabular-nums">{fmtNum(d.main_segmentation.known_1.total)}</td>
 									<td class="py-1 pl-4 pr-2 text-right tabular-nums">{fmtNum(d.extra_matches.known_1.unique)}</td>
@@ -1925,13 +1950,6 @@
 									<td class="py-1 pl-4 pr-2 text-right tabular-nums">{fmtNum(d.extra_matches.total_tokens.unique)}</td>
 									<td class="py-1 px-2 text-right tabular-nums">{fmtNum(d.extra_matches.total_tokens.total)}</td>
 								</tr>
-								<tr>
-									<td class="py-1 pr-4">Partial Credit</td>
-									<td class="py-1 px-2 text-right tabular-nums">{fmtNum(d.main_segmentation.partial_credit.unique)}</td>
-									<td class="py-1 px-2 text-right tabular-nums">{fmtNum(d.main_segmentation.partial_credit.total)}</td>
-									<td class="py-1 pl-4 pr-2 text-right tabular-nums">{fmtNum(d.extra_matches.partial_credit.unique)}</td>
-									<td class="py-1 px-2 text-right tabular-nums">{fmtNum(d.extra_matches.partial_credit.total)}</td>
-								</tr>
 								<tr class="border-t border-gray-200 dark:border-slate-700">
 									<td class="py-1 pr-4">Weighted Avg. Familiarity</td>
 									<td class="py-1 px-2 text-right tabular-nums" colspan="2">{fmtWeightedAverage(d.main_segmentation.weighted_average_familiarity)}</td>
@@ -1943,7 +1961,7 @@
 
 					{#if d.main_segmentation.partial_credit.unique > 0}
 						<p class="text-xs text-gray-500 dark:text-slate-400 mb-3">
-							The final difficulty score received a bump for {fmtTokenCounts(d.main_segmentation.partial_credit)} token{d.main_segmentation.partial_credit.unique === 1 ? '' : 's'} that contain characters you already know.
+							The final difficulty score received a bump for {fmtTokenCounts(d.main_segmentation.partial_credit)} unknown token{d.main_segmentation.partial_credit.unique === 1 ? '' : 's'} whose components you have marked known. Use the "Components known" filter chip to see them.
 						</p>
 					{/if}
 
@@ -1979,8 +1997,8 @@
 		{:else}
 		<!-- Toolbar: search, familiarity threshold, sort, and the result count
 		     in one row that wraps naturally on narrow screens instead of nine
-		     separately-floating controls. The three bucket-group rows below
-		     (Bucket/Source/Other, see BUCKETS above) collapse behind the
+		     separately-floating controls. The four bucket-group rows below
+		     (Bucket/Source/Flags/Noise, see BUCKETS above) collapse behind the
 		     Filters disclosure so this toolbar is the only thing always
 		     visible. -->
 		<div class="bg-white dark:bg-slate-900 rounded-lg shadow-sm p-4 mb-4">
@@ -2121,7 +2139,7 @@
 								<tr
 									data-word={result.word}
 									onclick={(e) => handleRowClick(e, result.word)}
-									class="group cursor-pointer hover:bg-gray-50 dark:hover:bg-slate-800 {result.source === 'longest_match_only' ? 'bg-amber-50/40' : ''} {garbageWords.has(result.word) ? 'bg-red-50/40' : ''} {selectedWordForPanel === result.word ? '!bg-blue-50 ring-1 ring-inset ring-blue-200 dark:ring-blue-500/30' : ''}"
+									class="group cursor-pointer hover:bg-gray-50 dark:hover:bg-slate-800 {result.source === 'longest_match_only' ? 'bg-amber-50/40' : ''} {garbageWords.has(result.word) ? 'bg-red-50/40' : ''} {selectedWordForPanel === result.word ? '!bg-blue-50 dark:!bg-blue-500/15 ring-1 ring-inset ring-blue-200 dark:ring-blue-500/30' : ''}"
 								>
 									<td class="px-4 py-3 text-lg font-medium">
 										<div class="flex items-center justify-center gap-1.5">

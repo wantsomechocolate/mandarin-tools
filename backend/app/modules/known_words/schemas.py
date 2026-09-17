@@ -191,6 +191,12 @@ class SegmentationBucketBreakdown(BaseModel):
     unknown: TokenCounts
     total_tokens: TokenCounts
     partial_credit: TokenCounts
+    # The actual words behind partial_credit's count, most-frequent first -
+    # deliberately uncapped (unlike weakest_words), since it backs a
+    # results-table filter bucket where a long list is expected and wanted
+    # rather than a short preview. See difficulty.SegmentationBucketBreakdown's
+    # docstring.
+    partial_credit_words: list[WeakWord]
     weighted_average_familiarity: float | None
 
 

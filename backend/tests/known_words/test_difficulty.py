@@ -159,6 +159,37 @@ class TestComputeDifficulty:
         m = compute_difficulty(results, known_words={"希": 5, "奇": 5}).main_segmentation
         assert (m.partial_credit.unique, m.partial_credit.total) == (1, 4)
 
+    def test_partial_credit_word_list_contains_only_boosted_words(self):
+        results = [
+            _wr("希奇", 4),  # boosted
+            _wr("我们", 6, familiarity=5),  # not boosted
+            _wr("陌生", 2),  # unknown, no decomposition credit either - not boosted
+        ]
+        m = compute_difficulty(results, known_words={"希": 5, "奇": 5}).main_segmentation
+        words = [e["word"] for e in m.partial_credit_word_list]
+        assert words == ["希奇"]
+        assert m.partial_credit_word_list[0]["count"] == 4
+        assert m.partial_credit_word_list[0]["effective_weight"] == 0.5
+
+    def test_partial_credit_word_list_sorted_most_frequent_first(self):
+        results = [
+            _wr("希奇", 2),
+            _wr("罕见", 9),
+        ]
+        # both boosted via the same two known characters
+        m = compute_difficulty(results, known_words={"希": 5, "奇": 5, "罕": 5, "见": 5}).main_segmentation
+        words = [e["word"] for e in m.partial_credit_word_list]
+        assert words == ["罕见", "希奇"]
+
+    def test_partial_credit_word_list_uncapped_past_ten(self):
+        # Unlike weakest_words (capped at 10), the full list backs a
+        # filter bucket where a long list is expected - 15 distinct words
+        # here, each boosted via the same two known characters, should
+        # all come back.
+        results = [_wr(f"希奇{i}", 1) for i in range(15)]
+        m = compute_difficulty(results, known_words={"希": 5, "奇": 5}).main_segmentation
+        assert len(m.partial_credit_word_list) == 15
+
     def test_weighted_average_familiarity_uses_raw_familiarity_not_effective_weight(self):
         # Two words at familiarity 4 and 2, weighted by count (3 and 1):
         # (4*3 + 2*1) / 4 = 3.5 - plain familiarity scale, unaffected by

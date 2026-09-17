@@ -231,6 +231,13 @@ class SegmentationBucketBreakdown:
     way for both columns (see _segmentation_stats) purely as an
     informational parallel - only the Main segmentation column's numbers
     actually feed the overall score/band.
+
+    partial_credit_word_list is the actual words behind partial_credit's
+    count - unlike weakest_words (compute_difficulty, capped at 10 for a
+    quick "why is my score low" preview), this list is deliberately
+    uncapped: it exists to back a results-table filter bucket ("Partial
+    credit" - analyze/[id]/+page.svelte's BUCKETS), where a user can
+    already expect a long list and wants to see all of it, not a preview.
     """
 
     def __init__(
@@ -243,6 +250,7 @@ class SegmentationBucketBreakdown:
         unknown: TokenCounts,
         total_tokens: TokenCounts,
         partial_credit: TokenCounts,
+        partial_credit_word_list: list[dict],
         weighted_average_familiarity: float | None,
     ):
         self.known_5 = known_5
@@ -253,6 +261,7 @@ class SegmentationBucketBreakdown:
         self.unknown = unknown
         self.total_tokens = total_tokens
         self.partial_credit = partial_credit
+        self.partial_credit_word_list = partial_credit_word_list
         self.weighted_average_familiarity = weighted_average_familiarity
 
 
@@ -281,6 +290,7 @@ def _segmentation_stats(rows: list[WordResult], known_words: dict[str, int]) -> 
     by_familiarity: dict[int, list[WordResult]] = {n: [] for n in range(1, 6)}
     unknown_rows: list[WordResult] = []
     partial_credit_rows: list[WordResult] = []
+    partial_credit_entries: list[dict] = []
     familiarity_weighted_sum = 0.0
     total_count = 0
 
@@ -290,11 +300,19 @@ def _segmentation_stats(rows: list[WordResult], known_words: dict[str, int]) -> 
         else:
             unknown_rows.append(r)
 
-        if effective_weight(r.word, r.familiarity, known_words) > _familiarity_weight(r.familiarity):
+        weight = effective_weight(r.word, r.familiarity, known_words)
+        if weight > _familiarity_weight(r.familiarity):
             partial_credit_rows.append(r)
+            partial_credit_entries.append({"word": r.word, "count": r.count, "effective_weight": weight})
 
         familiarity_weighted_sum += (r.familiarity or 0) * r.count
         total_count += r.count
+
+    # Most-frequent first - unlike weakest_words (worst-first, since that
+    # list is about "what's hurting your score"), this one is "good news"
+    # - the words occurring most often are the most worth knowing got
+    # boosted at all.
+    partial_credit_entries.sort(key=lambda e: -e["count"])
 
     return SegmentationBucketBreakdown(
         known_5=_token_counts(by_familiarity[5]),
@@ -305,6 +323,7 @@ def _segmentation_stats(rows: list[WordResult], known_words: dict[str, int]) -> 
         unknown=_token_counts(unknown_rows),
         total_tokens=_token_counts(rows),
         partial_credit=_token_counts(partial_credit_rows),
+        partial_credit_word_list=partial_credit_entries,
         weighted_average_familiarity=(familiarity_weighted_sum / total_count) if total_count else None,
     )
 

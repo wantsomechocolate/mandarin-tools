@@ -13,7 +13,7 @@
 </script>
 
 {#snippet iconUser()}
-	<svg class="w-5 h-5" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+	<svg class="w-6 h-6 block" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
 		<circle cx="10" cy="7" r="3" />
 		<path d="M4 16.5c0-3 2.7-5 6-5s6 2 6 5" />
 	</svg>
@@ -27,7 +27,7 @@
 <div class="relative">
 	<button
 		onclick={() => open = !open}
-		class="w-9 h-9 flex items-center justify-center rounded-full text-gray-600 hover:bg-gray-100 hover:text-gray-800 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-200"
+		class="w-10 h-10 flex items-center justify-center rounded-full text-gray-600 hover:bg-gray-100 hover:text-gray-800 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-200"
 		aria-label="Account menu"
 		aria-expanded={open}
 	>

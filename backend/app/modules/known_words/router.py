@@ -397,6 +397,7 @@ def _segmentation_bucket_response(stats) -> SegmentationBucketBreakdown:
         unknown=tc(stats.unknown),
         total_tokens=tc(stats.total_tokens),
         partial_credit=tc(stats.partial_credit),
+        partial_credit_words=[WeakWord(**w) for w in stats.partial_credit_word_list],
         weighted_average_familiarity=stats.weighted_average_familiarity,
     )
 
