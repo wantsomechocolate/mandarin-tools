@@ -346,6 +346,12 @@
 		// True "no markings" mode - plain characters, still clickable, no
 		// boundary/color of any kind. See ColorBy's own docstring above for
 		// why this is a separate id from 'none' rather than a renamed one.
+		// The base `rounded px-0.5` every button otherwise gets (spanInner,
+		// below) is also stripped for this mode specifically - that padding
+		// is what gives a color fill some breathing room and gives the
+		// Segmentation underline mode's word-to-word gaps their visibility,
+		// but with no fill/border to pad here it was just injecting a small,
+		// unwanted gap between words that plain text doesn't have.
 		if (colorBy === 'blank') return '';
 		if (colorBy === 'source') {
 			const tier = sourceDetailTier(span);
@@ -638,7 +644,7 @@
 	{#if span.type === 'gap'}<span>{span.text}</span
 	>{:else}<button
 			onclick={() => handleWordClick(span, idx)}
-			class="rounded px-0.5 hover:ring-1 hover:ring-blue-400 {spanClass(span)}"
+			class="hover:ring-1 hover:ring-blue-400 {colorBy === 'blank' ? '' : 'rounded px-0.5'} {spanClass(span)}"
 			style={spanStyle(span)}
 			title={spanTitle(span)}
 		>{span.word}</button

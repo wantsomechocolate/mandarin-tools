@@ -7,6 +7,7 @@
 	import AccountMenu from '$lib/components/AccountMenu.svelte';
 	import ReadingView from '$lib/components/ReadingView.svelte';
 	import { loadRepeatedSequencePreferences } from '$lib/repeatedSequencePreferences';
+	import { loadReadingViewOn, saveReadingViewOn } from '$lib/readingViewPersistence';
 
 	interface AnalysisSummary {
 		id: number;
@@ -35,6 +36,22 @@
 	let error = $state('');
 	let reanalyzing = $state(false);
 
+	// Reading view (segmented, colorable, annotatable) is opt-in, mirroring
+	// analyze/[id]'s own "Reading view" toggle and reusing the same
+	// per-analysis persistence - default is the plain body paragraph below
+	// (real text nodes: selectable/copyable, no per-word buttons), not
+	// ReadingView, since that's the closer match to this app's original
+	// plain "Source text" view. Seeded once inputText loads (onMount, below)
+	// rather than a reactive reseed effect - unlike analyze/[id], this page
+	// doesn't need to handle the same mounted instance being reused for a
+	// different id.
+	let readingViewOn = $state(false);
+	$effect(() => {
+		if (inputText && inputText.analyses.length > 0) {
+			saveReadingViewOn(inputText.analyses[0].id, readingViewOn);
+		}
+	});
+
 	// Title editing - inline pencil-click-to-edit, same shape as the note
 	// editing below (editing flag + draft + Save/Cancel), just single-line.
 	let editingTitle = $state(false);
@@ -57,6 +74,9 @@
 		}
 		try {
 			inputText = await api.getInputText(id) as InputTextDetail;
+			if (inputText.analyses.length > 0) {
+				readingViewOn = loadReadingViewOn(inputText.analyses[0].id);
+			}
 		} catch (e: unknown) {
 			error = e instanceof Error ? e.message : 'Failed to load text';
 		} finally {
@@ -284,28 +304,44 @@
 				{/if}
 			</div>
 
-			<!-- Source text - once an analysis exists, embed ReadingView so this
-			     page gets word-span awareness (and, with it, the ability to
-			     create/view annotations) for free rather than reimplementing
-			     span rendering here - see ReadingView.svelte's own docstring,
-			     which anticipated exactly this embedding. Falls back to the
-			     plain body paragraph when there's no analysis yet, since
-			     annotation creation needs word occurrences to snap to. -->
-			{#if inputText.analyses.length > 0}
-				<div class="mb-6">
-					<ReadingView analysisId={inputText.analyses[0].id} textTitle={inputText.title} analysisTitle={null} />
-				</div>
-			{:else}
-				<div class="bg-white dark:bg-slate-900 rounded-lg shadow-sm p-6 mb-6">
-					<div class="flex justify-between items-start mb-4">
-						<p class="text-xs font-medium text-gray-400 dark:text-slate-500 uppercase tracking-wide">Source text</p>
+			<!-- Source text - the label/date/toggle row is always shown (mirrors
+			     analyze/[id]'s own "Reading view" toggle, which stays visible
+			     whichever of its two content modes is showing), with the
+			     content below it swapping between the plain body paragraph
+			     (real text nodes - selectable/copyable, no per-word buttons -
+			     and this page's default) and ReadingView (segmented, colorable,
+			     annotatable - see ReadingView.svelte's own docstring, which
+			     anticipated exactly this embedding) once toggled on. The
+			     toggle only appears once an analysis exists, since annotation
+			     creation needs word occurrences to snap to and there's nothing
+			     to switch into otherwise. -->
+			<div class="mb-6">
+				<div class="flex justify-between items-center mb-2">
+					<p class="text-xs font-medium text-gray-400 dark:text-slate-500 uppercase tracking-wide">Source text</p>
+					<div class="flex items-center gap-3">
 						<p class="text-xs text-gray-400 dark:text-slate-500">
 							Added {new Date(inputText.created_at).toLocaleDateString()}
 						</p>
+						{#if inputText.analyses.length > 0}
+							<button
+								type="button"
+								onclick={() => readingViewOn = !readingViewOn}
+								aria-pressed={readingViewOn}
+								class="text-sm px-3 py-1.5 rounded-full border shrink-0 transition-colors {readingViewOn ? 'bg-blue-100 dark:bg-blue-500/15 border-blue-300 dark:border-blue-500/40 text-blue-700 dark:text-blue-400' : 'bg-white dark:bg-slate-900 border-gray-200 dark:border-slate-800 text-gray-600 dark:text-slate-400 hover:bg-gray-100 dark:hover:bg-slate-800'}"
+							>
+								Reading view
+							</button>
+						{/if}
 					</div>
-					<p class="whitespace-pre-wrap leading-relaxed text-gray-800 dark:text-slate-200">{inputText.body}</p>
 				</div>
-			{/if}
+				{#if readingViewOn && inputText.analyses.length > 0}
+					<ReadingView analysisId={inputText.analyses[0].id} textTitle={inputText.title} analysisTitle={null} />
+				{:else}
+					<div class="bg-white dark:bg-slate-900 rounded-lg shadow-sm p-6">
+						<p class="whitespace-pre-wrap leading-relaxed text-gray-800 dark:text-slate-200">{inputText.body}</p>
+					</div>
+				{/if}
+			</div>
 
 			<!-- Analyses -->
 			<div class="bg-white dark:bg-slate-900 rounded-lg shadow-sm p-6">
