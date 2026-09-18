@@ -630,6 +630,59 @@ class InputText(Base):
     )
 
 
+class TextAnnotation(Base):
+    """
+    A user-highlighted character range within one InputText.body, with an
+    optional note/translation/pronunciation. Deliberately NOT scope-tiered
+    like UserWord/WordVisibility - a range only ever means something in the
+    one text it was drawn on, so there's no global/text/analysis hierarchy
+    to resolve, just one row per range, owned by exactly one input_text_id.
+
+    Range selection is word-snapped tap-select in the UI (ReadingView.svelte),
+    driven by AnalysisSpan occurrences already rendered there - but that's a
+    UI creation-time convention only, not a DB invariant enforced here: only
+    0 <= start_offset < end_offset <= len(body) is validated server-side (see
+    create_text_annotation, router.py). Annotations anchor to InputText.body
+    directly, never to an Analysis, because re-analyzing a text can re-segment
+    it differently and an annotation's range must keep meaning the same thing
+    regardless of which analysis happens to be open when it's viewed.
+
+    highlighted_text is a denormalized snapshot of body[start_offset:end_offset]
+    captured at creation time - safe because InputText.body is immutable after
+    creation (only title/note are ever updated post-creation) - so consumers
+    don't need to re-slice body just to show what a given annotation covers.
+
+    No unique constraint on the range - overlap is prevented at the
+    application layer (create_text_annotation's 409 check), since
+    "overlapping" isn't expressible as a simple uniqueness constraint.
+    Offsets are immutable after creation (PUT only ever changes note/
+    translation/pronunciation) - to "move" a range, delete and recreate.
+    """
+    __tablename__ = "text_annotations"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    input_text_id: Mapped[int] = mapped_column(Integer, ForeignKey("input_texts.id"), nullable=False, index=True)
+
+    start_offset: Mapped[int] = mapped_column(Integer, nullable=False)
+    end_offset: Mapped[int] = mapped_column(Integer, nullable=False)
+    highlighted_text: Mapped[str] = mapped_column(String, nullable=False)
+
+    note: Mapped[str | None] = mapped_column(String, nullable=True)
+    translation: Mapped[str | None] = mapped_column(String, nullable=True)
+    pronunciation: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    user: Mapped["User"] = relationship("User")
+
+    __table_args__ = (
+        Index("ix_text_annotations_user_input_text", "user_id", "input_text_id"),
+        CheckConstraint("end_offset > start_offset", name="ck_text_annotations_offsets"),
+    )
+
+
 class Analysis(Base):
     """
     One run of the analysis pipeline over an InputText's body. Deliberately

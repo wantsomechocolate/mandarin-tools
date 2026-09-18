@@ -20,9 +20,22 @@ trie_loader.py/segmenter_loader.py's existing "build once, reuse" pattern:
 import logging
 from pathlib import Path
 
-from pypinyin import Style, pinyin as pypinyin_pinyin
+from pypinyin import Style, load_single_dict, pinyin as pypinyin_pinyin
 
 logger = logging.getLogger(__name__)
+
+# Single-character reading overrides where pypinyin's own default doesn't
+# match this app's preferred usage - keyed by Unicode codepoint, the shape
+# load_single_dict itself takes. Applied once at import time (unlike the
+# CTranslate2 model below, this is cheap and has no lazy-loading reason not
+# to) and global to the process, so it affects every generate_pinyin call
+# regardless of caller. Add further entries here as they come up rather than
+# special-casing them at each call site.
+POLYPHONE_OVERRIDES = {
+    0x8C01: "shéi",  # 谁 - pypinyin defaults to "shuí", but "shéi" is the
+                      # overwhelmingly preferred reading in modern spoken use.
+}
+load_single_dict(POLYPHONE_OVERRIDES)
 
 # Bump this whenever the model backing generate_ctranslate2_translation
 # changes (a different base model, requantized, retrained, etc.) - compared

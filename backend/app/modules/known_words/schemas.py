@@ -447,6 +447,57 @@ class InputTextUpdate(BaseModel):
     note: str | None = None
 
 
+class TextAnnotationCreate(BaseModel):
+    start_offset: int
+    end_offset: int
+    note: str | None = None
+    translation: str | None = None
+    pronunciation: str | None = None
+
+
+class TextAnnotationUpdate(BaseModel):
+    """
+    PUT /annotations/{id} body - offsets are immutable after creation (see
+    TextAnnotation's docstring, models.py), so only note/translation/
+    pronunciation are ever changed here. Same exclude_unset convention as
+    InputTextUpdate - a field left out of the request body is left untouched.
+    """
+    note: str | None = None
+    translation: str | None = None
+    pronunciation: str | None = None
+
+
+class TextAnnotationResponse(BaseModel):
+    id: int
+    input_text_id: int
+    start_offset: int
+    end_offset: int
+    highlighted_text: str
+    note: str | None = None
+    translation: str | None = None
+    pronunciation: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class TextEnrichmentRequest(BaseModel):
+    text: str
+
+
+class TextEnrichmentResponse(BaseModel):
+    """
+    Freshly-generated pinyin/translation for arbitrary text (a
+    TextAnnotation's highlighted_text, typically a multi-word phrase or
+    clause) - see generate_annotation_enrichment's docstring, router.py, for
+    why this is stateless (no word_enrichment persistence) unlike the
+    per-word enrichment endpoints above.
+    """
+    pinyin: str
+    translation: str
+
+
 class WordOccurrence(BaseModel):
     start: int
     end: int

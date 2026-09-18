@@ -21,6 +21,7 @@ from app.modules.known_words.models import (
     UserWord,
     WordVisibility,
     SampleSentence,
+    TextAnnotation,
     Stopword,
     GarbageWord,
     StarredWord,
@@ -59,6 +60,11 @@ from app.modules.known_words.schemas import (
     SampleSentenceUpdate,
     SampleSentenceResponse,
     InputTextResponse,
+    TextAnnotationCreate,
+    TextAnnotationUpdate,
+    TextAnnotationResponse,
+    TextEnrichmentRequest,
+    TextEnrichmentResponse,
     StopwordCreate,
     StopwordResponse,
     GarbageWordCreate,
@@ -2038,6 +2044,171 @@ def delete_input_text(
     if not input_text:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Input text not found")
     db.delete(input_text)
+    db.commit()
+
+
+# Text annotations - a user-highlighted character range within one
+# InputText.body, with an optional note/translation/pronunciation. See
+# TextAnnotation's docstring (models.py) for why this is deliberately NOT
+# scope-tiered like UserWord/WordVisibility.
+
+def _has_annotation_content(note: str | None, translation: str | None, pronunciation: str | None) -> bool:
+    return bool((note or "").strip() or (translation or "").strip() or (pronunciation or "").strip())
+
+
+@router.post(
+    "/input-texts/{input_text_id}/annotations",
+    response_model=TextAnnotationResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_text_annotation(
+    input_text_id: int,
+    annotation_in: TextAnnotationCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    input_text = db.query(InputText).filter_by(
+        id=input_text_id, user_id=current_user.id
+    ).first()
+    if not input_text:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Input text not found")
+
+    if not (0 <= annotation_in.start_offset < annotation_in.end_offset <= len(input_text.body)):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid start_offset/end_offset")
+
+    if not _has_annotation_content(annotation_in.note, annotation_in.translation, annotation_in.pronunciation):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="At least one of note/translation/pronunciation is required",
+        )
+
+    # Overlap rejection - standard interval-overlap test, application-layer
+    # only (see TextAnnotation's docstring, models.py, for why this isn't a
+    # DB constraint).
+    overlap = db.query(TextAnnotation).filter(
+        TextAnnotation.input_text_id == input_text_id,
+        TextAnnotation.user_id == current_user.id,
+        TextAnnotation.start_offset < annotation_in.end_offset,
+        TextAnnotation.end_offset > annotation_in.start_offset,
+    ).first()
+    if overlap:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This range overlaps an existing annotation",
+        )
+
+    annotation = TextAnnotation(
+        user_id=current_user.id,
+        input_text_id=input_text_id,
+        start_offset=annotation_in.start_offset,
+        end_offset=annotation_in.end_offset,
+        highlighted_text=input_text.body[annotation_in.start_offset:annotation_in.end_offset],
+        note=annotation_in.note,
+        translation=annotation_in.translation,
+        pronunciation=annotation_in.pronunciation,
+    )
+    db.add(annotation)
+    db.commit()
+    db.refresh(annotation)
+    return annotation
+
+
+@router.get("/input-texts/{input_text_id}/annotations", response_model=list[TextAnnotationResponse])
+def list_text_annotations(
+    input_text_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    input_text = db.query(InputText).filter_by(
+        id=input_text_id, user_id=current_user.id
+    ).first()
+    if not input_text:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Input text not found")
+
+    return (
+        db.query(TextAnnotation)
+        .filter_by(input_text_id=input_text_id, user_id=current_user.id)
+        .order_by(TextAnnotation.start_offset)
+        .all()
+    )
+
+
+@router.post("/annotations/generate-enrichment", response_model=TextEnrichmentResponse)
+def generate_annotation_enrichment(
+    request: TextEnrichmentRequest,
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Pinyin + a fresh CTranslate2 translation for an annotation's highlighted
+    text, generated on demand and returned directly - unlike
+    generate_fallback_word_enrichment above, this deliberately does NOT
+    persist into the shared word_enrichment table: that table's cross-user
+    sharing makes sense for real vocabulary words looked up repeatedly, but
+    an annotation's highlighted_text is an arbitrary, often multi-word
+    phrase or clause specific to one text - not something worth caching
+    globally. The frontend fills the translation/pronunciation draft fields
+    from this response and the user still has to Save, same as any other
+    edit to the form.
+
+    Declared here, before the /annotations/{annotation_id} routes below -
+    FastAPI/Starlette matches routes in registration order and, for this
+    literal path, {annotation_id} would otherwise swallow "generate-
+    enrichment" as its value and answer with a 405 (right path, wrong
+    method) before this route is ever considered.
+    """
+    from app.modules.known_words.enrichment import generate_pinyin, generate_ctranslate2_translation
+
+    text = request.text.strip()
+    if not text:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="text is required")
+    return TextEnrichmentResponse(
+        pinyin=generate_pinyin(text),
+        translation=generate_ctranslate2_translation(text),
+    )
+
+
+@router.put("/annotations/{annotation_id}", response_model=TextAnnotationResponse)
+def update_text_annotation(
+    annotation_id: int,
+    update: TextAnnotationUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    annotation = db.query(TextAnnotation).filter_by(
+        id=annotation_id, user_id=current_user.id
+    ).first()
+    if not annotation:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Annotation not found")
+
+    updates = update.model_dump(exclude_unset=True)
+    merged_note = updates.get("note", annotation.note)
+    merged_translation = updates.get("translation", annotation.translation)
+    merged_pronunciation = updates.get("pronunciation", annotation.pronunciation)
+    if not _has_annotation_content(merged_note, merged_translation, merged_pronunciation):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="At least one of note/translation/pronunciation is required",
+        )
+
+    for field, value in updates.items():
+        setattr(annotation, field, value)
+    db.commit()
+    db.refresh(annotation)
+    return annotation
+
+
+@router.delete("/annotations/{annotation_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_text_annotation(
+    annotation_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    annotation = db.query(TextAnnotation).filter_by(
+        id=annotation_id, user_id=current_user.id
+    ).first()
+    if not annotation:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Annotation not found")
+    db.delete(annotation)
     db.commit()
 
 

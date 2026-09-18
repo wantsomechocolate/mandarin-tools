@@ -5,6 +5,7 @@
 	import { goto } from '$app/navigation';
 	import { page } from '$app/stores';
 	import AccountMenu from '$lib/components/AccountMenu.svelte';
+	import ReadingView from '$lib/components/ReadingView.svelte';
 	import { loadRepeatedSequencePreferences } from '$lib/repeatedSequencePreferences';
 
 	interface AnalysisSummary {
@@ -283,16 +284,28 @@
 				{/if}
 			</div>
 
-			<!-- Source text -->
-			<div class="bg-white dark:bg-slate-900 rounded-lg shadow-sm p-6 mb-6">
-				<div class="flex justify-between items-start mb-4">
-					<p class="text-xs font-medium text-gray-400 dark:text-slate-500 uppercase tracking-wide">Source text</p>
-					<p class="text-xs text-gray-400 dark:text-slate-500">
-						Added {new Date(inputText.created_at).toLocaleDateString()}
-					</p>
+			<!-- Source text - once an analysis exists, embed ReadingView so this
+			     page gets word-span awareness (and, with it, the ability to
+			     create/view annotations) for free rather than reimplementing
+			     span rendering here - see ReadingView.svelte's own docstring,
+			     which anticipated exactly this embedding. Falls back to the
+			     plain body paragraph when there's no analysis yet, since
+			     annotation creation needs word occurrences to snap to. -->
+			{#if inputText.analyses.length > 0}
+				<div class="mb-6">
+					<ReadingView analysisId={inputText.analyses[0].id} textTitle={inputText.title} analysisTitle={null} />
 				</div>
-				<p class="whitespace-pre-wrap leading-relaxed text-gray-800 dark:text-slate-200">{inputText.body}</p>
-			</div>
+			{:else}
+				<div class="bg-white dark:bg-slate-900 rounded-lg shadow-sm p-6 mb-6">
+					<div class="flex justify-between items-start mb-4">
+						<p class="text-xs font-medium text-gray-400 dark:text-slate-500 uppercase tracking-wide">Source text</p>
+						<p class="text-xs text-gray-400 dark:text-slate-500">
+							Added {new Date(inputText.created_at).toLocaleDateString()}
+						</p>
+					</div>
+					<p class="whitespace-pre-wrap leading-relaxed text-gray-800 dark:text-slate-200">{inputText.body}</p>
+				</div>
+			{/if}
 
 			<!-- Analyses -->
 			<div class="bg-white dark:bg-slate-900 rounded-lg shadow-sm p-6">

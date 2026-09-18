@@ -224,6 +224,54 @@ export async function deleteInputText(id: number) {
     return request('DELETE', `/known-words/input-texts/${id}`);
 }
 
+// Text annotations - a user-highlighted character range within one
+// InputText.body, with an optional note/translation/pronunciation. See
+// TextAnnotation's docstring (models.py) for why offsets are immutable
+// after creation (editing only ever touches note/translation/pronunciation).
+export interface TextAnnotation {
+    id: number;
+    input_text_id: number;
+    start_offset: number;
+    end_offset: number;
+    highlighted_text: string;
+    note: string | null;
+    translation: string | null;
+    pronunciation: string | null;
+    created_at: string;
+    updated_at: string;
+}
+
+export async function createTextAnnotation(
+    inputTextId: number,
+    annotation: { start_offset: number; end_offset: number; note?: string | null; translation?: string | null; pronunciation?: string | null },
+) {
+    return request<TextAnnotation>('POST', `/known-words/input-texts/${inputTextId}/annotations`, annotation);
+}
+
+export async function listTextAnnotations(inputTextId: number) {
+    return request<TextAnnotation[]>('GET', `/known-words/input-texts/${inputTextId}/annotations`);
+}
+
+export async function updateTextAnnotation(
+    annotationId: number,
+    update: { note?: string | null; translation?: string | null; pronunciation?: string | null },
+) {
+    return request<TextAnnotation>('PUT', `/known-words/annotations/${annotationId}`, update);
+}
+
+export async function deleteTextAnnotation(annotationId: number) {
+    return request<void>('DELETE', `/known-words/annotations/${annotationId}`);
+}
+
+// Stateless pinyin/translation generation for an annotation's highlighted
+// text (pypinyin + the local CTranslate2 model, same tools as the per-word
+// enrichment endpoints below) - not persisted anywhere server-side, since an
+// annotation's text is an arbitrary phrase rather than a reusable
+// vocabulary word (see generate_annotation_enrichment's docstring, router.py).
+export async function generateAnnotationEnrichment(text: string) {
+    return request<{ pinyin: string; translation: string }>('POST', '/known-words/annotations/generate-enrichment', { text });
+}
+
 // Deletes one analysis run, not the input text it belongs to - see
 // deleteInputText for that. Used from input-texts/[id]'s Analyses list.
 export async function deleteAnalysis(analysisId: number) {

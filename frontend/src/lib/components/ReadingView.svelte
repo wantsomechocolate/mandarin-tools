@@ -77,7 +77,13 @@
 	let loading = $state(true);
 	let error = $state('');
 
-	type ColorBy = 'none' | 'source' | 'rarity' | 'familiarity';
+	// 'blank' is the true "no markings at all" mode (plain characters, still
+	// clickable, nothing else) - the display label "None" moved here from
+	// what's still internally called 'none', which keeps its old id for
+	// localStorage backward-compatibility but is now labeled "Segmentation"
+	// (it was never actually blank - it always drew the word-boundary
+	// underline; the id just predates 'blank' existing to contrast against).
+	type ColorBy = 'blank' | 'none' | 'source' | 'rarity' | 'familiarity';
 
 	// Persisted globally (one shared preference across every text/analysis,
 	// not scoped per-page like scrollPersistence.ts/panelWordPersistence.ts
@@ -95,7 +101,7 @@
 		if (!browser) return 'none';
 		try {
 			const raw = localStorage.getItem(COLOR_BY_STORAGE_KEY);
-			return raw === 'source' || raw === 'rarity' || raw === 'familiarity' ? raw : 'none';
+			return raw === 'blank' || raw === 'source' || raw === 'rarity' || raw === 'familiarity' ? raw : 'none';
 		} catch {
 			return 'none';
 		}
@@ -107,6 +113,67 @@
 			localStorage.setItem(COLOR_BY_STORAGE_KEY, colorBy);
 		} catch {
 			// e.g. storage disabled/full - the preference just won't persist
+		}
+	});
+
+	// Text annotations - user-highlighted word-aligned ranges with an
+	// optional note/translation/pronunciation (TextAnnotation, backend).
+	let annotations: api.TextAnnotation[] = $state([]);
+
+	// "Show annotations" - same inline localStorage pattern as colorBy above,
+	// own storage key, default OFF: this view was already dense before
+	// annotations existed, so highlighting stays opt-in even though creating
+	// one is easy.
+	const SHOW_ANNOTATIONS_STORAGE_KEY = 'mandarin_tools_reading_view_show_annotations';
+	function loadShowAnnotations(): boolean {
+		if (!browser) return false;
+		try {
+			return localStorage.getItem(SHOW_ANNOTATIONS_STORAGE_KEY) === '1';
+		} catch {
+			return false;
+		}
+	}
+	let showAnnotations: boolean = $state(loadShowAnnotations());
+	$effect(() => {
+		if (!browser) return;
+		try {
+			localStorage.setItem(SHOW_ANNOTATIONS_STORAGE_KEY, showAnnotations ? '1' : '0');
+		} catch {
+			// e.g. storage disabled/full - the preference just won't persist
+		}
+	});
+
+	// "Annotate" mode - an editing mode, not a viewing preference, so unlike
+	// showAnnotations above this is a plain unpersisted $state (default off).
+	let annotateMode: boolean = $state(false);
+
+	// Tap-select pending range - indices into `spans` (word spans only), not
+	// character offsets. Both null means no in-progress selection.
+	let pendingStartIdx: number | null = $state(null);
+	let pendingEndIdx: number | null = $state(null);
+
+	// Which annotation's popover is open - an existing annotation's id, the
+	// string 'pending' for the in-progress create popover, or null (closed).
+	let annotationPopoverFor: number | 'pending' | null = $state(null);
+	let annotationNoteDraft = $state('');
+	let annotationTranslationDraft = $state('');
+	let annotationPronunciationDraft = $state('');
+	let savingAnnotation = $state(false);
+	let annotationError = $state('');
+	// Whether the open popover shows editable inputs or a read-only summary.
+	// A brand-new (pending) annotation has nothing to show read-only, so it's
+	// always editable; an existing annotation opens read-only first (the
+	// "eye" click is a view action) and only becomes editable via its own
+	// Edit button - see openAnnotationPopover/cancelEditing.
+	let annotationEditing = $state(false);
+	let generatingEnrichment = $state(false);
+
+	// Leaving Annotate mode abandons any in-progress selection/popover.
+	$effect(() => {
+		if (!annotateMode) {
+			pendingStartIdx = null;
+			pendingEndIdx = null;
+			if (annotationPopoverFor === 'pending') annotationPopoverFor = null;
 		}
 	});
 
@@ -164,6 +231,7 @@
 			const data = await api.getAnalysisSpans(analysisId) as { input_text_id: number; spans: Span[] };
 			spans = data.spans;
 			textId = data.input_text_id;
+			annotations = await api.listTextAnnotations(textId);
 		} catch (e: unknown) {
 			error = e instanceof Error ? e.message : 'Failed to load reading view';
 		} finally {
@@ -275,6 +343,10 @@
 	}
 
 	function spanClass(span: WordSpan): string {
+		// True "no markings" mode - plain characters, still clickable, no
+		// boundary/color of any kind. See ColorBy's own docstring above for
+		// why this is a separate id from 'none' rather than a renamed one.
+		if (colorBy === 'blank') return '';
 		if (colorBy === 'source') {
 			const tier = sourceDetailTier(span);
 			return bgOnly(sourceDetailColor(tier)) + ' ' + SOURCE_TINT_DARK[tier];
@@ -327,7 +399,326 @@
 		if (span.userword_scopes.length > 0) parts.push('in your dictionary');
 		return parts.join(' — ');
 	}
+
+	// Word-button click - either opens the word panel (Annotate mode off,
+	// today's existing behavior) or drives tap-select range picking (on).
+	// First click sets pendingStartIdx (clearing any prior completed pair and
+	// discarding a stale 'pending' popover); a second click on a different
+	// word sets pendingEndIdx, normalized to min/max so click order doesn't
+	// matter, and opens the create popover; a further click restarts the
+	// selection from that word.
+	function handleWordClick(span: WordSpan, idx: number) {
+		if (!annotateMode) {
+			selectedWordForPanel = span.word;
+			selectedSpanIndex = idx;
+			return;
+		}
+		if (pendingStartIdx === null || pendingEndIdx !== null) {
+			pendingStartIdx = idx;
+			pendingEndIdx = null;
+			if (annotationPopoverFor === 'pending') annotationPopoverFor = null;
+			return;
+		}
+		if (idx === pendingStartIdx) return;
+		pendingEndIdx = idx;
+		if (pendingStartIdx > pendingEndIdx) {
+			[pendingStartIdx, pendingEndIdx] = [pendingEndIdx, pendingStartIdx];
+		}
+		openAnnotationPopover('pending');
+	}
+
+	// Svelte requires balanced HTML within any {#each}/{#if} block, so a
+	// wrapping <span> can't be opened on one loop iteration and closed on a
+	// later one inside a single flat {#each spans as span} - grouping spans
+	// into contiguous runs up front is what makes wrapping a multi-word range
+	// possible at all. See RenderGroup's own use in the template below.
+	type RenderGroup =
+		| { kind: 'plain'; span: Span; idx: number }
+		| { kind: 'selecting'; span: Span; idx: number }
+		| { kind: 'annotated'; annotationId: number | 'pending'; items: { span: Span; idx: number }[] };
+
+	// Membership uses range overlap, not exact boundary match, for both the
+	// pending selection and confirmed annotations - a later re-analysis of
+	// the same InputText can re-segment differently than whatever analysis's
+	// word occurrences were used to pick the range originally (annotations
+	// anchor to InputText, not Analysis - see TextAnnotation's docstring,
+	// models.py), so exact alignment to a span boundary isn't guaranteed to
+	// survive. Applied uniformly to word and gap spans alike - a punctuation
+	// gap inside a selected/annotated range must still join the group, or
+	// the highlight visibly breaks across it.
+	//
+	// 'selecting' is the tap-select start word before a second click - purely
+	// a visual acknowledgement that the first click registered, distinct from
+	// 'pending' (both endpoints chosen, ready to save): no marker/popover is
+	// attached to it, since there's nothing to save yet.
+	function ownerFor(span: Span): number | 'pending' | 'selecting' | null {
+		if (pendingStartIdx !== null) {
+			const startSpan = spans[pendingStartIdx];
+			if (pendingEndIdx !== null) {
+				const endSpan = spans[pendingEndIdx];
+				if (startSpan && endSpan && span.start < endSpan.end && span.end > startSpan.start) {
+					return 'pending';
+				}
+			} else if (startSpan && span.start < startSpan.end && span.end > startSpan.start) {
+				return 'selecting';
+			}
+		}
+		if (!showAnnotations) return null;
+		for (const a of annotations) {
+			if (span.start < a.end_offset && span.end > a.start_offset) return a.id;
+		}
+		return null;
+	}
+
+	const renderGroups: RenderGroup[] = $derived.by(() => {
+		if (!showAnnotations && pendingStartIdx === null) {
+			return spans.map((span, idx) => ({ kind: 'plain', span, idx }) as RenderGroup);
+		}
+
+		const groups: RenderGroup[] = [];
+		let currentOwner: number | 'pending' | 'selecting' | null = null;
+		let currentItems: { span: Span; idx: number }[] = [];
+
+		function flush() {
+			if (currentItems.length === 0) return;
+			if (currentOwner === null) {
+				for (const item of currentItems) groups.push({ kind: 'plain', span: item.span, idx: item.idx });
+			} else if (currentOwner === 'selecting') {
+				for (const item of currentItems) groups.push({ kind: 'selecting', span: item.span, idx: item.idx });
+			} else {
+				groups.push({ kind: 'annotated', annotationId: currentOwner, items: currentItems });
+			}
+			currentItems = [];
+		}
+
+		for (let idx = 0; idx < spans.length; idx++) {
+			const span = spans[idx];
+			const owner = ownerFor(span);
+			if (owner !== currentOwner) {
+				flush();
+				currentOwner = owner;
+			}
+			currentItems.push({ span, idx });
+		}
+		flush();
+
+		return groups;
+	});
+
+	function openAnnotationPopover(id: number | 'pending') {
+		if (annotationPopoverFor === id) {
+			annotationPopoverFor = null;
+			return;
+		}
+		annotationError = '';
+		if (id === 'pending') {
+			annotationNoteDraft = '';
+			annotationTranslationDraft = '';
+			annotationPronunciationDraft = '';
+			annotationEditing = true;
+		} else {
+			const existing = annotations.find((a) => a.id === id);
+			annotationNoteDraft = existing?.note ?? '';
+			annotationTranslationDraft = existing?.translation ?? '';
+			annotationPronunciationDraft = existing?.pronunciation ?? '';
+			// The "eye"/marker click is a view action - editing an existing
+			// annotation needs an explicit Edit click (see cancelEditing for
+			// the reverse: Cancel while editing drops back to this view
+			// rather than closing the popover outright).
+			annotationEditing = false;
+		}
+		annotationPopoverFor = id;
+	}
+
+	function cancelAnnotationPopover() {
+		if (annotationPopoverFor === 'pending') {
+			pendingStartIdx = null;
+			pendingEndIdx = null;
+		}
+		annotationPopoverFor = null;
+	}
+
+	// Cancel from inside the edit form - a brand-new (pending) annotation has
+	// nothing to go "back" to, so this abandons the whole selection like
+	// cancelAnnotationPopover; an existing annotation instead discards the
+	// in-progress edits and returns to its read-only view.
+	function cancelEditing() {
+		if (annotationPopoverFor === 'pending' || annotationPopoverFor === null) {
+			cancelAnnotationPopover();
+			return;
+		}
+		const existing = annotations.find((a) => a.id === annotationPopoverFor);
+		annotationNoteDraft = existing?.note ?? '';
+		annotationTranslationDraft = existing?.translation ?? '';
+		annotationPronunciationDraft = existing?.pronunciation ?? '';
+		annotationEditing = false;
+	}
+
+	// Reading order text for the in-progress tap-select range, used as the
+	// auto-generate source before an annotation has been saved (a confirmed
+	// annotation already has this captured server-side as highlighted_text).
+	function pendingRangeText(): string {
+		if (pendingStartIdx === null || pendingEndIdx === null) return '';
+		return spans
+			.slice(pendingStartIdx, pendingEndIdx + 1)
+			.map((s) => (s.type === 'word' ? s.word : s.text))
+			.join('');
+	}
+
+	async function generateEnrichment() {
+		const text = annotationPopoverFor === 'pending'
+			? pendingRangeText()
+			: annotations.find((a) => a.id === annotationPopoverFor)?.highlighted_text ?? '';
+		if (!text) return;
+		generatingEnrichment = true;
+		annotationError = '';
+		try {
+			const result = await api.generateAnnotationEnrichment(text);
+			annotationTranslationDraft = result.translation;
+			annotationPronunciationDraft = result.pinyin;
+		} catch (e: unknown) {
+			annotationError = e instanceof Error ? e.message : 'Failed to auto-generate';
+		} finally {
+			generatingEnrichment = false;
+		}
+	}
+
+	async function saveAnnotation() {
+		if (annotationPopoverFor === null || textId === null) return;
+		savingAnnotation = true;
+		annotationError = '';
+		try {
+			if (annotationPopoverFor === 'pending') {
+				if (pendingStartIdx === null || pendingEndIdx === null) return;
+				const startSpan = spans[pendingStartIdx];
+				const endSpan = spans[pendingEndIdx];
+				const created = await api.createTextAnnotation(textId, {
+					start_offset: startSpan.start,
+					end_offset: endSpan.end,
+					note: annotationNoteDraft.trim() || null,
+					translation: annotationTranslationDraft.trim() || null,
+					pronunciation: annotationPronunciationDraft.trim() || null,
+				});
+				annotations = [...annotations, created].sort((a, b) => a.start_offset - b.start_offset);
+				pendingStartIdx = null;
+				pendingEndIdx = null;
+			} else {
+				const updated = await api.updateTextAnnotation(annotationPopoverFor, {
+					note: annotationNoteDraft.trim() || null,
+					translation: annotationTranslationDraft.trim() || null,
+					pronunciation: annotationPronunciationDraft.trim() || null,
+				});
+				annotations = annotations.map((a) => (a.id === updated.id ? updated : a));
+			}
+			annotationPopoverFor = null;
+		} catch (e: unknown) {
+			annotationError = e instanceof Error ? e.message : 'Failed to save annotation';
+		} finally {
+			savingAnnotation = false;
+		}
+	}
+
+	async function deleteAnnotationFromPopover() {
+		if (typeof annotationPopoverFor !== 'number') return;
+		savingAnnotation = true;
+		annotationError = '';
+		try {
+			await api.deleteTextAnnotation(annotationPopoverFor);
+			annotations = annotations.filter((a) => a.id !== annotationPopoverFor);
+			annotationPopoverFor = null;
+		} catch (e: unknown) {
+			annotationError = e instanceof Error ? e.message : 'Failed to delete annotation';
+		} finally {
+			savingAnnotation = false;
+		}
+	}
 </script>
+
+{#snippet spanInner(span: Span, idx: number)}
+	{#if span.type === 'gap'}<span>{span.text}</span
+	>{:else}<button
+			onclick={() => handleWordClick(span, idx)}
+			class="rounded px-0.5 hover:ring-1 hover:ring-blue-400 {spanClass(span)}"
+			style={spanStyle(span)}
+			title={spanTitle(span)}
+		>{span.word}</button
+		>{/if}
+{/snippet}
+
+{#snippet annotationMarkerIcon(isPending: boolean)}
+	{#if isPending}
+		<svg class="w-3 h-3 inline" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M10 4v12M4 10h12" /></svg>
+	{:else}
+		<svg class="w-3 h-3 inline" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 10s2.5-5 6-5 6 5 6 5-2.5 5-6 5-6-5-6-5z" /><circle cx="10" cy="10" r="1.6" /></svg>
+	{/if}
+{/snippet}
+
+<!-- Shared form body for the annotation popover. A brand-new (id === 'pending')
+     annotation is always shown in edit mode (nothing to view read-only
+     yet); an existing annotation opens read-only (annotationEditing false -
+     see openAnnotationPopover) and only shows the edit form once its own
+     Edit button is clicked. Field order (Translation, Pronunciation, Note)
+     matches both modes. -->
+{#snippet annotationFormBody(id: number | 'pending')}
+	<div class="flex flex-col gap-2 p-3" onclick={(e) => e.stopPropagation()} role="presentation">
+		{#if annotationError}<p class="text-xs text-red-600 dark:text-red-400">{annotationError}</p>{/if}
+		{#if annotationEditing}
+			<input bind:value={annotationTranslationDraft} placeholder="Translation" class="border border-gray-300 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 rounded px-2 py-1 text-sm" />
+			<input bind:value={annotationPronunciationDraft} placeholder="Pronunciation" class="border border-gray-300 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 rounded px-2 py-1 text-sm" />
+			<input bind:value={annotationNoteDraft} placeholder="Note" class="border border-gray-300 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 rounded px-2 py-1 text-sm" />
+			<button
+				onclick={generateEnrichment}
+				disabled={generatingEnrichment}
+				class="self-start text-xs text-blue-600 dark:text-blue-400 hover:underline disabled:opacity-50"
+			>
+				{generatingEnrichment ? 'Generating...' : 'Auto-generate translation/pronunciation'}
+			</button>
+			<div class="flex items-center gap-2 mt-1">
+				<button onclick={saveAnnotation} disabled={savingAnnotation} class="text-xs px-3 py-1.5 bg-blue-600 dark:bg-blue-500 text-white rounded hover:bg-blue-700 dark:hover:bg-blue-600 disabled:opacity-50">
+					{savingAnnotation ? 'Saving...' : 'Save'}
+				</button>
+				<button onclick={cancelEditing} disabled={savingAnnotation} class="text-xs text-gray-500 dark:text-slate-400 hover:text-gray-700 dark:hover:text-slate-300">Cancel</button>
+				{#if typeof id === 'number'}
+					<button onclick={deleteAnnotationFromPopover} disabled={savingAnnotation} class="text-xs text-red-500 dark:text-red-400 hover:text-red-700 dark:hover:text-red-400 ml-auto">Delete</button>
+				{/if}
+			</div>
+		{:else}
+			{#if annotationTranslationDraft}
+				<p class="text-sm text-gray-800 dark:text-slate-200"><span class="text-xs text-gray-400 dark:text-slate-500">Translation</span><br />{annotationTranslationDraft}</p>
+			{/if}
+			{#if annotationPronunciationDraft}
+				<p class="text-sm text-gray-800 dark:text-slate-200"><span class="text-xs text-gray-400 dark:text-slate-500">Pronunciation</span><br />{annotationPronunciationDraft}</p>
+			{/if}
+			{#if annotationNoteDraft}
+				<p class="text-sm text-gray-800 dark:text-slate-200"><span class="text-xs text-gray-400 dark:text-slate-500">Note</span><br />{annotationNoteDraft}</p>
+			{/if}
+			{#if !annotationTranslationDraft && !annotationPronunciationDraft && !annotationNoteDraft}
+				<p class="text-sm text-gray-400 dark:text-slate-500">No details yet.</p>
+			{/if}
+			<div class="flex items-center gap-2 mt-1">
+				<button onclick={() => annotationEditing = true} class="text-xs px-3 py-1.5 bg-blue-600 dark:bg-blue-500 text-white rounded hover:bg-blue-700 dark:hover:bg-blue-600">Edit</button>
+				<button onclick={cancelAnnotationPopover} class="text-xs text-gray-500 dark:text-slate-400 hover:text-gray-700 dark:hover:text-slate-300">Close</button>
+				<button onclick={deleteAnnotationFromPopover} disabled={savingAnnotation} class="text-xs text-red-500 dark:text-red-400 hover:text-red-700 dark:hover:text-red-400 ml-auto">Delete</button>
+			</div>
+		{/if}
+	</div>
+{/snippet}
+
+<!-- Dual dropdown (>=700px) / bottom-sheet (<700px) popover, same pattern as
+     analyze/[id]/+page.svelte's visibilityAction: stopPropagation at every
+     layer so a click doesn't bubble into a row/word's own onclick, backdrop
+     click closes without saving. -->
+{#snippet annotationPopover(id: number | 'pending')}
+	<div class="hidden min-[700px]:block fixed inset-0 z-40" onclick={(e) => { e.stopPropagation(); cancelAnnotationPopover(); }} role="presentation"></div>
+	<div class="hidden min-[700px]:block absolute left-0 top-full mt-1 z-50 w-64 bg-white dark:bg-slate-900 rounded-lg shadow-lg border border-gray-100 dark:border-slate-800" onclick={(e) => e.stopPropagation()} role="presentation">
+		{@render annotationFormBody(id)}
+	</div>
+
+	<div class="min-[700px]:hidden fixed inset-0 z-40 bg-black/30" onclick={(e) => { e.stopPropagation(); cancelAnnotationPopover(); }} role="presentation"></div>
+	<div class="min-[700px]:hidden fixed inset-x-0 bottom-0 z-50 bg-white dark:bg-slate-900 rounded-t-2xl shadow-sm max-h-[70vh] overflow-y-auto" onclick={(e) => e.stopPropagation()} role="presentation">
+		{@render annotationFormBody(id)}
+	</div>
+{/snippet}
 
 <!-- Shared flex row with the panel below (lg and up) - same mechanism as
      the analysis results table/word-list pages: the panel's own
@@ -341,7 +732,8 @@
 		<label class="flex items-center gap-1.5 text-sm text-gray-700 dark:text-slate-300">
 			Color by
 			<select bind:value={colorBy} class="border border-gray-300 rounded px-2 py-1 text-sm bg-white dark:bg-slate-800 dark:border-slate-600 dark:text-slate-200">
-				<option value="none">None</option>
+				<option value="blank">None</option>
+				<option value="none">Segmentation</option>
 				<!-- Colors by sourceDetailTier() - User > HSK > CC-CEDICT > Corpus >
 				     None, a finer split of evidenceTierColor's own 4-tier scale
 				     (see sourceDetailColor's docstring, wordDisplay.ts). -->
@@ -350,6 +742,17 @@
 				<option value="familiarity">Familiarity</option>
 			</select>
 		</label>
+		<label class="flex items-center gap-1.5 text-sm text-gray-700 dark:text-slate-300">
+			<input type="checkbox" bind:checked={showAnnotations} />
+			Show annotations
+		</label>
+		<button
+			onclick={() => annotateMode = !annotateMode}
+			aria-pressed={annotateMode}
+			class="text-sm px-2.5 py-1 rounded border {annotateMode ? 'bg-blue-100 dark:bg-blue-500/15 border-blue-300 dark:border-blue-500/40 text-blue-700 dark:text-blue-400' : 'bg-white dark:bg-slate-900 border-gray-200 dark:border-slate-800 text-gray-600 dark:text-slate-400 hover:bg-gray-100 dark:hover:bg-slate-800'}"
+		>
+			Annotate
+		</button>
 	</div>
 
 	{#if loading}
@@ -358,14 +761,17 @@
 		<p class="text-red-600 dark:text-red-400 text-sm">{error}</p>
 	{:else}
 		<p class="text-xl leading-loose whitespace-pre-wrap break-words text-gray-900 dark:text-slate-100">
-			{#each spans as span, idx}
-				{#if span.type === 'gap'}<span>{span.text}</span
-				>{:else}<button
-						onclick={() => { selectedWordForPanel = span.word; selectedSpanIndex = idx; }}
-						class="rounded px-0.5 hover:ring-1 hover:ring-blue-400 {spanClass(span)}"
-						style={spanStyle(span)}
-						title={spanTitle(span)}
-					>{span.word}</button
+			{#each renderGroups as group}
+				{#if group.kind === 'plain'}{@render spanInner(group.span, group.idx)}
+				{:else if group.kind === 'selecting'}<span class="rounded bg-blue-100 dark:bg-blue-500/20 ring-1 ring-blue-400"
+					>{@render spanInner(group.span, group.idx)}</span
+					>{:else}<span class="relative {group.annotationId === 'pending' ? 'bg-blue-100 dark:bg-blue-500/20' : 'border-b-2 border-dashed border-amber-500 dark:border-amber-400'}"
+					>{#each group.items as item}{@render spanInner(item.span, item.idx)}{/each}<button
+						onclick={(e) => { e.stopPropagation(); openAnnotationPopover(group.annotationId); }}
+						class="align-super text-[10px] px-0.5 {group.annotationId === 'pending' ? 'text-blue-600 dark:text-blue-400' : 'text-amber-600 dark:text-amber-400'}"
+						title={group.annotationId === 'pending' ? 'Save annotation' : 'View annotation'}
+					>{@render annotationMarkerIcon(group.annotationId === 'pending')}</button
+					>{#if annotationPopoverFor === group.annotationId}{@render annotationPopover(group.annotationId)}{/if}</span
 					>{/if}
 			{/each}
 		</p>
