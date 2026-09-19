@@ -4,10 +4,9 @@ A web application for analyzing simplified Chinese text to identify unknown voca
 
 ## Features
 
-- **Text analysis** — segments Chinese text into words using a longest-matching trie algorithm, plus a tokenizer that finds repeated unknown sequences not in the dictionary
-- **Known word filtering** — mark words with a familiarity score (1–5); analyses automatically filter out words you already know well
+- **Text analysis** — segments Chinese text into words using a DAG and choosing the most likely path through the text based on word frequency, plus a tokenizer that finds repeated unknown sequences not in the dictionary
+- **Known word filtering** — mark words with a familiarity score (1–5); analyses automatically filter out words you already know well. Supports bulk marking word familiarity based on HSK 2012 and HSK 2026.
 - **Word details** — look up HSK level, pinyin, traditional form, meanings, and corpus frequency for any word
-- **Garbage words** — flag junk tokens (proper nouns, artifacts, punctuation sequences) so they stop appearing in results
 - **Saved analyses** — every analysis is saved and can be revisited; familiarity scores apply retroactively across all analyses
 - **User accounts** — full authentication with JWT tokens; each user has their own known words, stopwords, and garbage words
 

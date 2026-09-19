@@ -143,6 +143,32 @@
 		}
 	});
 
+	// Whether the Color by/Show annotations/Annotate controls are expanded
+	// under the "Reading view" header - same persisted-preference pattern as
+	// showAnnotations above, default ON so nothing hides by default for
+	// someone who hasn't touched this yet. Purely a display convenience
+	// (collapsing it doesn't change colorBy/showAnnotations/annotateMode
+	// themselves, just whether their controls are visible).
+	const OPTIONS_EXPANDED_STORAGE_KEY = 'mandarin_tools_reading_view_options_expanded';
+	function loadOptionsExpanded(): boolean {
+		if (!browser) return true;
+		try {
+			const raw = localStorage.getItem(OPTIONS_EXPANDED_STORAGE_KEY);
+			return raw === null ? true : raw === '1';
+		} catch {
+			return true;
+		}
+	}
+	let optionsExpanded: boolean = $state(loadOptionsExpanded());
+	$effect(() => {
+		if (!browser) return;
+		try {
+			localStorage.setItem(OPTIONS_EXPANDED_STORAGE_KEY, optionsExpanded ? '1' : '0');
+		} catch {
+			// e.g. storage disabled/full - the preference just won't persist
+		}
+	});
+
 	// "Annotate" mode - an editing mode, not a viewing preference, so unlike
 	// showAnnotations above this is a plain unpersisted $state (default off).
 	let annotateMode: boolean = $state(false);
@@ -355,6 +381,20 @@
 		if (colorBy === 'blank') return '';
 		if (colorBy === 'source') {
 			const tier = sourceDetailTier(span);
+			// HSK is by far the most common tier in real running text (most
+			// everyday vocabulary is HSK-tagged), so a loud fill there
+			// highlights nearly every word - the opposite of useful signal.
+			// Faded to fully uncolored instead (light and dark alike), same
+			// "the most common thing in this scale gets no color" precedent
+			// as familiarity's level 5 and rarity's extremely-common end -
+			// see FAMILIARITY_FILL_LIGHT's own docstring below. Deliberately
+			// full blank rather than a faint wash: sourceDetailColor/
+			// SOURCE_TINT_DARK's shared bg-blue-100 pairing is also used
+			// as-is for the small "HSK" badge elsewhere (word-lists/search),
+			// where it's still meant to stand out - only this full-word-fill
+			// use case needed toning down, so the shared scale itself stays
+			// untouched and this mode overrides locally instead.
+			if (tier === 'hsk') return '';
 			return bgOnly(sourceDetailColor(tier)) + ' ' + SOURCE_TINT_DARK[tier];
 		}
 		// Rarity is the one mode with no bg-* class at all - see spanStyle.
@@ -641,10 +681,18 @@
 </script>
 
 {#snippet spanInner(span: Span, idx: number)}
+	<!-- Hover highlight is a real `outline`, deliberately not Tailwind's
+	     `ring` (box-shadow-based) - a box-shadow toggling on/off across many
+	     tightly-adjacent inline-block buttons like these left a persistent
+	     1px "ghost" sliver behind on mouseleave (a Chromium repaint/
+	     compositing quirk, worse with 'blank' mode's zero button-to-button
+	     gap - see this feature's own conversation). `outline` is a separate
+	     rendering primitive (the same one focus rings use) that doesn't
+	     share that compositing path. -->
 	{#if span.type === 'gap'}<span>{span.text}</span
 	>{:else}<button
 			onclick={() => handleWordClick(span, idx)}
-			class="hover:ring-1 hover:ring-blue-400 {colorBy === 'blank' ? '' : 'rounded px-0.5'} {spanClass(span)}"
+			class="hover:outline hover:outline-1 hover:outline-blue-400 {colorBy === 'blank' ? '' : 'rounded px-0.5'} {spanClass(span)}"
 			style={spanStyle(span)}
 			title={spanTitle(span)}
 		>{span.word}</button
@@ -733,32 +781,59 @@
      floating as a modal. -->
 <div class="flex flex-col lg:flex-row gap-4">
 <div class="flex-1 min-w-0 bg-white dark:bg-slate-900 rounded-lg shadow-sm p-4">
-	<div class="flex items-center justify-between gap-3 mb-3 flex-wrap">
-		<p class="text-xs font-medium text-gray-400 dark:text-slate-500 uppercase tracking-wide">Reading view</p>
-		<label class="flex items-center gap-1.5 text-sm text-gray-700 dark:text-slate-300">
-			Color by
-			<select bind:value={colorBy} class="border border-gray-300 rounded px-2 py-1 text-sm bg-white dark:bg-slate-800 dark:border-slate-600 dark:text-slate-200">
-				<option value="blank">None</option>
-				<option value="none">Segmentation</option>
-				<!-- Colors by sourceDetailTier() - User > HSK > CC-CEDICT > Corpus >
-				     None, a finer split of evidenceTierColor's own 4-tier scale
-				     (see sourceDetailColor's docstring, wordDisplay.ts). -->
-				<option value="source">Source</option>
-				<option value="rarity">Rarity</option>
-				<option value="familiarity">Familiarity</option>
-			</select>
-		</label>
-		<label class="flex items-center gap-1.5 text-sm text-gray-700 dark:text-slate-300">
-			<input type="checkbox" bind:checked={showAnnotations} />
-			Show annotations
-		</label>
+	<!-- Header - same disclosure pattern as analyze/[id]/+page.svelte's own
+	     Filters button: a `w-full` button (the whole bar is clickable, not
+	     just the label text), a chevron pinned to the right via `ml-auto`
+	     that rotates between pointing down (expanded) and right (collapsed,
+	     `-rotate-90`), and the controls it reveals appearing in their own
+	     block BELOW the button (`mt-3`) rather than beside it. The bottom
+	     border on the outer wrapper demarcates the whole header - button
+	     plus, when expanded, its controls - from the reading text below. -->
+	<div class="border-b border-gray-100 dark:border-slate-800 mb-3 pb-3">
 		<button
-			onclick={() => annotateMode = !annotateMode}
-			aria-pressed={annotateMode}
-			class="text-sm px-2.5 py-1 rounded border {annotateMode ? 'bg-blue-100 dark:bg-blue-500/15 border-blue-300 dark:border-blue-500/40 text-blue-700 dark:text-blue-400' : 'bg-white dark:bg-slate-900 border-gray-200 dark:border-slate-800 text-gray-600 dark:text-slate-400 hover:bg-gray-100 dark:hover:bg-slate-800'}"
+			type="button"
+			onclick={() => optionsExpanded = !optionsExpanded}
+			aria-expanded={optionsExpanded}
+			aria-controls="reading-view-options"
+			class="w-full flex items-center gap-2 text-left"
 		>
-			Annotate
+			<span class="text-xs font-medium text-gray-400 dark:text-slate-500 uppercase tracking-wide">Reading view</span>
+			<svg class="w-3.5 h-3.5 text-gray-400 dark:text-slate-500 ml-auto transition-transform {optionsExpanded ? '' : '-rotate-90'}" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8l4 4 4-4"/></svg>
 		</button>
+
+		{#if optionsExpanded}
+			<!-- Fixed to the same w-48 - a column of same-sized controls. -->
+			<div id="reading-view-options" class="flex flex-col gap-2 mt-3">
+				<!-- Self-labeled (each option spells out "Color by: ..." itself)
+				     so no separate caption is needed beside it. w-48
+				     comfortably fits the longest option ("Color by:
+				     Segmentation") without clipping. -->
+				<select bind:value={colorBy} class="w-48 border border-gray-300 rounded px-2 py-1 text-sm bg-white dark:bg-slate-800 dark:border-slate-600 dark:text-slate-200">
+					<option value="blank">Color by: None</option>
+					<option value="none">Color by: Segmentation</option>
+					<!-- Colors by sourceDetailTier() - User > HSK > CC-CEDICT > Corpus >
+					     None, a finer split of evidenceTierColor's own 4-tier scale
+					     (see sourceDetailColor's docstring, wordDisplay.ts). -->
+					<option value="source">Color by: Source</option>
+					<option value="rarity">Color by: Rarity</option>
+					<option value="familiarity">Color by: Familiarity</option>
+				</select>
+				<button
+					onclick={() => showAnnotations = !showAnnotations}
+					aria-pressed={showAnnotations}
+					class="w-48 text-center text-sm px-2.5 py-1 rounded border {showAnnotations ? 'bg-blue-100 dark:bg-blue-500/15 border-blue-300 dark:border-blue-500/40 text-blue-700 dark:text-blue-400' : 'bg-white dark:bg-slate-900 border-gray-200 dark:border-slate-800 text-gray-600 dark:text-slate-400 hover:bg-gray-100 dark:hover:bg-slate-800'}"
+				>
+					Show annotations
+				</button>
+				<button
+					onclick={() => annotateMode = !annotateMode}
+					aria-pressed={annotateMode}
+					class="w-48 text-center text-sm px-2.5 py-1 rounded border {annotateMode ? 'bg-blue-100 dark:bg-blue-500/15 border-blue-300 dark:border-blue-500/40 text-blue-700 dark:text-blue-400' : 'bg-white dark:bg-slate-900 border-gray-200 dark:border-slate-800 text-gray-600 dark:text-slate-400 hover:bg-gray-100 dark:hover:bg-slate-800'}"
+				>
+					Annotate
+				</button>
+			</div>
+		{/if}
 	</div>
 
 	{#if loading}

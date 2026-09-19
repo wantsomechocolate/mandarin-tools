@@ -232,7 +232,7 @@
 		<AccountMenu />
 	</nav>
 
-	<main class="max-w-3xl mx-auto px-6 py-8">
+	<main class="max-w-5xl lg:max-w-6xl 2xl:max-w-7xl mx-auto px-6 py-8">
 		{#if error}
 			<div class="bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/30 text-red-700 dark:text-red-400 px-4 py-3 rounded mb-4">
 				{error}
